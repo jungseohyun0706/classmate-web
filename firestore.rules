@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /notices/{noticeId} {
+      allow read: if true; // students/apps can read
+      allow create: if request.auth != null && request.auth.token.admin == true; // only teachers (admin) create
+      allow update, delete: if false;
+    }
+    match /teachers/{t} {
+      allow read, write: if request.auth != null && request.auth.token.admin == true;
+    }
+    match /{document=**} { allow read: if true; }
+  }
+}
