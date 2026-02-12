@@ -14,3 +14,11 @@ service cloud.firestore {
     }
   }
 }
+
+// Admin rule: only users with role=='admin' can change other users' role
+match /databases/{database}/documents {
+  match /users/{userId} {
+    allow read: if request.auth != null && (request.auth.uid == userId || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+    allow update: if request.auth != null && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+  }
+}
