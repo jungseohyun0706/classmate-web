@@ -38,7 +38,8 @@ export default function AdminComposePage() {
 
       const functions = getFunctions();
       const fn = httpsCallable(functions, "createAnnouncementSecure");
-      const res = await fn({ classId, password, title, body, attachments });
+      // placeholder
+      const res: any = await fn({ classId, password, title, body, attachments });
 
       if (res.data?.ok) {
         setMessage("공지 발송 성공 — 학생들에게 푸시가 전송됩니다.");
