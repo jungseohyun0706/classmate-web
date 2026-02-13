@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, Timestamp } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { initFirebase } from "@/lib/firebase";
+import { getFirestore } from "firebase/firestore";
+const db = getFirestore(initFirebase());
 
 type Notice = {
   id: string;
