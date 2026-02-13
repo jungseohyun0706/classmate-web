@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
-import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytesResumable, getDownloadURL, getStorage } from "firebase/storage";
 import { httpsCallable } from "firebase/functions";
-import { storage } from "@/lib/firebase";
 import { getFunctions } from "firebase/functions";
+import { initFirebase } from "@/lib/firebase";
+const storage = getStorage(initFirebase());
 
 export default function AdminComposePage() {
   const [title, setTitle] = useState("");
