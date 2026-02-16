@@ -5,11 +5,8 @@ import { ref, uploadBytesResumable, getDownloadURL, getStorage } from "firebase/
 import { httpsCallable } from "firebase/functions";
 import { getFunctions } from "firebase/functions";
 import { initFirebase } from "@/lib/firebase";
-<<<<<<< HEAD
-=======
 
 // Use getStorage(initFirebase()) here instead of importing a static `storage` export.
->>>>>>> origin/main
 const storage = getStorage(initFirebase());
 
 export default function AdminComposePage() {
