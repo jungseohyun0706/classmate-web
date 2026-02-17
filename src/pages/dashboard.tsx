@@ -122,7 +122,7 @@ export default function Dashboard() {
               <button 
                 onClick={() => {
                   if(!hasClass) alert('먼저 반을 등록해야 공지를 쓸 수 있습니다.')
-                  else router.push('/admin/compose')
+                  else router.push('/teacher/notice/write')
                 }}
                 className="text-sm font-medium text-green-600 hover:text-green-500 flex items-center"
               >
