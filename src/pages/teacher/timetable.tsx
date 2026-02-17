@@ -3,6 +3,7 @@ import { useRouter } from 'next/router'
 import { initFirebase } from '../../lib/firebase'
 import { getAuth, onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
+import * as XLSX from 'xlsx'
 
 initFirebase()
 
@@ -17,7 +18,6 @@ export default function TimetablePage() {
   const [loading, setLoading] = useState(true)
   const [userData, setUserData] = useState<any>(null)
   
-  // 시간표 데이터 상태 (요일별 배열)
   const [timetable, setTimetable] = useState<any>({
     mon: ['', '', '', '', '', '', ''],
     tue: ['', '', '', '', '', '', ''],
@@ -45,7 +45,6 @@ export default function TimetablePage() {
           }
           setUserData(data)
           
-          // 기존 시간표 불러오기
           const timeSnap = await getDoc(doc(db, 'classes', data.classId, 'info', 'timetable'))
           if (timeSnap.exists()) {
             setTimetable(timeSnap.data())
@@ -71,7 +70,6 @@ export default function TimetablePage() {
     setSaving(true)
     try {
       const { db } = await import('../../lib/firebase')
-      // classes/{classId}/info/timetable 경로에 저장
       await setDoc(doc(db, 'classes', userData.classId, 'info', 'timetable'), timetable, { merge: true })
       alert('시간표가 저장되었습니다. 학생들에게도 바로 반영됩니다.')
     } catch (e) {
@@ -80,6 +78,83 @@ export default function TimetablePage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  // 엑셀 업로드 처리
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (evt) => {
+      const bstr = evt.target?.result
+      const wb = XLSX.read(bstr, { type: 'binary' })
+      const wsname = wb.SheetNames[0]
+      const ws = wb.Sheets[wsname]
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][]
+
+      // 데이터 파싱 로직 (단순화: 월화수목금 헤더 찾고 그 아래 7칸 읽기)
+      // 1. "월"이 포함된 행 찾기
+      let headerRowIndex = -1
+      for (let i = 0; i < data.length; i++) {
+        if (data[i].some((cell: any) => String(cell).includes('월'))) {
+          headerRowIndex = i
+          break
+        }
+      }
+
+      if (headerRowIndex === -1) {
+        // 헤더 못 찾으면 그냥 첫 줄부터 가정
+        headerRowIndex = 0
+      }
+
+      // 2. 요일별 열 인덱스 찾기
+      const dayIndices: { [key: string]: number } = {}
+      const headerRow = data[headerRowIndex]
+      headerRow.forEach((cell: any, idx: number) => {
+        const val = String(cell)
+        if (val.includes('월')) dayIndices['mon'] = idx
+        if (val.includes('화')) dayIndices['tue'] = idx
+        if (val.includes('수')) dayIndices['wed'] = idx
+        if (val.includes('목')) dayIndices['thu'] = idx
+        if (val.includes('금')) dayIndices['fri'] = idx
+      })
+
+      // 3. 데이터 매핑
+      const newTimetable: any = { ...timetable }
+      let foundData = false
+
+      // 헤더 다음 행부터 7교시까지 읽기
+      for (let p = 0; p < 7; p++) {
+        const rowData = data[headerRowIndex + 1 + p]
+        if (!rowData) break
+        
+        DAYS.forEach(day => {
+          if (dayIndices[day] !== undefined) {
+            const cellValue = rowData[dayIndices[day]]
+            if (cellValue) {
+              newTimetable[day][p] = String(cellValue).trim()
+              foundData = true
+            }
+          } else {
+            // 요일 인덱스 못 찾았으면 기본적으로 1,2,3,4,5열로 가정 (0열은 교시)
+            const fallbackIdx = DAYS.indexOf(day) + 1
+            if (rowData[fallbackIdx]) {
+               newTimetable[day][p] = String(rowData[fallbackIdx]).trim()
+               foundData = true
+            }
+          }
+        })
+      }
+
+      if (foundData) {
+        setTimetable(newTimetable)
+        alert('엑셀 데이터를 불러왔습니다. 내용을 확인하고 [저장하기]를 눌러주세요.')
+      } else {
+        alert('엑셀에서 시간표 데이터를 찾지 못했습니다. 형식을 확인해주세요.')
+      }
+    }
+    reader.readAsBinaryString(file)
   }
 
   if (loading) return <div className="p-10 text-center">로딩 중...</div>
@@ -92,9 +167,17 @@ export default function TimetablePage() {
             <h1 className="text-2xl font-bold text-gray-900">시간표 관리</h1>
             <p className="text-sm text-gray-600">{userData?.schoolName} {userData?.grade}학년 {userData?.classNm}반</p>
           </div>
-          <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700">
-            &larr; 대시보드로
-          </button>
+          <div className="flex gap-2">
+            {/* 엑셀 업로드 버튼 (숨김 input + 라벨) */}
+            <label className="cursor-pointer bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded inline-flex items-center">
+              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+              <span>엑셀 업로드</span>
+              <input type='file' className="hidden" accept=".xlsx, .xls" onChange={handleFileUpload} />
+            </label>
+            <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 px-3">
+              나가기
+            </button>
+          </div>
         </div>
 
         <div className="bg-white shadow rounded-xl overflow-hidden border border-gray-200">
@@ -135,7 +218,8 @@ export default function TimetablePage() {
             </table>
           </div>
           
-          <div className="bg-gray-50 px-6 py-4 flex justify-end">
+          <div className="bg-gray-50 px-6 py-4 flex justify-between items-center">
+            <p className="text-xs text-gray-500">* 엑셀 파일의 "월, 화, 수..." 행을 찾아 자동으로 입력합니다.</p>
             <button
               onClick={handleSave}
               disabled={saving}
