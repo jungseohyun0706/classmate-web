@@ -283,22 +283,11 @@ export default function MySchedulePage() {
                             
                             <div className="relative py-2">
                                 <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-gray-200"></span></div>
-                                <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-gray-400 font-bold">또는 장터에 올리기</span></div>
+                                <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-gray-400 font-bold">도움말</span></div>
                             </div>
-
-                            <input 
-                                className="w-full border border-gray-300 rounded-md p-2 text-sm text-black" 
-                                placeholder="요청 메모 (예: 2교시랑 교환 희망)"
-                                value={swapNote}
-                                onChange={(e) => setSwapNote(e.target.value)}
-                            />
-                            <button 
-                                onClick={handleSubmitSwap}
-                                disabled={submittingSwap}
-                                className="w-full bg-red-600 text-white font-bold py-2 rounded hover:bg-red-700 transition flex justify-center items-center"
-                            >
-                                {submittingSwap ? '등록 중...' : '📢 교환 장터에 공개 요청'}
-                            </button>
+                            <p className="text-xs text-gray-500 text-center leading-relaxed">
+                                선택한 시간에 수업이 없는<br/>교내 선생님을 검색합니다.
+                            </p>
                         </div>
                     </div>
 
