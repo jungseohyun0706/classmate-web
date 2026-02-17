@@ -157,6 +157,34 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* Card 4: 시간표 관리 */}
+          <div className="bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:shadow-xl transition-shadow duration-300">
+            <div className="p-6">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-yellow-100 rounded-md p-3">
+                  <svg className="h-8 w-8 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="text-lg font-bold text-gray-900">시간표 관리</h3>
+                  <p className="mt-1 text-sm text-gray-500">우리 반 시간표를 설정하세요.</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-6 py-4">
+              <button 
+                onClick={() => {
+                  if(!hasClass) alert('먼저 반을 등록해야 합니다.')
+                  else router.push('/teacher/timetable')
+                }}
+                className="text-sm font-medium text-yellow-600 hover:text-yellow-500 flex items-center"
+              >
+                설정하러 가기 <span aria-hidden="true" className="ml-1">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
         </div>
       </main>
     </div>
