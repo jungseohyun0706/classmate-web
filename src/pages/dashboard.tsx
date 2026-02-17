@@ -114,7 +114,10 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="bg-gray-50 px-6 py-4">
-              <button className="text-sm font-medium text-blue-600 hover:text-blue-500 flex items-center">
+              <button 
+                onClick={() => router.push('/teacher/register-class')}
+                className="text-sm font-medium text-blue-600 hover:text-blue-500 flex items-center"
+              >
                 관리하러 가기 <span aria-hidden="true" className="ml-1">&rarr;</span>
               </button>
             </div>
