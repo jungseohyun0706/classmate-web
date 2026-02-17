@@ -82,7 +82,7 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           
-          {/* Card 1: 반 관리 (조건부 렌더링) */}
+          {/* Card 1: 학생 관리 */}
           <div className="bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:shadow-xl transition-shadow duration-300">
             <div className="p-6">
               <div className="flex items-center">
@@ -141,7 +141,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Card 3: 시간표 관리 */}
+          {/* Card 3: 학급 시간표 (학생용) */}
           <div className="bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:shadow-xl transition-shadow duration-300">
             <div className="p-6">
               <div className="flex items-center">
@@ -151,8 +151,8 @@ export default function Dashboard() {
                   </svg>
                 </div>
                 <div className="ml-4">
-                  <h3 className="text-lg font-bold text-gray-900">시간표 관리</h3>
-                  <p className="mt-1 text-sm text-gray-500">우리 반 시간표를 설정하세요.</p>
+                  <h3 className="text-lg font-bold text-gray-900">학급 시간표 관리</h3>
+                  <p className="mt-1 text-sm text-gray-500">학생들에게 보여질 시간표입니다.</p>
                 </div>
               </div>
             </div>
@@ -160,11 +160,67 @@ export default function Dashboard() {
               <button 
                 onClick={() => {
                   if(!hasClass) alert('먼저 반을 등록해야 합니다.')
-                  else router.push('/teacher/timetable')
+                  else router.push('/teacher/class-timetable')
                 }}
                 className="text-sm font-medium text-yellow-600 hover:text-yellow-500 flex items-center"
               >
-                설정하러 가기 <span aria-hidden="true" className="ml-1">&rarr;</span>
+                관리하러 가기 <span aria-hidden="true" className="ml-1">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Card 4: 내 수업 시간표 (교환) */}
+          <div className="bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:shadow-xl transition-shadow duration-300">
+            <div className="p-6">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-red-100 rounded-md p-3">
+                  <svg className="h-8 w-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="text-lg font-bold text-gray-900">내 수업 시간표</h3>
+                  <p className="mt-1 text-sm text-gray-500">수업 교환 및 대강 요청.</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-6 py-4">
+              <button 
+                onClick={() => {
+                  if(!hasClass) alert('먼저 반을 등록해야 합니다.')
+                  else router.push('/teacher/my-schedule')
+                }}
+                className="text-sm font-medium text-red-600 hover:text-red-500 flex items-center"
+              >
+                확인하러 가기 <span aria-hidden="true" className="ml-1">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Card 5: 다른 반 시간표 조회 */}
+          <div className="bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:shadow-xl transition-shadow duration-300">
+            <div className="p-6">
+              <div className="flex items-center">
+                <div className="flex-shrink-0 bg-teal-100 rounded-md p-3">
+                  <svg className="h-8 w-8 text-teal-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="text-lg font-bold text-gray-900">다른 반 시간표</h3>
+                  <p className="mt-1 text-sm text-gray-500">학교 전체 시간표를 조회합니다.</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-6 py-4">
+              <button 
+                onClick={() => {
+                  if(!hasClass) alert('먼저 반을 등록해야 합니다.')
+                  else router.push('/teacher/view-timetables')
+                }}
+                className="text-sm font-medium text-teal-600 hover:text-teal-500 flex items-center"
+              >
+                조회하러 가기 <span aria-hidden="true" className="ml-1">&rarr;</span>
               </button>
             </div>
           </div>
