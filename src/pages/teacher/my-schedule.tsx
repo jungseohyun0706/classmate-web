@@ -31,6 +31,8 @@ export default function MySchedulePage() {
   const [selectedCell, setSelectedCell] = useState<any>(null)
   const [availableTeachers, setAvailableTeachers] = useState<any[]>([])
   const [searching, setSearching] = useState(false)
+  const [swapNote, setSwapNote] = useState('') // 공개 요청용 메모
+  const [submittingSwap, setSubmittingSwap] = useState(false)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -155,7 +157,41 @@ export default function MySchedulePage() {
     }
   }
 
-  if (loading) return <div className="p-10 text-center">로딩 중...</div>
+  // 전체 공개 교환 요청 등록 (장터 기능 통합)
+  const handleSubmitSwap = async () => {
+    if (!selectedCell) return
+    setSubmittingSwap(true)
+    try {
+      const { db } = await import('../../lib/firebase')
+      
+      // school_swaps/{schoolCode}/requests 컬렉션에 저장
+      await addDoc(collection(db, 'school_swaps', userData.schoolCode || 'default', 'requests'), {
+        requesterId: auth.currentUser?.uid,
+        requesterName: userData.displayName,
+        requesterClass: userData.grade ? `${userData.grade}학년 ${userData.classNm}반` : '담임 없음',
+        
+        day: selectedCell.day,
+        dayLabel: selectedCell.dayLabel,
+        period: selectedCell.period,
+        subject: selectedCell.subject,
+        note: swapNote,
+        
+        status: 'pending', 
+        createdAt: serverTimestamp()
+      })
+
+      alert('교환 요청이 장터에 등록되었습니다!')
+      setSelectedCell(null)
+      setSwapNote('')
+    } catch (e) {
+      console.error(e)
+      alert('요청 등록 실패')
+    } finally {
+      setSubmittingSwap(false)
+    }
+  }
+
+  if (loading) return <div className="p-10 text-center text-black">로딩 중...</div>
 
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
@@ -236,13 +272,34 @@ export default function MySchedulePage() {
 
                     <div className="mb-4">
                         <p className="text-sm text-gray-600 mb-2">이 수업을 대신할 선생님을 찾나요?</p>
-                        <button 
-                            onClick={() => findAvailableTeachers(selectedCell.day, selectedCell.periodIdx)}
-                            disabled={searching}
-                            className="w-full bg-indigo-100 text-indigo-700 font-bold py-2 rounded hover:bg-indigo-200 transition flex justify-center items-center"
-                        >
-                            {searching ? <span className="animate-spin mr-2">⏳</span> : '🔍'} 빈 시간 선생님 찾기
-                        </button>
+                        <div className="space-y-2">
+                            <button 
+                                onClick={() => findAvailableTeachers(selectedCell.day, selectedCell.periodIdx)}
+                                disabled={searching}
+                                className="w-full bg-indigo-100 text-indigo-700 font-bold py-2 rounded hover:bg-indigo-200 transition flex justify-center items-center"
+                            >
+                                {searching ? <span className="animate-spin mr-2">⏳</span> : '🔍'} 빈 시간 선생님 찾기
+                            </button>
+                            
+                            <div className="relative py-2">
+                                <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-gray-200"></span></div>
+                                <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-gray-400 font-bold">또는 장터에 올리기</span></div>
+                            </div>
+
+                            <input 
+                                className="w-full border border-gray-300 rounded-md p-2 text-sm text-black" 
+                                placeholder="요청 메모 (예: 2교시랑 교환 희망)"
+                                value={swapNote}
+                                onChange={(e) => setSwapNote(e.target.value)}
+                            />
+                            <button 
+                                onClick={handleSubmitSwap}
+                                disabled={submittingSwap}
+                                className="w-full bg-red-600 text-white font-bold py-2 rounded hover:bg-red-700 transition flex justify-center items-center"
+                            >
+                                {submittingSwap ? '등록 중...' : '📢 교환 장터에 공개 요청'}
+                            </button>
+                        </div>
                     </div>
 
                     {/* 검색 결과 */}
