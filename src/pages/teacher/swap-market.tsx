@@ -44,14 +44,33 @@ export default function SwapMarket() {
         const user = snap.data()
         setUserData(user)
 
-        if (!user.schoolCode) {
+        // 2. 학교 정보가 없으면 classId에서 복구 시도 (자동 마이그레이션)
+        let finalSchoolCode = user.schoolCode
+        
+        if (!finalSchoolCode && user.classId) {
+          try {
+            // classId 포맷: "학교코드_학년_반" (예: 7530167_1_3)
+            const inferredCode = user.classId.split('_')[0]
+            if (inferredCode) {
+              await updateDoc(doc(db, 'users', u.uid), {
+                schoolCode: inferredCode
+              })
+              finalSchoolCode = inferredCode
+              console.log('School code migrated:', inferredCode)
+            }
+          } catch (err) {
+            console.warn('Auto migration failed', err)
+          }
+        }
+
+        if (!finalSchoolCode) {
           alert('학교 정보가 없습니다. 반 등록을 먼저 해주세요.')
-          router.replace('/dashboard')
+          router.replace('/teacher/register-class') // 바로 등록 페이지로 안내
           return
         }
 
-        // 2. 우리 학교 교환 요청 목록 가져오기
-        loadRequests(db, user.schoolCode)
+        // 3. 우리 학교 교환 요청 목록 가져오기
+        loadRequests(db, finalSchoolCode)
 
       } catch (e) {
         console.error(e)
