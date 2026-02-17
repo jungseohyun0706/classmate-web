@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { initFirebase } from '../../lib/firebase'
 import { getAuth } from 'firebase/auth'
-import { doc, updateDoc, setDoc, collection, serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc, collection, serverTimestamp } from 'firebase/firestore'
 
 initFirebase()
 
@@ -83,14 +83,14 @@ export default function RegisterClass() {
         createdAt: serverTimestamp()
       }, { merge: true })
 
-      // 2. 선생님 계정(Users)에 내 반 정보 연결
-      await updateDoc(doc(db, 'users', user.uid), {
+      // 2. 선생님 계정(Users)에 내 반 정보 연결 (없으면 생성)
+      await setDoc(doc(db, 'users', user.uid), {
         classId: classId,
         schoolName: selectedSchool.name,
         grade: parseInt(grade),
         classNm: parseInt(classNm),
-        role: 'teacher' // 확실하게 다시 지정
-      })
+        role: 'teacher'
+      }, { merge: true })
 
       alert('반 등록이 완료되었습니다!')
       router.replace('/dashboard')
