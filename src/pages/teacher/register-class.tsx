@@ -95,9 +95,9 @@ export default function RegisterClass() {
       alert('반 등록이 완료되었습니다!')
       router.replace('/dashboard')
 
-    } catch (e) {
+    } catch (e: any) {
       console.error(e)
-      alert('등록 중 오류가 발생했습니다.')
+      alert('등록 실패: ' + (e.message || e.code || '알 수 없는 오류'))
     } finally {
       setSubmitting(false)
     }
