@@ -86,6 +86,7 @@ export default function RegisterClass() {
       // 2. 선생님 계정(Users)에 내 반 정보 연결 (없으면 생성)
       await setDoc(doc(db, 'users', user.uid), {
         classId: classId,
+        schoolCode: selectedSchool.code,
         schoolName: selectedSchool.name,
         grade: parseInt(grade),
         classNm: parseInt(classNm),
