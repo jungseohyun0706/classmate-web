@@ -62,6 +62,30 @@ export default function ViewTimetables() {
   const loadTimetable = async (classId: string) => {
     try {
       const { db } = await import('../../lib/firebase')
+      
+      // 1. 새로운 방식: classes/{classId} 문서의 timetable 필드 확인 (앱 연동 방식)
+      const classSnap = await getDoc(doc(db, 'classes', classId))
+      if (classSnap.exists() && classSnap.data().timetable) {
+        const rawItems = classSnap.data().timetable;
+        // TimetableItem[] 형식을 요일별 객체로 변환
+        const formatted: any = { mon: [], tue: [], wed: [], thu: [], fri: [] };
+        const dayMap: any = { '월': 'mon', '화': 'tue', '수': 'wed', '목': 'thu', '금': 'fri' };
+        
+        rawItems.forEach((item: any) => {
+          const dayKey = dayMap[item.day];
+          if (dayKey) {
+            // 교시 인덱스 계산 (start 시간을 기준으로 하거나 id에서 추출)
+            const period = parseInt(item.id?.split('-').pop() || '1') - 1;
+            if (period >= 0 && period < 7) {
+              formatted[dayKey][period] = item.subject;
+            }
+          }
+        });
+        setTimetable(formatted);
+        return;
+      }
+
+      // 2. 기존 방식: classes/{classId}/info/timetable 문서 확인
       const snap = await getDoc(doc(db, 'classes', classId, 'info', 'timetable'))
       if (snap.exists()) {
         setTimetable(snap.data())
