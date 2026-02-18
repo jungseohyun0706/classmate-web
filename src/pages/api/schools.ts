@@ -7,32 +7,28 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  const { query } = req.query
+  // query 대신 q를 파라미터로 받음 (register-class.tsx와 일치)
+  const q = (req.query.q as string || req.query.query as string || '')
 
-  if (!query) {
-    return res.status(400).json({ error: '검색어를 입력해주세요.' })
+  if (!q) {
+    return res.status(200).json({ schools: [] })
   }
 
   try {
-    // API 호출 (KEY 없이 호출 시 제한적이지만 테스트 가능, Type=json)
-    const apiUrl = `${NEIS_API_URL}?Type=json&pIndex=1&pSize=100&SCHUL_NM=${encodeURIComponent(query as string)}`
+    // NEIS API 호출 (KEY를 넣으면 더 좋음)
+    const apiUrl = `${NEIS_API_URL}?Type=json&pIndex=1&pSize=100&SCHUL_NM=${encodeURIComponent(q)}`
     
     const response = await fetch(apiUrl)
     const data = await response.json()
 
-    if (data.RESULT && data.RESULT.CODE !== 'INFO-000') {
-      // 에러 또는 결과 없음
-      return res.status(200).json({ schools: [] })
-    }
-
-    if (data.schoolInfo) {
-      // 결과 파싱
+    // NEIS 응답 데이터 구조 처리
+    if (data.schoolInfo && data.schoolInfo[1] && data.schoolInfo[1].row) {
       const schools = data.schoolInfo[1].row.map((school: any) => ({
         code: school.SD_SCHUL_CODE,
         officeCode: school.ATPT_OFCDC_SC_CODE,
         name: school.SCHUL_NM,
         address: school.ORG_RDNMA,
-        kind: school.SCHUL_KND_SC_NM // 초등학교, 고등학교 등
+        kind: school.SCHUL_KND_SC_NM
       }))
       return res.status(200).json({ schools })
     }
