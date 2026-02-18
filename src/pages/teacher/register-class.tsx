@@ -40,9 +40,12 @@ export default function RegisterClass() {
     setResults([])
     
     try {
-      const res = await fetch(`/api/schools?query=${encodeURIComponent(query)}`)
+      // API 파라미터를 query -> q로 수정하여 schools.ts와 맞춤
+      const res = await fetch(`/api/schools?q=${encodeURIComponent(query)}`)
       const data = await res.json()
-      if (data.schools) {
+      if (Array.isArray(data)) {
+        setResults(data)
+      } else if (data.schools) {
         setResults(data.schools)
       }
     } catch (err) {
