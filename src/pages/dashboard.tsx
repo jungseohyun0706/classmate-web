@@ -96,6 +96,19 @@ export default function Dashboard() {
       bgColor: 'bg-teal-100',
       path: '/teacher/view-timetables',
       needClass: true
+    },
+    {
+      id: 'app-download',
+      title: '선생님용 앱 설치 📱',
+      desc: '폰에서 간편하게 학생 관리와 교환을!',
+      icon: (
+        <svg className="h-8 w-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+        </svg>
+      ),
+      bgColor: 'bg-blue-100',
+      path: 'exp://o8-5i9.jungseohyun7.8081.exp.direct',
+      external: true
     }
   ]
 
@@ -137,6 +150,10 @@ export default function Dashboard() {
               onClick={() => {
                 if (card.needClass && !hasClass) {
                   alert('먼저 반을 등록해야 합니다.')
+                  return
+                }
+                if (card.external) {
+                  window.location.href = card.path
                   return
                 }
                 router.push(card.path)
