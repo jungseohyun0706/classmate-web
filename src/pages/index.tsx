@@ -1,9 +1,12 @@
-// CACHE BUST v2 - 2026-03-06 14:55
-import React from 'react';
-import Head from 'next/head';
-import Link from 'next/link';
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/router'
+import { auth } from '../lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
+import Head from 'next/head'
+import Link from 'next/link'
 
-const LandingPage = () => {
+// ururu.kr 용 랜딩 페이지 컴포넌트
+const AppShowcase = () => {
   const appName = 'Classmate';
   const tagline = '우리 반의 똑똑한 도우미';
   const description = '우르르 컴퍼니는 일상의 불편함을 기술로 해결합니다. 더 나은 교육, 더 나은 소통을 위한 플랫폼을 만듭니다.';
@@ -15,7 +18,6 @@ const LandingPage = () => {
         <meta name="description" content={description} />
       </Head>
 
-      {/* Navigation - REMOVED TEACHER LOGIN */}
       <nav className="max-w-7xl mx-auto px-6 py-8 flex justify-between items-center border-b border-gray-50">
         <div className="flex items-center space-x-2">
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">U</div>
@@ -28,7 +30,6 @@ const LandingPage = () => {
         </div>
       </nav>
 
-      {/* Hero Section */}
       <main className="max-w-7xl mx-auto px-6 pt-20 pb-24 lg:pt-32">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
           <div className="text-left">
@@ -89,7 +90,6 @@ const LandingPage = () => {
         </div>
       </main>
 
-      {/* Footer */}
       <footer className="max-w-7xl mx-auto px-6 py-12 border-t border-gray-100 flex flex-col md:flex-row justify-between items-center text-sm text-gray-400">
         <div className="flex items-center space-x-4">
           <span className="font-bold text-gray-900 text-lg">ururu.kr</span>
@@ -104,4 +104,37 @@ const LandingPage = () => {
   );
 };
 
-export default LandingPage;
+// 메인 컴포넌트 (도메인 분기 처리)
+export default function Home() {
+  const router = useRouter()
+  const [isUruru, setIsUruru] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname
+      // ururu.kr 도메인으로 접속했을 때만 홍보 페이지 노출
+      if (host.includes('ururu.kr')) {
+        setIsUruru(true)
+      } else {
+        setIsUruru(false)
+        // classmate.kr 등 다른 도메인은 기존 관리자용 로그인 리다이렉트
+        const unsub = onAuthStateChanged(auth, user => {
+          if (user && user.emailVerified) {
+            router.replace('/dashboard')
+          } else {
+            router.replace('/auth/login')
+          }
+        })
+        return () => unsub()
+      }
+    }
+  }, [router])
+
+  if (isUruru === null) return <div className="min-h-screen bg-white" />;
+
+  if (isUruru) {
+    return <AppShowcase />
+  }
+
+  return null
+}
