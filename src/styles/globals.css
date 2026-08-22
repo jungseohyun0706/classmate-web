@@ -1,1 +1,39 @@
 @import "tailwindcss";
+
+/* ===== Classmate 공통 애니메이션 ===== */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-fade-in { animation: fade-in 0.25s ease-out; }
+.animate-fade-in-right { animation: fade-in-right 0.25s ease-out; }
+.animate-toast-in { animation: toast-in 0.2s ease-out; }
+
+/* 변경된 교시(교환/보강) 하이라이트 — 컴시간알리미의 노란 표시 오마주 */
+.cell-changed {
+  background: linear-gradient(135deg, #fef9c3 0%, #fef08a 100%);
+  position: relative;
+}
+.cell-changed::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #eab308;
+}
+
+html {
+  font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, Roboto, sans-serif;
+}

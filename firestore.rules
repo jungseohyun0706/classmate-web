@@ -1,0 +1,122 @@
+rules_version = '2';
+
+// Classmate 보안 규칙
+// - 학생 포털은 비로그인 조회(컴시간알리미식 공개 모델): classes / schools / changes만 공개 읽기
+// - role은 클라이언트가 만들거나 바꿀 수 없음 (교사 role은 서버 API가 admin SDK로 부여)
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isTeacher() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+
+    // ===== 사용자 =====
+    match /users/{uid} {
+      // 교사 검색(빈 선생님 찾기)·학생 목록 등: 로그인 사용자만 읽기 가능
+      allow read: if signedIn();
+
+      // 본인 문서 생성 — role은 student만 클라이언트에서 지정 가능 (교사는 /api/register 경유)
+      allow create: if signedIn() && request.auth.uid == uid
+        && (!('role' in request.resource.data) || request.resource.data.role == 'student');
+
+      allow update: if signedIn() && (
+        // 1) 본인 수정 — 단 role은 못 바꿈
+        (request.auth.uid == uid
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']))
+        // 2) 담임이 자기 반 학생 승인 (status만 변경)
+        || (isTeacher()
+          && resource.data.role == 'student'
+          && resource.data.classId is string
+          && get(/databases/$(database)/documents/classes/$(resource.data.classId)).data.teacherId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+        // 3) 교환 수락 시 상대 교사의 mySchedule 갱신 (mySchedule만 변경 가능)
+        || (isTeacher()
+          && resource.data.role == 'teacher'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['mySchedule']))
+      );
+
+      allow delete: if false;
+    }
+
+    // ===== 반 =====
+    match /classes/{classId} {
+      // 학생 비로그인 조회 허용 (시간표는 공개 정보로 취급)
+      allow read: if true;
+
+      allow create: if isTeacher();
+      // 다른 교사의 반 탈취 방지: teacherId/teacherName은 담임(또는 미지정 반)만 변경 가능.
+      // 시간표 관련 필드는 같은 학교 교사 누구나(업로드 담당) 갱신 가능.
+      allow update: if isTeacher() && (
+        !('teacherId' in resource.data)
+        || resource.data.teacherId == null
+        || resource.data.teacherId == request.auth.uid
+        || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['teacherId', 'teacherName'])
+      );
+      allow delete: if false;
+
+      // legacy 시간표 문서
+      match /info/{docId} {
+        allow read: if true;
+        allow write: if isTeacher();
+      }
+
+      // 알림장
+      match /announcements/{aid} {
+        allow read: if signedIn();
+        allow create: if isTeacher()
+          && get(/databases/$(database)/documents/classes/$(classId)).data.teacherId == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+
+    // ===== 학교 · 변경사항(노란 칸) =====
+    match /schools/{code} {
+      allow read: if true;
+      allow write: if isTeacher();
+
+      match /changes/{id} {
+        allow read: if true;
+        allow create: if isTeacher();
+        allow update, delete: if false;
+      }
+    }
+
+    // ===== 교환 요청 =====
+    match /swap_requests/{id} {
+      allow read: if signedIn()
+        && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+
+      allow create: if isTeacher()
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.status == 'pending';
+
+      allow update: if signedIn() && resource.data.status == 'pending' && (
+        // 받은 사람: 수락/거절
+        (resource.data.toUid == request.auth.uid
+          && request.resource.data.status in ['accepted', 'declined'])
+        // 보낸 사람: 취소
+        || (resource.data.fromUid == request.auth.uid
+          && request.resource.data.status == 'cancelled')
+      );
+
+      allow delete: if false;
+    }
+
+    // ===== 공개 교환 장터 (legacy) =====
+    match /school_swaps/{code}/{col}/{id} {
+      allow read: if signedIn();
+      allow create: if isTeacher();
+      allow update, delete: if false;
+    }
+
+    // 그 외 전부 차단
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

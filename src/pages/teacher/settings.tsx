@@ -3,6 +3,7 @@ import { useRouter } from 'next/router'
 import { initFirebase } from '../../lib/firebase'
 import { getAuth, onAuthStateChanged, sendPasswordResetEmail, updateProfile } from 'firebase/auth'
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
+import { toast } from '../../lib/toast'
 
 initFirebase()
 
@@ -43,7 +44,7 @@ export default function SettingsPage() {
 
   // 이름 변경 저장
   const handleSaveProfile = async () => {
-    if (!displayName.trim()) return alert('이름을 입력해주세요.')
+    if (!displayName.trim()) return toast('이름을 입력해주세요.', 'error')
     setSaving(true)
     try {
       const { db } = await import('../../lib/firebase')
@@ -65,10 +66,10 @@ export default function SettingsPage() {
         })
       }
 
-      alert('저장되었습니다.')
+      toast('저장되었습니다.')
     } catch (e) {
       console.error(e)
-      alert('저장 중 오류가 발생했습니다.')
+      toast('저장 중 오류가 발생했습니다.', 'error')
     } finally {
       setSaving(false)
     }
@@ -79,9 +80,10 @@ export default function SettingsPage() {
     if (!confirm(`${user.email}로 비밀번호 재설정 메일을 보내시겠습니까?`)) return
     try {
       await sendPasswordResetEmail(auth, user.email)
-      alert('메일을 보냈습니다. 메일함을 확인해주세요.')
+      toast('메일을 보냈습니다. 메일함을 확인해주세요.')
     } catch (e) {
-      alert('메일 발송 실패.')
+      console.error(e)
+      toast('메일 발송에 실패했습니다.', 'error')
     }
   }
 

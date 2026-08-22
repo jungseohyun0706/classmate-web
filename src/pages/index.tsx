@@ -49,13 +49,18 @@ const LandingPage = () => {
             </p>
 
             <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-              <button className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg hover:bg-gray-800 transition-all">
-                Google Play 출시 예정
-              </button>
-              <button className="px-8 py-4 bg-white text-gray-900 border-2 border-gray-100 rounded-2xl font-bold text-lg hover:border-gray-200 transition-all">
-                iOS 앱스토어 준비 중
-              </button>
+              <Link href="/s" className="px-8 py-4 bg-blue-600 text-white rounded-2xl font-bold text-lg hover:bg-blue-700 transition-all text-center shadow-lg shadow-blue-200">
+                🧑‍🎓 우리 반 시간표 보기
+              </Link>
+              <Link href="/auth/login" className="px-8 py-4 bg-white text-gray-900 border-2 border-gray-100 rounded-2xl font-bold text-lg hover:border-gray-200 transition-all text-center">
+                👩‍🏫 선생님 로그인
+              </Link>
             </div>
+            <p className="mt-6 text-sm text-gray-400">
+              학생은 가입·로그인 없이 바로 확인 · 시간표 변경(교환/보결)도 실시간 표시 · 무료
+              {' · '}
+              <Link href="/s/demo/1/1" className="underline hover:text-blue-600">체험해보기</Link>
+            </p>
           </div>
 
           <div className="hidden lg:block relative">
@@ -77,10 +82,10 @@ const LandingPage = () => {
                     </div>
                   </div>
                   <div className="flex items-center space-x-4 p-4 bg-purple-50 rounded-2xl">
-                    <div className="text-3xl">📢</div>
+                    <div className="text-3xl">🔄</div>
                     <div>
-                      <div className="font-bold text-gray-900 text-lg">디지털 알림장</div>
-                      <div className="text-gray-500 text-sm italic">가정통신문을 확인하세요</div>
+                      <div className="font-bold text-gray-900 text-lg">수업 교환·보결</div>
+                      <div className="text-gray-500 text-sm italic">수락하면 시간표에 자동 반영!</div>
                     </div>
                   </div>
                 </div>

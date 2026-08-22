@@ -2,7 +2,8 @@ import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { initFirebase } from '../../lib/firebase'
 import { getAuth } from 'firebase/auth'
-import { doc, setDoc, collection, serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { toast } from '../../lib/toast'
 
 initFirebase()
 
@@ -48,8 +49,8 @@ export default function RegisterClass() {
       } else if (data.schools) {
         setResults(data.schools)
       }
-    } catch (err) {
-      alert('학교 검색 중 오류가 발생했습니다.')
+    } catch (_err) {
+      toast('학교 검색 중 오류가 발생했습니다.', 'error')
     } finally {
       setSearching(false)
     }
@@ -59,7 +60,7 @@ export default function RegisterClass() {
   const handleCreate = async () => {
     if (!selectedSchool || !grade || !classNm) return
     if (!auth.currentUser) {
-      alert('로그인이 필요합니다.')
+      toast('로그인이 필요합니다.', 'error')
       router.replace('/auth/login')
       return
     }
@@ -73,16 +74,25 @@ export default function RegisterClass() {
       // 이렇게 하면 중복 생성을 방지하거나 쉽게 찾을 수 있음
       const classId = `${selectedSchool.code}_${grade}_${classNm}`
       
+      // 0. 프로필 이름 확보 (Firestore의 displayName이 Auth 프로필보다 우선)
+      let teacherName = user.displayName || ''
+      try {
+        const { getDoc } = await import('firebase/firestore')
+        const me = await getDoc(doc(db, 'users', user.uid))
+        if (me.exists() && me.data().displayName) teacherName = me.data().displayName
+      } catch { /* ignore */ }
+
       // 1. Classes 컬렉션에 반 정보 저장
       // setDoc을 쓰면 이미 있으면 덮어쓰기(업데이트) 됨
       await setDoc(doc(db, 'classes', classId), {
         classId: classId,
         schoolCode: selectedSchool.code,
+        officeCode: selectedSchool.officeCode,
         schoolName: selectedSchool.name,
         grade: parseInt(grade),
         classNm: parseInt(classNm),
         teacherId: user.uid,
-        teacherName: user.displayName || '담임 선생님',
+        teacherName: teacherName || '담임 선생님',
         createdAt: serverTimestamp()
       }, { merge: true })
 
@@ -90,18 +100,28 @@ export default function RegisterClass() {
       await setDoc(doc(db, 'users', user.uid), {
         classId: classId,
         schoolCode: selectedSchool.code,
+        officeCode: selectedSchool.officeCode,
         schoolName: selectedSchool.name,
         grade: parseInt(grade),
         classNm: parseInt(classNm),
         role: 'teacher'
       }, { merge: true })
 
-      alert('반 등록이 완료되었습니다!')
+      // 3. 학교 문서 (학생 포털의 급식 조회 등에 사용)
+      await setDoc(doc(db, 'schools', selectedSchool.code), {
+        code: selectedSchool.code,
+        officeCode: selectedSchool.officeCode,
+        name: selectedSchool.name,
+        address: selectedSchool.address || null,
+        kind: selectedSchool.kind || null,
+      }, { merge: true })
+
+      toast('반 등록이 완료되었습니다!')
       router.replace('/dashboard')
 
     } catch (e: any) {
       console.error(e)
-      alert('등록 실패: ' + (e.message || e.code || '알 수 없는 오류'))
+      toast('등록 실패: ' + (e.message || e.code || '알 수 없는 오류'), 'error')
     } finally {
       setSubmitting(false)
     }

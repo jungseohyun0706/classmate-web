@@ -1,0 +1,16 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // 알림장 첨부파일: 업로드는 로그인 사용자, 다운로드는 공개(학생 앱)
+    match /notices/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.resource.size < 10 * 1024 * 1024; // 10MB 제한
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

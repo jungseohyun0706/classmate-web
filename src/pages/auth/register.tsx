@@ -1,22 +1,18 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { initFirebase } from '../../lib/firebase'
-import { getAuth, createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { getAuth, signInWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth'
 
 // Ensure firebase is initialized
 initFirebase()
-
-// 🔒 교사 인증 코드 (나중에 환경변수로 뺄 수 있음)
-const TEACHER_SECRET_CODE = "classmate2026"
 
 export default function RegisterPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [secretCode, setSecretCode] = useState('') // 인증 코드 상태
-  
+  const [secretCode, setSecretCode] = useState('')
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
@@ -28,7 +24,6 @@ export default function RegisterPage() {
     setError(null)
     setInfo(null)
 
-    // 1. 기본 유효성 검사
     if (!email || !password || !secretCode) {
       setError('모든 항목을 입력해 주세요.')
       return
@@ -38,53 +33,36 @@ export default function RegisterPage() {
       return
     }
 
-    // 2. 인증 코드 검사 (핵심!)
-    if (secretCode !== TEACHER_SECRET_CODE) {
-      setError('교사 인증 코드가 올바르지 않습니다. 관리자에게 문의하세요.')
-      return
-    }
-
     setLoading(true)
     try {
-      // 3. Firebase Auth 가입
-      const cred = await createUserWithEmailAndPassword(auth, email, password)
-      const user = cred.user
-
-      // 4. Firestore에 유저 정보 저장
-      try {
-        const { db } = await import('../../lib/firebase')
-        await setDoc(doc(db, 'users', user.uid), {
-          email: user.email,
-          displayName: displayName || null,
-          role: 'teacher', // 교사 권한 부여
-          schoolId: null,
-          createdAt: serverTimestamp()
-        })
-      } catch (e) {
-        console.warn('users doc write failed', e)
-        // 치명적이지 않으므로 계속 진행 (단, 나중에 프로필 로드 이슈 가능성 있음)
+      // 1. 서버에서 인증 코드 검증 + 계정 생성 (코드는 서버에만 존재)
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, displayName, code: secretCode }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(data?.error || '회원가입 중 오류가 발생했습니다.')
+        return
       }
 
-      // 5. 이메일 인증 발송
-      await sendEmailVerification(user)
+      // 2. 방금 만든 계정으로 로그인해 인증 메일 발송 후 로그아웃
+      try {
+        const cred = await signInWithEmailAndPassword(auth, email, password)
+        await sendEmailVerification(cred.user)
+        await signOut(auth)
+      } catch (e) {
+        console.warn('verification mail step failed', e)
+      }
+
       setInfo('가입이 완료되었습니다! 인증 메일을 확인해 주세요. (잠시 후 로그인 페이지로 이동합니다)')
-      
-      // 3초 후 로그인 페이지로 이동
       setTimeout(() => {
         router.replace('/auth/login')
       }, 3000)
-
     } catch (e: any) {
       console.error(e)
-      if (e.code === 'auth/email-already-in-use') {
-        setError('이미 가입된 이메일입니다.')
-      } else if (e.code === 'auth/invalid-email') {
-        setError('이메일 형식이 올바르지 않습니다.')
-      } else if (e.code === 'auth/weak-password') {
-        setError('비밀번호가 너무 약합니다.')
-      } else {
-        setError('회원가입 중 오류가 발생했습니다: ' + (e.message || '알 수 없는 오류'))
-      }
+      setError('회원가입 중 오류가 발생했습니다: ' + (e.message || '알 수 없는 오류'))
     } finally {
       setLoading(false)
     }
@@ -104,7 +82,7 @@ export default function RegisterPage() {
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-lg">
         <div className="bg-white py-10 px-6 shadow-xl rounded-2xl sm:px-12 border border-gray-100">
           <form className="space-y-6" onSubmit={onSubmit}>
-            
+
             {/* 에러 메시지 */}
             {error && (
               <div className="rounded-md bg-red-50 p-4 border border-red-100">
@@ -175,7 +153,7 @@ export default function RegisterPage() {
             <div className="pt-2">
               <label className="block text-base font-bold text-blue-700 mb-1">교사 인증 코드 🔒</label>
               <input
-                type="text"
+                type="password"
                 required
                 className="appearance-none block w-full px-4 py-3 border-2 border-blue-100 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 text-lg text-black bg-blue-50"
                 value={secretCode}
@@ -183,7 +161,7 @@ export default function RegisterPage() {
                 placeholder="전달받은 코드를 입력하세요"
               />
               <p className="mt-1 text-xs text-gray-500">
-                * 교사만 가입할 수 있도록 인증 코드가 필요합니다.
+                * 교사만 가입할 수 있도록 인증 코드가 필요합니다. 코드는 서버에서만 확인됩니다.
               </p>
             </div>
 
