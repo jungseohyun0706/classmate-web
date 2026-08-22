@@ -1,11 +1,14 @@
 /**
- * 구글 로그인 사용자의 교사 등록 완료.
- * 클라이언트가 Google 로그인 후 받은 idToken + 교사 인증 코드를 보내면,
- * 서버가 코드를 검증하고 admin SDK로 role을 부여한다 (role은 클라이언트가 쓸 수 없음).
+ * 교사 등록 완료 — 구글/이메일 로그인 공통.
+ *
+ * 클라이언트가 로그인 후 받은 idToken + 교사 인증 코드를 보내면
+ * 서버가 (1) 코드 검증 (2) 토큰 검증 (3) admin 권한으로 role 부여를 처리한다.
+ * role 은 보안 규칙상 클라이언트가 직접 쓸 수 없으므로 이 경로가 유일한 승격 통로다.
  */
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { adminAuth, adminDb, adminAvailable } from '../../lib/firebaseAdmin'
 import { FieldValue } from 'firebase-admin/firestore'
+import { adminDb, adminAvailable } from '../../lib/firebaseAdmin'
+import { verifyIdToken } from '../../lib/authVerify'
 
 const attempts = new Map<string, { n: number; t: number }>()
 const WINDOW_MS = 10 * 60 * 1000
@@ -33,41 +36,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(503).json({ error: '서버 인증 설정이 없습니다. 관리자에게 문의하세요.' })
   }
 
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'
+  const ip =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown'
   if (limited(ip)) return res.status(429).json({ error: '시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.' })
 
-  const { idToken, code } = (req.body ?? {}) as Record<string, string>
+  const { idToken, code, displayName } = (req.body ?? {}) as Record<string, string>
   if (!idToken || !code) return res.status(400).json({ error: '필수 항목이 누락되었습니다.' })
   if (code !== signupCode) {
     return res.status(403).json({ error: '교사 인증 코드가 올바르지 않습니다. 관리자에게 문의하세요.' })
   }
 
   try {
-    const auth = adminAuth()
-    const decoded = await auth.verifyIdToken(idToken)
+    const user = await verifyIdToken(idToken)
+    if (!user) {
+      return res.status(401).json({ error: '로그인 정보가 만료되었습니다. 다시 로그인해 주세요.' })
+    }
 
-    // 이미 학생 계정이면 교사 전환 금지
-    const existing = await adminDb().collection('users').doc(decoded.uid).get()
+    const ref = adminDb().collection('users').doc(user.uid)
+    const existing = await ref.get()
     if (existing.exists && existing.data()?.role === 'student') {
       return res.status(403).json({ error: '학생 계정은 교사로 전환할 수 없습니다.' })
     }
 
-    await auth.setCustomUserClaims(decoded.uid, { role: 'teacher' })
-    await adminDb().collection('users').doc(decoded.uid).set(
+    const name = (displayName || '').trim() || user.name || existing.data()?.displayName || null
+
+    await ref.set(
       {
-        email: decoded.email || null,
-        displayName: decoded.name || null,
+        email: user.email,
+        displayName: name,
         role: 'teacher',
-        createdAt: FieldValue.serverTimestamp(),
+        createdAt: existing.exists ? existing.data()?.createdAt ?? FieldValue.serverTimestamp() : FieldValue.serverTimestamp(),
       },
       { merge: true },
     )
-    return res.status(200).json({ ok: true, uid: decoded.uid })
-  } catch (e: any) {
-    if (e?.code === 'auth/id-token-expired' || e?.code === 'auth/argument-error') {
-      return res.status(401).json({ error: '로그인 정보가 만료되었습니다. 다시 로그인해 주세요.' })
-    }
+
+    return res.status(200).json({ ok: true, uid: user.uid })
+  } catch (e) {
     console.error('[api/complete-signup]', e)
-    return res.status(500).json({ error: '처리 중 오류가 발생했습니다.' })
+    return res.status(500).json({ error: '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.' })
   }
 }

@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { initFirebase } from '../../lib/firebase'
-import { getAuth, signInWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth'
+import { getAuth, createUserWithEmailAndPassword, sendEmailVerification, signOut } from 'firebase/auth'
 
 // Ensure firebase is initialized
 initFirebase()
@@ -35,21 +35,28 @@ export default function RegisterPage() {
 
     setLoading(true)
     try {
-      // 1. 서버에서 인증 코드 검증 + 계정 생성 (코드는 서버에만 존재)
-      const res = await fetch('/api/register', {
+      // 1. 계정 생성 (클라이언트 SDK)
+      const cred = await createUserWithEmailAndPassword(auth, email, password)
+
+      // 2. 서버에서 인증 코드 검증 + 교사 권한 부여 (코드는 서버에만 존재)
+      const idToken = await cred.user.getIdToken()
+      const res = await fetch('/api/complete-signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, displayName, code: secretCode }),
+        body: JSON.stringify({ idToken, code: secretCode, displayName }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        setError(data?.error || '회원가입 중 오류가 발생했습니다.')
+        setError(
+          (data?.error || '회원가입 중 오류가 발생했습니다.') +
+            ' 계정은 만들어졌으니, 올바른 코드를 받은 뒤 로그인하면 이어서 등록할 수 있어요.',
+        )
+        await signOut(auth)
         return
       }
 
-      // 2. 방금 만든 계정으로 로그인해 인증 메일 발송 후 로그아웃
+      // 3. 인증 메일 발송 후 로그아웃
       try {
-        const cred = await signInWithEmailAndPassword(auth, email, password)
         await sendEmailVerification(cred.user)
         await signOut(auth)
       } catch (e) {
@@ -62,7 +69,11 @@ export default function RegisterPage() {
       }, 3000)
     } catch (e: any) {
       console.error(e)
-      setError('회원가입 중 오류가 발생했습니다: ' + (e.message || '알 수 없는 오류'))
+      const code = e?.code || ''
+      if (code === 'auth/email-already-in-use') setError('이미 가입된 이메일입니다. 로그인해 주세요.')
+      else if (code === 'auth/invalid-email') setError('이메일 형식이 올바르지 않습니다.')
+      else if (code === 'auth/weak-password') setError('비밀번호가 너무 약합니다. 6자 이상으로 입력해 주세요.')
+      else setError('회원가입 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.')
     } finally {
       setLoading(false)
     }
