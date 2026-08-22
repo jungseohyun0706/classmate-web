@@ -1,8 +1,10 @@
 {
+  "id": "/",
   "name": "Classmate — 우리 반 시간표",
   "short_name": "Classmate",
   "description": "로그인 없이 보는 우리 반 시간표, 급식, 시간표 변경 알림",
   "start_url": "/s",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#2563eb",
   "theme_color": "#2563eb",

@@ -1,9 +1,16 @@
 import '@/styles/globals.css'
+import { useEffect } from 'react'
 import type { AppProps } from 'next/app'
 import Head from 'next/head'
 import { Toaster } from '../lib/toast'
 
 export default function App({ Component, pageProps }: AppProps) {
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
+      navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('SW register failed', e))
+    }
+  }, [])
+
   return (
     <>
       <Head>
