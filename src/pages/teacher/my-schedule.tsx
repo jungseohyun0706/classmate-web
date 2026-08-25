@@ -4,6 +4,7 @@ import { auth } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
+import { nextOccurrenceYmdKst } from '../../lib/swaps'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri']
@@ -148,11 +149,17 @@ export default function MySchedulePage() {
         await addDoc(collection(db, 'school_swaps', userData.schoolCode, 'direct_requests'), {
             fromId: auth.currentUser?.uid,
             fromName: userData.displayName,
+            requesterId: auth.currentUser?.uid,
+            requesterName: userData.displayName,
+            requesterClassId: userData.classId || null,
+            requesterClass: userData.grade ? `${userData.grade}학년 ${userData.classNm}반` : '담임 없음',
             toId: teacher.id,
             toName: teacher.name,
             day: selectedCell.day,
+            dayLabel: selectedCell.dayLabel,
             period: selectedCell.period,
             subject: selectedCell.subject,
+            date: nextOccurrenceYmdKst(selectedCell.day), // 다음 해당 요일 (KST, YYYYMMDD)
             status: 'pending',
             createdAt: serverTimestamp()
         })
@@ -174,15 +181,17 @@ export default function MySchedulePage() {
       await addDoc(collection(db, 'school_swaps', userData.schoolCode || 'default', 'requests'), {
         requesterId: auth.currentUser?.uid,
         requesterName: userData.displayName,
+        requesterClassId: userData.classId || null,
         requesterClass: userData.grade ? `${userData.grade}학년 ${userData.classNm}반` : '담임 없음',
-        
+
         day: selectedCell.day,
         dayLabel: selectedCell.dayLabel,
         period: selectedCell.period,
         subject: selectedCell.subject,
+        date: nextOccurrenceYmdKst(selectedCell.day), // 다음 해당 요일 (KST, YYYYMMDD)
         note: swapNote,
-        
-        status: 'pending', 
+
+        status: 'pending',
         createdAt: serverTimestamp()
       })
 
@@ -208,6 +217,12 @@ export default function MySchedulePage() {
             <p className="text-sm text-gray-600">본인의 수업 스케줄을 입력하세요.</p>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => router.push('/teacher/swaps')}
+              className="bg-white border border-blue-200 text-blue-600 font-bold py-2 px-4 rounded-xl hover:bg-blue-50 transition"
+            >
+              📮 교환 인박스
+            </button>
             <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 px-3">
               나가기
             </button>

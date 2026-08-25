@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../lib/firebase'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
+import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore'
 import TodayCard from '../components/TodayCard'
 import { useUI } from '../components/ui/feedback'
 import { useInstallPrompt } from '../components/ui/install'
@@ -14,6 +14,7 @@ export default function Dashboard() {
   const [user, setUser] = useState<any>(null)
   const [userData, setUserData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [pendingSwaps, setPendingSwaps] = useState(0)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -26,7 +27,23 @@ export default function Dashboard() {
         const { db } = await import('../lib/firebase')
         const snap = await getDoc(doc(db, 'users', u.uid))
         if (snap.exists()) {
-          setUserData(snap.data())
+          const data = snap.data()
+          setUserData(data)
+          // 대기중인 받은 교환 요청 수 (가벼운 배지 쿼리 — 실패해도 무시)
+          if (data?.schoolCode) {
+            try {
+              const swapSnap = await getDocs(
+                query(
+                  collection(db, 'school_swaps', String(data.schoolCode), 'direct_requests'),
+                  where('toId', '==', u.uid),
+                  where('status', '==', 'pending')
+                )
+              )
+              setPendingSwaps(swapSnap.size)
+            } catch (e) {
+              console.error(e)
+            }
+          }
         }
       } catch (e) {
         console.error(e)
@@ -107,6 +124,25 @@ export default function Dashboard() {
       needClass: false
     },
     {
+      id: 'swaps',
+      title: '교환 인박스',
+      desc: '받은 교환 요청을 확인하고 수락하세요.',
+      icon: <svg className="h-8 w-8 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" /></svg>,
+      bgColor: 'bg-purple-100',
+      path: '/teacher/swaps',
+      needClass: false,
+      badge: pendingSwaps
+    },
+    {
+      id: 'sos',
+      title: '보결 SOS',
+      desc: '갑자기 자리를 비울 때 보결을 요청하세요.',
+      icon: <svg className="h-8 w-8 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" /></svg>,
+      bgColor: 'bg-orange-100',
+      path: '/teacher/sos',
+      needClass: false
+    },
+    {
       id: 'view-others',
       title: '다른 반 시간표 조회',
       desc: '학교 전체 시간표를 조회합니다.',
@@ -179,7 +215,14 @@ export default function Dashboard() {
                     {card.icon}
                   </div>
                   <div className="ml-4">
-                    <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600 transition-colors">{card.title}</h3>
+                    <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                      {card.title}
+                      {card.badge ? (
+                        <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] h-6 px-1.5 rounded-full bg-red-500 text-white text-xs font-bold align-middle">
+                          {card.badge}
+                        </span>
+                      ) : null}
+                    </h3>
                     <p className="mt-1 text-sm text-gray-500">{card.desc}</p>
                   </div>
                 </div>

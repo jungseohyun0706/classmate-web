@@ -4,6 +4,7 @@ import { auth } from '../../lib/firebase'
 import { onAuthStateChanged, sendPasswordResetEmail, updateProfile } from 'firebase/auth'
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
+import EnablePush from '../../components/EnablePush'
 
 export default function SettingsPage() {
   const router = useRouter()
@@ -163,6 +164,15 @@ export default function SettingsPage() {
               <p className="mt-2 text-xs text-gray-400">* 학급 정보 변경은 관리자에게 문의하세요.</p>
             </div>
           )}
+
+          {/* 알림 섹션 */}
+          <div className="p-6">
+            <h2 className="text-lg font-medium text-gray-900 mb-4">알림</h2>
+            <EnablePush />
+            <p className="mt-2 text-xs text-gray-400">
+              * 교환 요청 · 보결 SOS · 아침 브리핑을 푸시 알림으로 받아요. 이미 켜져 있으면 카드가 보이지 않아요.
+            </p>
+          </div>
 
           {/* 보안 섹션 */}
           <div className="p-6 bg-gray-50 rounded-b-lg">
