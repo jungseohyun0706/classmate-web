@@ -100,6 +100,13 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['read']);
       }
+
+      // ── users/{uid}/bagChecks/{ymd}: 가방(준비물) 체크 ────
+      // {items: 준비물명→boolean 맵, done, updatedAt}
+      match /bagChecks/{ymd} {
+        // 읽기/쓰기: 본인만
+        allow read, write: if me(uid);
+      }
     }
 
     // ── classes/{classId}: 학급 ─────────────────────────────
@@ -189,6 +196,21 @@ service cloud.firestore {
     match /meal_ratings/{docId} {
       allow read: if signedIn();
       allow create, update: if signedIn();
+
+      // ── votes/{uid}: 계정당 1표 투표 기록 ────────────────
+      match /votes/{uid} {
+        // 읽기: 본인 투표만 (중복 참여 확인용)
+        allow read: if me(uid);
+
+        // 생성: 본인 명의로, rating은 1~5 정수만 가능
+        allow create: if me(uid)
+          && request.resource.data.rating is int
+          && request.resource.data.rating >= 1
+          && request.resource.data.rating <= 5;
+
+        // 수정/삭제 불가: 한 번 남긴 투표는 되돌릴 수 없습니다.
+        allow update, delete: if false;
+      }
     }
 
     // ── 그 외 모든 경로: 기본 거부 ──────────────────────────

@@ -18,7 +18,28 @@ export default function WriteNotice() {
   const [body, setBody] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [requiresConsent, setRequiresConsent] = useState(false)
+  const [supplies, setSupplies] = useState<string[]>([])
+  const [supplyInput, setSupplyInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  const addSupply = () => {
+    const value = supplyInput.trim()
+    if (!value) return
+    if (supplies.includes(value)) {
+      setSupplyInput('')
+      return
+    }
+    if (supplies.length >= 20) {
+      toast('준비물은 최대 20개까지 등록할 수 있어요.', 'error')
+      return
+    }
+    setSupplies([...supplies, value])
+    setSupplyInput('')
+  }
+
+  const removeSupply = (name: string) => {
+    setSupplies(supplies.filter((s) => s !== name))
+  }
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -78,6 +99,7 @@ export default function WriteNotice() {
         attachmentUrl,
         attachmentName,
         requiresConsent,
+        ...(supplies.length > 0 ? { supplies } : {}),
         createdAt: serverTimestamp(),
         readCount: 0
       })
@@ -143,6 +165,56 @@ export default function WriteNotice() {
                 value={body}
                 onChange={(e) => setBody(e.target.value)}
               />
+            </div>
+
+            {/* 준비물 */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">준비물 (선택)</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={supplyInput}
+                  onChange={(e) => setSupplyInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return
+                    if (e.nativeEvent.isComposing) return
+                    e.preventDefault()
+                    addSupply()
+                  }}
+                  placeholder="예: 체육복, 물감 — 입력 후 Enter"
+                  className="flex-1 px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={addSupply}
+                  className="shrink-0 px-4 py-2.5 rounded-lg bg-blue-50 text-sm font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+                >
+                  추가
+                </button>
+              </div>
+              {supplies.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {supplies.map((s) => (
+                    <span
+                      key={s}
+                      className="inline-flex items-center gap-1 rounded-full bg-blue-100 pl-3 pr-1.5 py-1 text-sm font-medium text-blue-800"
+                    >
+                      {s}
+                      <button
+                        type="button"
+                        onClick={() => removeSupply(s)}
+                        aria-label={`${s} 삭제`}
+                        className="flex h-5 w-5 items-center justify-center rounded-full text-blue-500 hover:bg-blue-200 hover:text-blue-800"
+                      >
+                        &times;
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="mt-1.5 text-xs text-gray-500">
+                등록하면 학생 화면의 '내일 가방 싸기' 체크리스트에 자동으로 들어가요.
+              </p>
             </div>
 
             {/* 파일 첨부 */}

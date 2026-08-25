@@ -5,6 +5,8 @@ import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth } from '../../lib/firebase'
 import TodayCard from '../../components/TodayCard'
+import BagChecklist from '../../components/BagChecklist'
+import MealRating from '../../components/MealRating'
 import EnablePush from '../../components/EnablePush'
 import {
   formatNoticeDate,
@@ -316,6 +318,18 @@ export default function StudentToday(): JSX.Element {
               classId={String(userData.classId)}
             />
 
+            {/* 내일 가방 싸기 체크리스트 */}
+            {uid && (
+              <BagChecklist
+                classId={String(userData.classId)}
+                schoolCode={String(userData.schoolCode)}
+                uid={uid}
+              />
+            )}
+
+            {/* 오늘 급식 별점 (한 줄) */}
+            <MealRating schoolCode={String(userData.schoolCode)} compact />
+
             {/* 최신 알림장 */}
             <section className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">
               <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
@@ -389,22 +403,32 @@ export default function StudentToday(): JSX.Element {
 
             <EnablePush />
 
-            {/* 다가오는 학사일정 D-day */}
-            {ddays.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {ddays.map((e) => (
-                  <span
-                    key={`${e.date}_${e.name}`}
-                    className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-gray-700 ring-1 ring-gray-200"
-                  >
-                    <span className="font-bold text-emerald-600">
-                      {e.dday === 0 ? 'D-DAY' : `D-${e.dday}`}
-                    </span>
-                    <span className="max-w-[10rem] truncate">{e.name}</span>
+            {/* 다가오는 학사일정 D-day + 바로가기 */}
+            <div className="flex flex-wrap gap-2">
+              {ddays.map((e) => (
+                <span
+                  key={`${e.date}_${e.name}`}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-gray-700 ring-1 ring-gray-200"
+                >
+                  <span className="font-bold text-emerald-600">
+                    {e.dday === 0 ? 'D-DAY' : `D-${e.dday}`}
                   </span>
-                ))}
-              </div>
-            )}
+                  <span className="max-w-[10rem] truncate">{e.name}</span>
+                </span>
+              ))}
+              <Link
+                href="/meals"
+                className="inline-flex items-center rounded-full bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+              >
+                급식 리그 &rarr;
+              </Link>
+              <Link
+                href="/calendar"
+                className="inline-flex items-center rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-50"
+              >
+                학사일정 &rarr;
+              </Link>
+            </div>
           </>
         )}
       </main>
