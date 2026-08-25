@@ -12,6 +12,8 @@ export interface TodayCardProps {
 interface PeriodItem {
   period: number
   subject: string
+  /** 오늘 시간표 변경(overrides)으로 과목이 바뀐 교시 */
+  changed?: boolean
 }
 
 interface MealInfo {
@@ -169,6 +171,35 @@ export default function TodayCard({
         }
       }
 
+      // --- 오늘 시간표 변경(overrides) 오버레이: 있으면 해당 교시 과목을 덮어씀 ---
+      if (classId) {
+        try {
+          const { db } = await import('../lib/firebase')
+          const ovSnap = await getDoc(doc(db, 'classes', classId, 'overrides', today))
+          if (ovSnap.exists()) {
+            const periodsObj = (ovSnap.data() as { periods?: Record<string, { subject?: unknown }> })
+              .periods
+            if (periodsObj && typeof periodsObj === 'object') {
+              for (const key of Object.keys(periodsObj)) {
+                const p = Number(key)
+                const subject = String(periodsObj[key]?.subject ?? '').trim()
+                if (!p || !subject) continue
+                const existing = list.find((item) => item.period === p)
+                if (existing) {
+                  existing.subject = subject
+                  existing.changed = true
+                } else {
+                  list.push({ period: p, subject, changed: true })
+                }
+              }
+              list.sort((a, b) => a.period - b.period)
+            }
+          }
+        } catch {
+          // 변경 정보 조회 실패 시 원래 시간표 그대로 표시
+        }
+      }
+
       // --- 오늘 급식 ---
       const mealsArr =
         (mealData?.meals as Array<{ date?: string; menu?: unknown; calorie?: string }> | undefined) ?? []
@@ -210,6 +241,8 @@ export default function TodayCard({
     return 0
   }, [nowMin])
 
+  const hasOverride = useMemo<boolean>(() => periods.some((p) => p.changed === true), [periods])
+
   const header = kstNow()
   const dateLabel = `${header.getUTCMonth() + 1}월 ${header.getUTCDate()}일 ${WEEKDAY_LABELS[header.getUTCDay()]}`
 
@@ -223,6 +256,26 @@ export default function TodayCard({
         </div>
         <span className="break-keep text-right text-sm text-gray-500">{schoolName}</span>
       </div>
+
+      {/* 시간표 변경 안내 배너 */}
+      {!loading && hasOverride && (
+        <div className="flex items-center gap-1.5 border-b border-amber-100 bg-amber-50 px-5 py-2 text-xs font-medium text-amber-800">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-3.5 w-3.5 shrink-0"
+            aria-hidden="true"
+          >
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+            <path d="M12 9v4M12 17h.01" />
+          </svg>
+          오늘 시간표가 변경됐어요
+        </div>
+      )}
 
       {/* 다가오는 학사일정 (없으면 숨김) */}
       {!loading && nextEvent && (
@@ -291,11 +344,20 @@ export default function TodayCard({
                     </span>
                     <span
                       className={`min-w-0 flex-1 truncate text-sm ${
-                        isNow ? 'font-semibold text-blue-900' : 'text-gray-700'
+                        isNow
+                          ? 'font-semibold text-blue-900'
+                          : p.changed
+                            ? 'font-semibold text-gray-900'
+                            : 'text-gray-700'
                       }`}
                     >
                       {p.subject}
                     </span>
+                    {p.changed && (
+                      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                        변경
+                      </span>
+                    )}
                     {isNow && (
                       <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">
                         지금

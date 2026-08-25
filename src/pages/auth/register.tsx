@@ -3,12 +3,11 @@ import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
 import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
-
-// 🔒 교사 인증 코드 (나중에 환경변수로 뺄 수 있음)
-const TEACHER_SECRET_CODE = "classmate2026"
+import { useUI } from '../../components/ui/feedback'
 
 export default function RegisterPage() {
   const router = useRouter()
+  const { toast } = useUI()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -33,13 +32,30 @@ export default function RegisterPage() {
       return
     }
 
-    // 2. 인증 코드 검사 (핵심!)
-    if (secretCode !== TEACHER_SECRET_CODE) {
-      setError('교사 인증 코드가 올바르지 않습니다. 관리자에게 문의하세요.')
+    setLoading(true)
+
+    // 2. 인증 코드 검사 (핵심!) — 서버에서 확인합니다. 코드가 클라이언트에 노출되지 않아요.
+    try {
+      const verifyRes = await fetch('/api/auth/verify-teacher-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: secretCode.trim() }),
+      })
+      const verify = await verifyRes.json().catch(() => ({ ok: false }))
+      if (!verifyRes.ok || !verify?.ok) {
+        const msg = '교사 인증 코드가 올바르지 않습니다. 관리자에게 문의하세요.'
+        toast(msg, 'error')
+        setError(msg)
+        setLoading(false)
+        return
+      }
+    } catch (e) {
+      console.error('verify-teacher-code failed', e)
+      toast('인증 코드 확인 중 문제가 발생했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      setLoading(false)
       return
     }
 
-    setLoading(true)
     try {
       // 3. Firebase Auth 가입
       const cred = await createUserWithEmailAndPassword(auth, email, password)

@@ -1,0 +1,199 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────
+// 클래스메이트 Firestore 보안 규칙
+// 원칙: 기본 거부(deny by default). 필요한 경로만 명시적으로 허용합니다.
+// 배포: firebase deploy --only firestore:rules
+// ─────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── 공통 헬퍼 함수 ──────────────────────────────────────
+
+    // 로그인했는지
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // 요청자가 해당 uid 본인인지
+    function me(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // 특정 사용자의 users 문서 데이터 (get 호출 — 문서가 없으면 규칙은 거부됩니다)
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    // 요청자 본인의 users 문서 데이터
+    function myDoc() {
+      return userDoc(request.auth.uid);
+    }
+
+    // 요청자가 교사인지
+    function isTeacher() {
+      return signedIn() && myDoc().role == 'teacher';
+    }
+
+    // 요청자가 해당 학교(schoolCode) 소속인지
+    function sameSchool(schoolCode) {
+      return signedIn() && myDoc().schoolCode == schoolCode;
+    }
+
+    // 학급 문서 데이터
+    function classDoc(classId) {
+      return get(/databases/$(database)/documents/classes/$(classId)).data;
+    }
+
+    // 요청자가 해당 학급의 담임 교사인지
+    function isClassTeacher(classId) {
+      return signedIn() && classDoc(classId).teacherId == request.auth.uid;
+    }
+
+    // ── users/{uid}: 사용자 프로필 ──────────────────────────
+    match /users/{uid} {
+      // 생성: 본인 문서만 만들 수 있고, role은 teacher/student 중 하나여야 합니다.
+      //       학생은 반드시 status='pending'(승인 대기)으로 시작해야 합니다.
+      allow create: if me(uid)
+        && request.resource.data.role in ['teacher', 'student']
+        && (request.resource.data.role != 'student'
+            || request.resource.data.status == 'pending');
+
+      // 읽기: 본인 / 같은 학교의 교사 / 그 학생의 담임 교사
+      allow read: if me(uid)
+        || (isTeacher() && sameSchool(resource.data.schoolCode))
+        || (isTeacher() && resource.data.role == 'student'
+            && classDoc(resource.data.classId).teacherId == request.auth.uid);
+
+      // 수정(본인): role은 절대 변경할 수 없습니다.
+      //            학생은 자신의 status/classId도 스스로 바꿀 수 없습니다.
+      //            (fcmTokens, mySchedule, displayName 등은 자유롭게 수정 가능)
+      allow update: if me(uid)
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(resource.data.role == 'student'
+               ? ['role', 'status', 'classId']
+               : ['role']);
+
+      // 수정(담임 교사): 승인/거절 흐름 — 해당 학생의 학급 담임만
+      //                 status/classId/grade/classNm 필드만 바꿀 수 있습니다.
+      allow update: if isTeacher()
+        && resource.data.role == 'student'
+        && classDoc(resource.data.classId).teacherId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'classId', 'grade', 'classNm']);
+
+      // 삭제: 본인만
+      allow delete: if me(uid);
+
+      // ── users/{uid}/notifications/{nid}: 알림함 ──────────
+      match /notifications/{nid} {
+        // 생성: 알림 주인과 같은 학교의 로그인 사용자 누구나 (교체/SOS/공지 알림 전달용)
+        allow create: if signedIn()
+          && myDoc().schoolCode == userDoc(uid).schoolCode;
+
+        // 읽기/삭제: 알림 주인만
+        allow read, delete: if me(uid);
+
+        // 수정: 알림 주인만, 읽음(read) 플래그만 변경 가능
+        allow update: if me(uid)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['read']);
+      }
+    }
+
+    // ── classes/{classId}: 학급 ─────────────────────────────
+    match /classes/{classId} {
+      // 읽기: 같은 학교의 로그인 사용자 (학생 가입 흐름에서 학급 정보 확인 포함)
+      allow read: if signedIn() && sameSchool(resource.data.schoolCode);
+
+      // 생성: 교사가 자기 자신을 teacherId로 지정할 때만
+      allow create: if isTeacher()
+        && request.resource.data.teacherId == request.auth.uid;
+
+      // 수정: 담임 교사만, teacherId를 다른 사람으로 바꿀 수 없습니다.
+      allow update: if signedIn()
+        && resource.data.teacherId == request.auth.uid
+        && request.resource.data.teacherId == request.auth.uid;
+
+      // 삭제: 담임 교사만
+      allow delete: if signedIn() && resource.data.teacherId == request.auth.uid;
+
+      // ── classes/{classId}/info/{infoId}: 시간표 등 학급 정보 ──
+      match /info/{infoId} {
+        // 읽기: 같은 학교의 로그인 사용자 (학급 구성원 + 학교 교사)
+        allow read: if signedIn() && sameSchool(classDoc(classId).schoolCode);
+        // 쓰기: 담임 교사만
+        allow write: if isClassTeacher(classId);
+      }
+
+      // ── classes/{classId}/announcements/{aid}: 알림장(공지) ──
+      match /announcements/{aid} {
+        // 읽기: 담임 교사 / 같은 학교 교사 / 이 학급에 승인된 학생
+        allow read: if isClassTeacher(classId)
+          || (isTeacher() && sameSchool(classDoc(classId).schoolCode))
+          || (signedIn()
+              && myDoc().role == 'student'
+              && myDoc().status == 'approved'
+              && myDoc().classId == classId);
+
+        // 쓰기: 담임 교사만
+        allow create, update, delete: if isClassTeacher(classId);
+
+        // ── receipts/{studentUid}: 읽음 확인 + 동의 여부 ──
+        match /receipts/{studentUid} {
+          // 생성/수정: 학생 본인만, 허용된 필드만 기록 가능
+          allow create, update: if me(studentUid)
+            && request.resource.data.keys()
+                 .hasOnly(['readAt', 'studentName', 'consent', 'consentAt']);
+
+          // 읽기: 담임 교사와 학생 본인
+          allow read: if isClassTeacher(classId) || me(studentUid);
+        }
+      }
+
+      // ── classes/{classId}/overrides/{ymd}: 시간표 변경(보강/교체) ──
+      match /overrides/{ymd} {
+        // 읽기: 이 학급 구성원(classId 일치) + 같은 학교 교사
+        allow read: if signedIn()
+          && (myDoc().classId == classId
+              || (myDoc().role == 'teacher'
+                  && myDoc().schoolCode == classDoc(classId).schoolCode));
+
+        // 쓰기: 같은 학교 교사 누구나 (교체 수락 시 양쪽 학급에 기록되기 때문)
+        allow write: if isTeacher() && sameSchool(classDoc(classId).schoolCode);
+      }
+
+      // ── classes/{classId}/joinTokens/{token}: 학생 가입 토큰 ──
+      match /joinTokens/{token} {
+        // 읽기: 로그인한 사용자 누구나 (가입 링크의 토큰 유효성 검증용)
+        allow read: if signedIn();
+        // 쓰기: 담임 교사만
+        allow write: if isClassTeacher(classId);
+      }
+    }
+
+    // ── school_swaps/{schoolCode}/**: 수업 교체 요청 ────────
+    // requests / direct_requests 하위 문서 전부: 같은 학교 교사만 읽기/쓰기
+    match /school_swaps/{schoolCode}/{document=**} {
+      allow read, write: if isTeacher() && sameSchool(schoolCode);
+    }
+
+    // ── school_sos/{schoolCode}/**: 긴급 보결(SOS) 요청 ─────
+    match /school_sos/{schoolCode}/{document=**} {
+      allow read, write: if isTeacher() && sameSchool(schoolCode);
+    }
+
+    // ── meal_ratings/{docId}: 급식 별점 (다음 단계 기능 대비) ──
+    // 익명 로그인 포함, 로그인만 하면 읽기/집계 카운터 갱신 가능
+    match /meal_ratings/{docId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn();
+    }
+
+    // ── 그 외 모든 경로: 기본 거부 ──────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
+import Link from 'next/link'
 import { auth, storage } from '../../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore'
@@ -16,6 +17,7 @@ export default function WriteNotice() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [requiresConsent, setRequiresConsent] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -75,6 +77,7 @@ export default function WriteNotice() {
         authorName: userData.displayName || '선생님',
         attachmentUrl,
         attachmentName,
+        requiresConsent,
         createdAt: serverTimestamp(),
         readCount: 0
       })
@@ -96,7 +99,12 @@ export default function WriteNotice() {
     <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-2xl mx-auto">
         <div className="mb-6 flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-gray-900">공지사항 쓰기</h1>
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">공지사항 쓰기</h1>
+            <Link href="/teacher/notices" className="inline-block mt-1 text-sm font-medium text-blue-600 hover:text-blue-700">
+              알림장 목록 보기 &rarr;
+            </Link>
+          </div>
           <button onClick={() => router.back()} className="text-gray-500 hover:text-gray-700">취소</button>
         </div>
 
@@ -151,6 +159,22 @@ export default function WriteNotice() {
                   hover:file:bg-blue-100"
               />
             </div>
+
+            {/* 학부모 동의 받기 */}
+            <label className="flex items-start gap-3 p-4 bg-blue-50 rounded-xl cursor-pointer">
+              <input
+                type="checkbox"
+                checked={requiresConsent}
+                onChange={(e) => setRequiresConsent(e.target.checked)}
+                className="mt-0.5 h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-gray-900">학부모 동의 받기</span>
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  체크하면 학생 화면에 동의/거절 버튼이 표시되고, 목록에서 동의 현황을 볼 수 있어요.
+                </span>
+              </span>
+            </label>
 
             {/* 버튼 */}
             <div className="pt-4">

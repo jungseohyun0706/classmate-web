@@ -24,28 +24,35 @@ export default function LoginPage() {
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password)
       const user = cred.user
+
+      // 역할 확인 — 학생/교사에 따라 이동할 페이지가 달라요.
+      let role: string | null = null
+      try {
+        const { db } = await import('../../lib/firebase')
+        const udoc = await getDoc(doc(db, 'users', user.uid))
+        if (udoc.exists()) {
+          role = ((udoc.data() as any)?.role as string) ?? null
+        } else {
+          console.warn('users doc missing for', user.uid)
+        }
+      } catch (e) {
+        console.warn('users doc check failed', e)
+      }
+
+      // 학생: 이메일 인증 없이 바로 오늘 페이지로 이동해요.
+      // (승인 대기 중이어도 /student/today 에서 대기 상태를 안내합니다)
+      if (role === 'student') {
+        router.replace('/student/today')
+        return
+      }
+
+      // 교사: 이메일 인증을 마쳐야 대시보드에 들어갈 수 있어요.
       if (!user.emailVerified) {
         setInfo('이메일 인증이 필요합니다. 인증 메일을 다시 보낼 수 있어요.')
         setLoading(false)
         return
       }
-      try {
-        const { db } = await import('../../lib/firebase')
-        const udoc = await getDoc(doc(db, 'users', user.uid))
-        if (!udoc.exists()) {
-          console.warn('users doc missing for', user.uid)
-        } else {
-          const data = udoc.data() as any
-          if (data.role !== 'teacher') {
-            setError('이 계정은 교사용 계정이 아닙니다. 관리자에게 문의하세요.')
-            await auth.signOut()
-            setLoading(false)
-            return
-          }
-        }
-      } catch (e) {
-        console.warn('users doc check failed', e)
-      }
+
       router.replace('/dashboard')
     } catch (e: any) {
       console.error(e)
@@ -83,7 +90,7 @@ export default function LoginPage() {
           Classmate
         </h2>
         <p className="mt-3 text-center text-base text-gray-600">
-          교사용 관리자 로그인
+          클래스메이트 로그인
         </p>
       </div>
 
