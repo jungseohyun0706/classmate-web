@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import { auth } from '../../lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, collection, query, where, getDocs, orderBy } from 'firebase/firestore'
-
-initFirebase()
+import { useUI } from '../../components/ui/feedback'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri']
@@ -12,7 +11,7 @@ const DAY_LABELS = ['월', '화', '수', '목', '금']
 
 export default function ViewTimetables() {
   const router = useRouter()
-  const auth = getAuth()
+  const { toast } = useUI()
   const [loading, setLoading] = useState(true)
   const [classes, setClasses] = useState<any[]>([])
   const [selectedClass, setSelectedClass] = useState<any>(null)
@@ -32,7 +31,7 @@ export default function ViewTimetables() {
         const userData = userSnap.data()
 
         if (!userData.schoolCode) {
-          alert('학교 정보가 없습니다.')
+          toast('학교 정보가 없어요.', 'error')
           router.replace('/dashboard')
           return
         }
@@ -57,7 +56,7 @@ export default function ViewTimetables() {
       }
     })
     return () => unsub()
-  }, [router, auth])
+  }, [router, toast])
 
   const loadTimetable = async (classId: string) => {
     try {

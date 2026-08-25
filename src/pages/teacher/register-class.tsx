@@ -1,10 +1,8 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth } from 'firebase/auth'
-import { doc, setDoc, collection, serverTimestamp } from 'firebase/firestore'
-
-initFirebase()
+import { auth, db } from '../../lib/firebase'
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { useUI } from '../../components/ui/feedback'
 
 type School = {
   code: string
@@ -16,8 +14,8 @@ type School = {
 
 export default function RegisterClass() {
   const router = useRouter()
-  const auth = getAuth()
-  
+  const { toast } = useUI()
+
   // Steps: 0 = Search School, 1 = Input Class Info
   const [step, setStep] = useState(0)
   
@@ -49,7 +47,7 @@ export default function RegisterClass() {
         setResults(data.schools)
       }
     } catch (err) {
-      alert('학교 검색 중 오류가 발생했습니다.')
+      toast('학교 검색 중 오류가 발생했어요', 'error')
     } finally {
       setSearching(false)
     }
@@ -59,14 +57,13 @@ export default function RegisterClass() {
   const handleCreate = async () => {
     if (!selectedSchool || !grade || !classNm) return
     if (!auth.currentUser) {
-      alert('로그인이 필요합니다.')
+      toast('로그인이 필요해요', 'error')
       router.replace('/auth/login')
       return
     }
 
     setSubmitting(true)
     try {
-      const { db } = await import('../../lib/firebase')
       const user = auth.currentUser
       
       // 고유 반 ID 생성 (학교코드_학년_반)
@@ -78,6 +75,7 @@ export default function RegisterClass() {
       await setDoc(doc(db, 'classes', classId), {
         classId: classId,
         schoolCode: selectedSchool.code,
+        officeCode: selectedSchool.officeCode,
         schoolName: selectedSchool.name,
         grade: parseInt(grade),
         classNm: parseInt(classNm),
@@ -90,18 +88,19 @@ export default function RegisterClass() {
       await setDoc(doc(db, 'users', user.uid), {
         classId: classId,
         schoolCode: selectedSchool.code,
+        officeCode: selectedSchool.officeCode,
         schoolName: selectedSchool.name,
         grade: parseInt(grade),
         classNm: parseInt(classNm),
         role: 'teacher'
       }, { merge: true })
 
-      alert('반 등록이 완료되었습니다!')
+      toast('반 등록이 완료됐어요', 'success')
       router.replace('/dashboard')
 
     } catch (e: any) {
       console.error(e)
-      alert('등록 실패: ' + (e.message || e.code || '알 수 없는 오류'))
+      toast('등록에 실패했어요: ' + (e.message || e.code || '알 수 없는 오류'), 'error')
     } finally {
       setSubmitting(false)
     }

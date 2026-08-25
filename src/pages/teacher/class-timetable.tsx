@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import { auth } from '../../lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore'
-
-initFirebase()
+import { useUI } from '../../components/ui/feedback'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri']
@@ -12,8 +11,8 @@ const DAY_LABELS = ['월', '화', '수', '목', '금']
 
 export default function TimetablePage() {
   const router = useRouter()
-  const auth = getAuth()
-  
+  const { toast } = useUI()
+
   const [loading, setLoading] = useState(true)
   const [userData, setUserData] = useState<any>(null)
   
@@ -38,7 +37,7 @@ export default function TimetablePage() {
         if (snap.exists()) {
           const data = snap.data()
           if (!data.classId) {
-            alert('담당 학급이 없습니다.')
+            toast('담당 학급이 없어요.', 'error')
             router.replace('/dashboard')
             return
           }
@@ -56,7 +55,7 @@ export default function TimetablePage() {
       }
     })
     return () => unsub()
-  }, [router, auth])
+  }, [router, toast])
 
   const handleChange = (day: string, periodIndex: number, value: string) => {
     setTimetable((prev: any) => ({
@@ -70,10 +69,10 @@ export default function TimetablePage() {
     try {
       const { db } = await import('../../lib/firebase')
       await setDoc(doc(db, 'classes', userData.classId, 'info', 'timetable'), timetable, { merge: true })
-      alert('시간표가 저장되었습니다.')
+      toast('시간표가 저장되었어요.', 'success')
     } catch (e) {
       console.error(e)
-      alert('저장 실패')
+      toast('저장에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSaving(false)
     }

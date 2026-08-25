@@ -1,15 +1,12 @@
 import React, { useState } from 'react'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, sendPasswordResetEmail } from 'firebase/auth'
-
-initFirebase()
+import { auth } from '../../lib/firebase'
+import { sendPasswordResetEmail } from 'firebase/auth'
 
 export default function ForgotPage(){
   const [email,setEmail]=useState('')
   const [info,setInfo]=useState<string|null>(null)
   const [error,setError]=useState<string|null>(null)
   const [loading,setLoading]=useState(false)
-  const auth = getAuth()
 
   const onSubmit = async (e:React.FormEvent)=>{
     e.preventDefault()

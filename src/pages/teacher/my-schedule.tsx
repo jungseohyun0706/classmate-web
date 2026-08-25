@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import { auth } from '../../lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore'
-
-initFirebase()
+import { useUI } from '../../components/ui/feedback'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri']
@@ -12,8 +11,8 @@ const DAY_LABELS = ['월', '화', '수', '목', '금']
 
 export default function MySchedulePage() {
   const router = useRouter()
-  const auth = getAuth()
-  
+  const { toast, confirm } = useUI()
+
   const [loading, setLoading] = useState(true)
   const [userData, setUserData] = useState<any>(null)
   
@@ -58,7 +57,7 @@ export default function MySchedulePage() {
       }
     })
     return () => unsub()
-  }, [router, auth])
+  }, [router])
 
   const handleChange = (day: string, periodIndex: number, value: string) => {
     setSchedule((prev: any) => ({
@@ -73,10 +72,10 @@ export default function MySchedulePage() {
       const { db } = await import('../../lib/firebase')
       // users/{uid} 문서에 mySchedule 필드로 저장
       await setDoc(doc(db, 'users', auth.currentUser!.uid), { mySchedule: schedule }, { merge: true })
-      alert('내 시간표가 저장되었습니다.')
+      toast('내 시간표가 저장되었어요.', 'success')
     } catch (e) {
       console.error(e)
-      alert('저장 실패')
+      toast('저장에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSaving(false)
     }
@@ -84,7 +83,10 @@ export default function MySchedulePage() {
 
   // 빈 선생님 찾기
   const findAvailableTeachers = async (day: string, periodIdx: number) => {
-    if (!userData.schoolCode) return alert('학교 정보가 없습니다.')
+    if (!userData.schoolCode) {
+      toast('학교 정보가 없어요.', 'error')
+      return
+    }
     setSearching(true)
     setAvailableTeachers([])
     
@@ -125,7 +127,7 @@ export default function MySchedulePage() {
 
     } catch (e) {
       console.error(e)
-      alert('검색 실패')
+      toast('검색에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSearching(false)
     }
@@ -135,25 +137,29 @@ export default function MySchedulePage() {
   const requestSwap = async (teacher: any) => {
     // 실제로는 여기서 'requests' 컬렉션에 문서를 만들고 상대방에게 알림을 쏴야 함.
     // 지금은 UI 흐름만 구현.
-    if(confirm(`${teacher.name} 선생님께 교환 요청을 보내시겠습니까?`)) {
-        try {
-            const { db } = await import('../../lib/firebase')
-            await addDoc(collection(db, 'school_swaps', userData.schoolCode, 'direct_requests'), {
-                fromId: auth.currentUser?.uid,
-                fromName: userData.displayName,
-                toId: teacher.id,
-                toName: teacher.name,
-                day: selectedCell.day,
-                period: selectedCell.period,
-                subject: selectedCell.subject,
-                status: 'pending',
-                createdAt: serverTimestamp()
-            })
-            alert(`요청이 전송되었습니다! ${teacher.name} 선생님이 수락하면 알려드릴게요.`)
-            setSelectedCell(null)
-        } catch(e) {
-            alert('전송 실패')
-        }
+    const ok = await confirm({
+      title: '교환 요청 보내기',
+      description: `${teacher.name} 선생님께 교환 요청을 보낼까요?`,
+      confirmText: '보내기',
+    })
+    if (!ok) return
+    try {
+        const { db } = await import('../../lib/firebase')
+        await addDoc(collection(db, 'school_swaps', userData.schoolCode, 'direct_requests'), {
+            fromId: auth.currentUser?.uid,
+            fromName: userData.displayName,
+            toId: teacher.id,
+            toName: teacher.name,
+            day: selectedCell.day,
+            period: selectedCell.period,
+            subject: selectedCell.subject,
+            status: 'pending',
+            createdAt: serverTimestamp()
+        })
+        toast(`요청을 보냈어요! ${teacher.name} 선생님이 수락하면 알려드릴게요.`, 'success')
+        setSelectedCell(null)
+    } catch(e) {
+        toast('전송에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     }
   }
 
@@ -180,12 +186,12 @@ export default function MySchedulePage() {
         createdAt: serverTimestamp()
       })
 
-      alert('교환 요청이 장터에 등록되었습니다!')
+      toast('교환 요청이 장터에 등록되었어요!', 'success')
       setSelectedCell(null)
       setSwapNote('')
     } catch (e) {
       console.error(e)
-      alert('요청 등록 실패')
+      toast('요청 등록에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSubmittingSwap(false)
     }

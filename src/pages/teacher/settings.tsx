@@ -1,15 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, onAuthStateChanged, sendPasswordResetEmail, updateProfile } from 'firebase/auth'
+import { auth } from '../../lib/firebase'
+import { onAuthStateChanged, sendPasswordResetEmail, updateProfile } from 'firebase/auth'
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
-
-initFirebase()
+import { useUI } from '../../components/ui/feedback'
 
 export default function SettingsPage() {
   const router = useRouter()
-  const auth = getAuth()
-  
+  const { toast, confirm } = useUI()
+
   const [user, setUser] = useState<any>(null)
   const [userData, setUserData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -39,11 +38,14 @@ export default function SettingsPage() {
       }
     })
     return () => unsub()
-  }, [router, auth])
+  }, [router])
 
   // 이름 변경 저장
   const handleSaveProfile = async () => {
-    if (!displayName.trim()) return alert('이름을 입력해주세요.')
+    if (!displayName.trim()) {
+      toast('이름을 입력해 주세요.', 'error')
+      return
+    }
     setSaving(true)
     try {
       const { db } = await import('../../lib/firebase')
@@ -65,10 +67,10 @@ export default function SettingsPage() {
         })
       }
 
-      alert('저장되었습니다.')
+      toast('저장되었어요.', 'success')
     } catch (e) {
       console.error(e)
-      alert('저장 중 오류가 발생했습니다.')
+      toast('저장 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSaving(false)
     }
@@ -76,12 +78,17 @@ export default function SettingsPage() {
 
   // 비밀번호 재설정 메일 발송
   const handleResetPassword = async () => {
-    if (!confirm(`${user.email}로 비밀번호 재설정 메일을 보내시겠습니까?`)) return
+    const ok = await confirm({
+      title: '비밀번호 재설정',
+      description: `${user.email}로 비밀번호 재설정 메일을 보낼까요?`,
+      confirmText: '메일 보내기',
+    })
+    if (!ok) return
     try {
       await sendPasswordResetEmail(auth, user.email)
-      alert('메일을 보냈습니다. 메일함을 확인해주세요.')
+      toast('메일을 보냈어요. 메일함을 확인해 주세요.', 'success')
     } catch (e) {
-      alert('메일 발송 실패.')
+      toast('메일 발송에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     }
   }
 

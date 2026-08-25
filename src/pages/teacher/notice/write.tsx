@@ -1,16 +1,14 @@
 import React, { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../../lib/firebase'
-import { getAuth, onAuthStateChanged } from 'firebase/auth'
+import { auth, storage } from '../../../lib/firebase'
+import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore'
-import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage'
-
-initFirebase()
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage'
+import { useUI } from '../../../components/ui/feedback'
 
 export default function WriteNotice() {
   const router = useRouter()
-  const auth = getAuth()
-  const storage = getStorage()
+  const { toast } = useUI()
 
   const [loading, setLoading] = useState(true)
   const [userData, setUserData] = useState<any>(null)
@@ -32,7 +30,7 @@ export default function WriteNotice() {
         if (snap.exists()) {
           const data = snap.data()
           if (!data.classId) {
-            alert('담당 학급이 없습니다. 먼저 반을 등록해주세요.')
+            toast('담당 학급이 없어요. 먼저 반을 등록해 주세요.', 'error')
             router.replace('/dashboard')
             return
           }
@@ -45,12 +43,15 @@ export default function WriteNotice() {
       }
     })
     return () => unsub()
-  }, [router, auth])
+  }, [router, toast])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!title.trim() || !body.trim()) return alert('제목과 내용을 입력해주세요.')
-    
+    if (!title.trim() || !body.trim()) {
+      toast('제목과 내용을 입력해 주세요.', 'error')
+      return
+    }
+
     setSubmitting(true)
     try {
       const { db } = await import('../../../lib/firebase')
@@ -78,12 +79,12 @@ export default function WriteNotice() {
         readCount: 0
       })
 
-      alert('공지사항이 등록되었습니다!')
+      toast('공지사항이 등록되었어요!', 'success')
       router.replace('/dashboard')
 
     } catch (e) {
       console.error(e)
-      alert('등록 실패: 오류가 발생했습니다.')
+      toast('등록에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSubmitting(false)
     }

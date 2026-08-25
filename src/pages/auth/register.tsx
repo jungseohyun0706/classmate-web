@@ -1,11 +1,8 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
+import { auth } from '../../lib/firebase'
+import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
-
-// Ensure firebase is initialized
-initFirebase()
 
 // 🔒 교사 인증 코드 (나중에 환경변수로 뺄 수 있음)
 const TEACHER_SECRET_CODE = "classmate2026"
@@ -20,8 +17,6 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
-
-  const auth = getAuth()
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

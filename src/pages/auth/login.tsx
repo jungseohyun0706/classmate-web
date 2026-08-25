@@ -1,11 +1,8 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
-import { initFirebase } from '../../lib/firebase'
-import { getAuth, signInWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
+import { auth } from '../../lib/firebase'
+import { signInWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
-
-// Ensure firebase is initialized (idempotent)
-initFirebase()
 
 export default function LoginPage() {
   const router = useRouter()
@@ -14,8 +11,6 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
-
-  const auth = getAuth()
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
