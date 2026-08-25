@@ -46,9 +46,21 @@ const initFirestoreDb = (app: FirebaseApp): Firestore => {
 // 서버(빌드 시 페이지 데이터 수집 포함)에서는 env가 없으면 getAuth가 throw하므로
 // 초기화를 건너뛴다 — 모든 사용처는 클라이언트 전용(useEffect/핸들러)이다.
 const isBrowser = typeof window !== 'undefined';
-const app: FirebaseApp | null = isBrowser ? initFirebase() : null;
 
-export const auth: Auth = (app ? getAuth(app) : undefined) as unknown as Auth;
-export const db: Firestore = (app ? initFirestoreDb(app) : undefined) as unknown as Firestore;
-export const storage: FirebaseStorage = (app ? getStorage(app) : undefined) as unknown as FirebaseStorage;
-export const functions: Functions = (app ? getFunctions(app) : undefined) as unknown as Functions;
+// env 미설정(로컬 등)이어도 앱 셸은 렌더되도록 초기화 실패를 삼킨다 —
+// 이 경우 Firebase 기능만 동작하지 않고 콘솔 경고가 남는다.
+const safeInit = <T>(label: string, fn: () => T): T => {
+  try {
+    return fn();
+  } catch (e) {
+    console.warn(`[firebase] ${label} 초기화 실패 — NEXT_PUBLIC_FIREBASE_* env를 확인하세요.`, e);
+    return undefined as unknown as T;
+  }
+};
+
+const app: FirebaseApp | null = isBrowser ? safeInit('app', initFirebase) : null;
+
+export const auth: Auth = (app ? safeInit('auth', () => getAuth(app)) : undefined) as unknown as Auth;
+export const db: Firestore = (app ? safeInit('firestore', () => initFirestoreDb(app)) : undefined) as unknown as Firestore;
+export const storage: FirebaseStorage = (app ? safeInit('storage', () => getStorage(app)) : undefined) as unknown as FirebaseStorage;
+export const functions: Functions = (app ? safeInit('functions', () => getFunctions(app)) : undefined) as unknown as Functions;
