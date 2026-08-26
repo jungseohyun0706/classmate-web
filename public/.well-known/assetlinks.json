@@ -3,8 +3,9 @@
     "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
-      "package_name": "kr.classmate.app",
+      "package_name": "com.jungseohyun7.classmate",
       "sha256_cert_fingerprints": [
+        "8A:2A:13:3B:97:94:50:6B:E1:12:35:38:7E:FB:D9:73:F8:2E:82:AE:6F:66:85:6B:34:AB:9D:2C:02:37:4F:5B",
         "EA:E3:65:2B:C6:4B:5C:72:53:B1:33:6A:9E:99:BD:F1:EF:AA:AD:2F:A1:18:35:E7:87:8E:90:9E:D5:34:CA:7E"
       ]
     }
