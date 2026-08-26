@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "kr.classmate.app",
+      "sha256_cert_fingerprints": [
+        "EA:E3:65:2B:C6:4B:5C:72:53:B1:33:6A:9E:99:BD:F1:EF:AA:AD:2F:A1:18:35:E7:87:8E:90:9E:D5:34:CA:7E"
+      ]
+    }
+  }
+]
