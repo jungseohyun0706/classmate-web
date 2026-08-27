@@ -85,7 +85,7 @@ export default function TimetablePage() {
   if (loading) return <div className="p-10 text-center text-black">로딩 중...</div>
 
   return (
-    <div className="min-h-screen bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 py-5 sm:py-10 px-4 sm:px-6 lg:px-8 pb-28 sm:pb-10">
       <div className="max-w-5xl mx-auto">
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-6 text-black">
           <div>
@@ -93,32 +93,43 @@ export default function TimetablePage() {
             <p className="text-sm text-gray-600">{userData?.schoolName} {userData?.grade}학년 {userData?.classNm}반</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap text-gray-500 hover:text-gray-700 font-medium px-3">나가기</button>
+            <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap min-h-[44px] text-gray-500 hover:text-gray-700 font-medium px-3">나가기</button>
             <button
               onClick={handleSave}
               disabled={saving}
-              className="whitespace-nowrap inline-flex justify-center py-2 px-5 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50"
+              className="hidden sm:inline-flex whitespace-nowrap justify-center py-2 px-5 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50"
             >
               {saving ? '저장 중...' : '시간표 저장하기'}
             </button>
           </div>
         </div>
 
+        {/* 모바일: 하단 고정 저장 바 */}
+        <div className="fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:hidden">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold disabled:opacity-50"
+          >
+            {saving ? '저장 중...' : '시간표 저장하기'}
+          </button>
+        </div>
+
         <div className="bg-white shadow rounded-xl overflow-hidden border border-gray-200">
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
+            <table className="min-w-[560px] w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-16">교시</th>
+                  <th className="sticky left-0 z-10 bg-gray-50 px-2 sm:px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-12 sm:w-16">교시</th>
                   {DAY_LABELS.map((day) => (
-                    <th key={day} className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">{day}</th>
+                    <th key={day} className="px-2 sm:px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">{day}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {PERIODS.map((period, pIdx) => (
                   <tr key={period}>
-                    <td className="px-4 py-3 whitespace-nowrap text-center text-sm font-bold text-gray-700 bg-gray-50">{period}교시</td>
+                    <td className="sticky left-0 z-10 px-2 sm:px-4 py-3 whitespace-nowrap text-center text-xs sm:text-sm font-bold text-gray-700 bg-gray-50">{period}</td>
                     {DAYS.map((day) => (
                       <td key={`${day}-${period}`} className="p-1 relative">
                         <input

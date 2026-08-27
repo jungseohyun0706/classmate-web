@@ -311,7 +311,7 @@ export default function MealsPage(): JSX.Element {
             <button
               type="button"
               onClick={() => setSearchOpen(true)}
-              className="max-w-[10rem] truncate rounded-full bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-200"
+              className="max-w-[10rem] truncate rounded-full bg-gray-100 px-3.5 py-2.5 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-200"
             >
               {school.name || '학교 변경'} ▾
             </button>

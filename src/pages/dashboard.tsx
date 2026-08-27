@@ -218,7 +218,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:gap-6 lg:grid-cols-3">
           {cards.map((card) => (
             <div
               key={card.id}
@@ -229,15 +229,15 @@ export default function Dashboard() {
                 }
                 router.push(card.path)
               }}
-              className="group cursor-pointer bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:border-blue-300 hover:shadow-2xl transition-all duration-200"
+              className="group cursor-pointer bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 hover:border-blue-300 hover:shadow-2xl active:scale-[0.98] transition-all duration-200"
             >
-              <div className="p-6">
-                <div className="flex items-center">
-                  <div className={`flex-shrink-0 rounded-md p-3 ${card.bgColor} group-hover:scale-110 transition-transform duration-200`}>
+              <div className="p-4 sm:p-6">
+                <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-0">
+                  <div className={`flex-shrink-0 rounded-md p-2.5 sm:p-3 ${card.bgColor} group-hover:scale-110 transition-transform duration-200`}>
                     {card.icon}
                   </div>
-                  <div className="ml-4">
-                    <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                  <div className="sm:ml-4 min-w-0">
+                    <h3 className="text-base sm:text-lg font-bold text-gray-900 group-hover:text-blue-600 transition-colors break-keep">
                       {card.title}
                       {card.badge ? (
                         <span className="ml-2 inline-flex items-center justify-center min-w-[1.5rem] h-6 px-1.5 rounded-full bg-red-500 text-white text-xs font-bold align-middle">
@@ -245,11 +245,11 @@ export default function Dashboard() {
                         </span>
                       ) : null}
                     </h3>
-                    <p className="mt-1 text-sm text-gray-500">{card.desc}</p>
+                    <p className="mt-1 text-xs sm:text-sm text-gray-500 break-keep">{card.desc}</p>
                   </div>
                 </div>
               </div>
-              <div className="bg-gray-50 px-6 py-3 flex justify-end items-center group-hover:bg-blue-50 transition-colors">
+              <div className="hidden sm:flex bg-gray-50 px-6 py-3 justify-end items-center group-hover:bg-blue-50 transition-colors">
                 <span className="text-sm font-bold text-gray-400 group-hover:text-blue-600 transition-colors">들어가기 &rarr;</span>
               </div>
             </div>
@@ -269,10 +269,10 @@ export default function Dashboard() {
               installInteractive ? 'cursor-pointer hover:border-blue-300 hover:shadow-2xl' : ''
             }`}
           >
-            <div className="p-6">
-              <div className="flex items-center">
+            <div className="p-4 sm:p-6">
+              <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-0">
                 <div
-                  className={`flex-shrink-0 rounded-md p-3 ${installMode === 'installed' ? 'bg-green-100' : 'bg-blue-100'} ${
+                  className={`flex-shrink-0 rounded-md p-2.5 sm:p-3 ${installMode === 'installed' ? 'bg-green-100' : 'bg-blue-100'} ${
                     installInteractive ? 'group-hover:scale-110 transition-transform duration-200' : ''
                   }`}
                 >
@@ -285,20 +285,20 @@ export default function Dashboard() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                   </svg>
                 </div>
-                <div className="ml-4">
+                <div className="sm:ml-4 min-w-0">
                   <h3
-                    className={`text-lg font-bold text-gray-900 transition-colors ${
+                    className={`text-base sm:text-lg font-bold text-gray-900 transition-colors break-keep ${
                       installInteractive ? 'group-hover:text-blue-600' : ''
                     }`}
                   >
                     홈 화면에 설치 📱
                   </h3>
-                  <p className="mt-1 text-sm text-gray-500 break-keep">{installDesc}</p>
+                  <p className="mt-1 text-xs sm:text-sm text-gray-500 break-keep">{installDesc}</p>
                 </div>
               </div>
             </div>
             <div
-              className={`bg-gray-50 px-6 py-3 flex justify-end items-center transition-colors ${
+              className={`hidden sm:flex bg-gray-50 px-6 py-3 justify-end items-center transition-colors ${
                 installInteractive ? 'group-hover:bg-blue-50' : ''
               }`}
             >

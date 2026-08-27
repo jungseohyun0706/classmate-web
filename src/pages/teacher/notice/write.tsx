@@ -122,19 +122,19 @@ export default function WriteNotice() {
   if (loading) return <div className="p-10 text-center">로딩 중...</div>
 
   return (
-    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 py-6 sm:py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-2xl mx-auto">
         <div className="mb-6 flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">공지사항 쓰기</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">공지사항 쓰기</h1>
             <Link href="/teacher/notices" className="inline-block mt-1 text-sm font-medium text-blue-600 hover:text-blue-700">
               알림장 목록 보기 &rarr;
             </Link>
           </div>
-          <button onClick={() => router.back()} className="text-gray-500 hover:text-gray-700">취소</button>
+          <button onClick={() => router.back()} className="min-h-[44px] px-3 text-gray-500 hover:text-gray-700">취소</button>
         </div>
 
-        <div className="bg-white shadow-xl rounded-2xl p-8 border border-gray-100">
+        <div className="bg-white shadow-xl rounded-2xl p-5 sm:p-8 border border-gray-100">
           <form onSubmit={handleSubmit} className="space-y-6">
             
             {/* 받는 사람 (자동 표시) */}

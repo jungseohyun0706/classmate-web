@@ -265,7 +265,7 @@ export default function MySchedulePage() {
   if (loading) return <div className="p-10 text-center text-black">로딩 중...</div>
 
   return (
-    <div className="min-h-screen bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 py-5 sm:py-10 px-4 sm:px-6 lg:px-8 pb-28 sm:pb-10">
       <div className="max-w-6xl mx-auto">
         <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-6">
           <div>
@@ -292,11 +292,22 @@ export default function MySchedulePage() {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="whitespace-nowrap bg-blue-600 text-white font-bold py-2 px-5 rounded hover:bg-blue-700 transition disabled:opacity-50"
+              className="hidden sm:block whitespace-nowrap bg-blue-600 text-white font-bold py-2 px-5 rounded hover:bg-blue-700 transition disabled:opacity-50"
             >
               {saving ? '저장 중...' : '저장하기'}
             </button>
           </div>
+        </div>
+
+        {/* 모바일: 하단 고정 저장 바 (스크롤 없이 항상 저장 가능) */}
+        <div className="fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:hidden">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold disabled:opacity-50"
+          >
+            {saving ? '저장 중...' : '저장하기'}
+          </button>
         </div>
 
         {/* 학교 엑셀 시간표에서 불러오기 패널 */}
@@ -307,7 +318,7 @@ export default function MySchedulePage() {
                 <h3 className="font-bold text-gray-900">학교 시간표에서 내 이름 선택</h3>
                 <p className="text-xs text-gray-500">선택하면 아래 표에 채워지고, [저장하기]를 눌러야 확정돼요.</p>
               </div>
-              <button onClick={() => setImportOpen(false)} className="text-gray-400 hover:text-gray-600">✕</button>
+              <button onClick={() => setImportOpen(false)} className="p-2 -m-2 text-lg text-gray-400 hover:text-gray-600">✕</button>
             </div>
             <input
               type="text"
@@ -342,29 +353,31 @@ export default function MySchedulePage() {
           </div>
         )}
 
-        <div className="flex gap-6">
-            {/* 왼쪽: 시간표 */}
+        <div className="flex flex-col lg:flex-row gap-6">
+            {/* 시간표 */}
             <div className="flex-1 bg-white shadow rounded-xl overflow-hidden border border-gray-200">
             <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
+                <table className="min-w-[560px] w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                     <tr>
-                    <th className="px-4 py-3 w-16 text-center text-xs font-medium text-gray-500 uppercase">교시</th>
+                    <th className="sticky left-0 z-10 bg-gray-50 px-2 sm:px-4 py-3 w-12 sm:w-16 text-center text-xs font-medium text-gray-500 uppercase">교시</th>
                     {DAY_LABELS.map((day) => (
-                        <th key={day} className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">{day}</th>
+                        <th key={day} className="px-2 sm:px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">{day}</th>
                     ))}
                     </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                     {PERIODS.map((period, pIdx) => (
                     <tr key={period}>
-                        <td className="px-4 py-3 text-center text-sm font-bold text-gray-700 bg-gray-50">{period}교시</td>
+                        <td className="sticky left-0 z-10 px-2 sm:px-4 py-3 text-center text-xs sm:text-sm font-bold text-gray-700 bg-gray-50 whitespace-nowrap">{period}</td>
                         {DAYS.map((day) => (
-                        <td 
-                            key={`${day}-${period}`} 
+                        <td
+                            key={`${day}-${period}`}
                             className={`p-1 relative ${schedule[day][pIdx] ? 'bg-blue-50' : ''}`}
                             onClick={() => {
                                 if(schedule[day][pIdx]) {
+                                    // 모바일: 셀 탭으로 패널이 열릴 때 키보드가 겹치지 않게 포커스 해제
+                                    ;(document.activeElement as HTMLElement | null)?.blur()
                                     setSelectedCell({ day, dayLabel: DAY_LABELS[DAYS.indexOf(day)], period: period, periodIdx: pIdx, subject: schedule[day][pIdx] })
                                     setAvailableTeachers([]) // 초기화
                                 }
@@ -372,7 +385,7 @@ export default function MySchedulePage() {
                         >
                             <input
                             type="text"
-                            className="w-full text-center border-none bg-transparent focus:ring-2 focus:ring-blue-500 rounded p-3 text-sm text-gray-900 placeholder-gray-300 cursor-pointer"
+                            className="w-full text-center border-none bg-transparent focus:ring-2 focus:ring-blue-500 rounded p-2 sm:p-3 text-sm text-gray-900 placeholder-gray-300 cursor-pointer"
                             placeholder=""
                             value={schedule[day][pIdx]}
                             onChange={(e) => handleChange(day, pIdx, e.target.value)}
@@ -386,15 +399,16 @@ export default function MySchedulePage() {
             </div>
             </div>
 
-            {/* 오른쪽: 교환 패널 (선택 시 등장) */}
+            {/* 교환 패널 — 모바일: 바텀시트 / 데스크톱: 오른쪽 사이드 패널 */}
             {selectedCell && (
-                <div className="w-80 bg-white shadow-xl rounded-xl border border-blue-100 p-6 flex flex-col h-fit animate-fade-in-right">
+                <div className="fixed inset-x-0 bottom-0 z-40 max-h-[75vh] overflow-y-auto rounded-t-2xl border border-blue-100 bg-white p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl lg:static lg:z-auto lg:w-80 lg:max-h-none lg:overflow-visible lg:rounded-xl lg:p-6 lg:pb-6 lg:shadow-xl lg:h-fit flex flex-col animate-fade-in-right">
+                    <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-gray-200 lg:hidden" aria-hidden="true"></div>
                     <div className="flex justify-between items-start mb-4">
                         <div>
                             <h3 className="text-lg font-bold text-gray-900">{selectedCell.dayLabel}요일 {selectedCell.period}교시</h3>
                             <p className="text-blue-600 font-bold text-xl">{selectedCell.subject}</p>
                         </div>
-                        <button onClick={() => setSelectedCell(null)} className="text-gray-400 hover:text-gray-600">✕</button>
+                        <button onClick={() => setSelectedCell(null)} className="p-2 -m-2 text-lg text-gray-400 hover:text-gray-600">✕</button>
                     </div>
 
                     <div className="mb-4">
@@ -429,9 +443,9 @@ export default function MySchedulePage() {
                                             <div className="font-bold text-gray-800">{t.name}</div>
                                             <div className="text-xs text-gray-500">{t.grade ? `${t.grade}학년 ${t.classNm}반` : '담임 없음'}</div>
                                         </div>
-                                        <button 
+                                        <button
                                             onClick={() => requestSwap(t)}
-                                            className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded hover:bg-indigo-700"
+                                            className="text-sm bg-indigo-600 text-white px-4 py-2.5 rounded-lg hover:bg-indigo-700"
                                         >
                                             요청
                                         </button>

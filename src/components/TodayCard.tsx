@@ -280,7 +280,7 @@ export default function TodayCard({
       {/* 다가오는 학사일정 (없으면 숨김) */}
       {!loading && nextEvent && (
         <div className="px-5 pt-4">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200">
+          <span className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200">
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -294,7 +294,8 @@ export default function TodayCard({
               <rect x="3" y="5" width="18" height="16" rx="2" />
               <path d="M8 3v4M16 3v4M3 10h18" />
             </svg>
-            {formatEventDate(nextEvent.date)} · {nextEvent.name}
+            <span className="shrink-0">{formatEventDate(nextEvent.date)} ·</span>
+            <span className="min-w-0 truncate">{nextEvent.name}</span>
           </span>
         </div>
       )}

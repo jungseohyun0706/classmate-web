@@ -226,8 +226,8 @@ export default function NoticeList() {
       <div className="max-w-2xl mx-auto">
 
         {/* 헤더 */}
-        <div className="flex justify-between items-center mb-6">
-          <div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center mb-6">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900">알림장 목록</h1>
             <p className="text-sm text-gray-600 mt-0.5">
               {userData?.schoolName} {userData?.grade}학년 {userData?.classNm}반 · 학생 {totalStudents}명

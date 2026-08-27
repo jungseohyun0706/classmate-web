@@ -207,8 +207,8 @@ export default function LoginPage() {
   )
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center items-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-lg">
+    <div className="min-h-screen bg-gray-50 flex flex-col justify-center items-center py-10 px-4 sm:px-6 lg:px-8">
+      <div className="w-full max-w-lg mx-auto">
         <h2 className="mt-6 text-center text-4xl font-extrabold text-gray-900">
           Classmate
         </h2>
@@ -220,7 +220,7 @@ export default function LoginPage() {
         </p>
       </div>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-lg">
+      <div className="mt-8 w-full max-w-lg mx-auto">
         <div className="bg-white py-10 px-6 shadow-xl rounded-2xl sm:px-12 border border-gray-100">
           {mode === 'code' ? (
             <form className="space-y-6" onSubmit={onSubmitCode}>
@@ -269,7 +269,6 @@ export default function LoginPage() {
           ) : (
             <>
               <div className="space-y-4">
-                {errorBox}
                 {info && (
                   <div className="rounded-md bg-blue-50 p-4 border border-blue-100">
                     <div className="flex">
@@ -305,7 +304,7 @@ export default function LoginPage() {
                 </div>
               </div>
 
-              <form className="space-y-8 mt-4" onSubmit={onSubmit}>
+              <form className="space-y-5 mt-4" onSubmit={onSubmit}>
                 <div>
                   <label htmlFor="email" className="block text-base font-medium text-gray-700 mb-2">
                     이메일
@@ -356,6 +355,9 @@ export default function LoginPage() {
                     </a>
                   </div>
                 </div>
+
+                {/* 에러는 제출 버튼 바로 위 — 모바일에서 시야 안에 뜨도록 */}
+                {errorBox}
 
                 <div>
                   <button

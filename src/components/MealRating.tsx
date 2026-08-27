@@ -143,7 +143,7 @@ export default function MealRating({ schoolCode, ymd, compact = false }: MealRat
     <div
       role="group"
       aria-label="급식 별점 (1~5점)"
-      className={`flex items-center ${compact ? 'gap-1' : 'gap-2'}`}
+      className={`flex items-center ${compact ? 'gap-1.5' : 'gap-2'}`}
     >
       {EMOJIS.map((emoji, i) => {
         const rating = i + 1
@@ -158,7 +158,7 @@ export default function MealRating({ schoolCode, ymd, compact = false }: MealRat
             aria-pressed={selected}
             title={LABELS[i]}
             className={`flex items-center justify-center rounded-full transition-transform ${
-              compact ? 'h-8 w-8 text-lg' : 'h-11 w-11 text-2xl'
+              compact ? 'h-10 w-10 text-xl' : 'h-11 w-11 text-2xl'
             } ${
               selected
                 ? 'scale-125 bg-amber-100 ring-2 ring-amber-400'

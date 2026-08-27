@@ -241,11 +241,11 @@ export default function StudentNoticeDetail(): JSX.Element {
             {/* 동의 응답 */}
             {notice.requiresConsent && (
               <div className="border-t border-gray-100 bg-gray-50/60 px-5 py-5">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-col items-start gap-1.5">
                   <p className="text-sm font-semibold text-gray-700">보호자/본인 동의가 필요해요</p>
                   {receipt?.consent && (
                     <span
-                      className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+                      className={`max-w-full rounded-full px-2.5 py-1 text-xs font-semibold ${
                         receipt.consent === 'agreed'
                           ? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200'
                           : 'bg-gray-200 text-gray-600 ring-1 ring-gray-300'

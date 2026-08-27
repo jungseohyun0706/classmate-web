@@ -16,10 +16,10 @@ const LandingPage = () => {
       </Head>
 
       {/* Navigation */}
-      <nav className="max-w-7xl mx-auto px-6 py-8 flex justify-between items-center border-b border-gray-50">
-        <div className="flex items-center space-x-2">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">U</div>
-          <span className="text-2xl font-bold tracking-tight text-gray-900">ururu.kr</span>
+      <nav className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 flex justify-between items-center border-b border-gray-50 gap-2">
+        <div className="flex items-center space-x-2 min-w-0">
+          <div className="w-10 h-10 shrink-0 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">U</div>
+          <span className="hidden sm:inline text-2xl font-bold tracking-tight text-gray-900">ururu.kr</span>
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
           <Link href="/auth/login" className="whitespace-nowrap px-4 sm:px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100">

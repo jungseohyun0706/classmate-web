@@ -38,6 +38,7 @@ export default function SosPage() {
   const [period, setPeriod] = useState(1)
   const [reason, setReason] = useState('')
   const [sending, setSending] = useState(false)
+  const [showForm, setShowForm] = useState(false)
 
   // 우리 학교 SOS 목록
   const [requests, setRequests] = useState<any[]>([])
@@ -216,12 +217,27 @@ export default function SosPage() {
             <h1 className="text-2xl font-bold text-gray-900">보결 SOS 🚨</h1>
             <p className="text-sm text-gray-600">갑자기 자리를 비워야 할 때, 빈 시간 선생님을 찾아요.</p>
           </div>
-          <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap text-gray-500 hover:text-gray-700 px-2 shrink-0">
+          <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap min-h-[44px] text-gray-500 hover:text-gray-700 px-2 shrink-0">
             나가기
           </button>
         </div>
 
+        {/* SOS 발행 — 요청 목록이 있으면 접어두고 버튼으로 펼침 (알림 받고 들어온 교사가 목록을 바로 보도록) */}
+        {requests.length > 0 && (
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className={`w-full mb-4 flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-base transition border ${
+              showForm
+                ? 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+                : 'bg-red-500 text-white border-transparent hover:bg-red-600'
+            }`}
+          >
+            {showForm ? '발행 접기 ▲' : '🚨 SOS 발행하기'}
+          </button>
+        )}
+
         {/* SOS 발행 폼 */}
+        {(showForm || requests.length === 0) && (
         <div className="bg-white shadow rounded-xl border border-gray-200 p-5 mb-8">
           <h2 className="text-lg font-bold text-gray-900 mb-4">SOS 발행하기</h2>
 
@@ -298,6 +314,7 @@ export default function SosPage() {
             )}
           </div>
         </div>
+        )}
 
         {/* 우리 학교 SOS 목록 */}
         <h2 className="text-lg font-bold text-gray-900 mb-3">우리 학교 SOS</h2>

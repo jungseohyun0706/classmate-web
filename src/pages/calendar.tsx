@@ -214,13 +214,13 @@ export default function CalendarPage(): JSX.Element {
           </div>
         ) : (
           <>
-            {/* 월 이동 내비게이션 */}
-            <div className="flex items-center justify-between rounded-xl border border-gray-100 bg-white px-2 py-2 shadow-lg">
+            {/* 월 이동 내비게이션 — 스크롤해도 상단에 고정 */}
+            <div className="sticky top-2 z-10 flex items-center justify-between rounded-xl border border-gray-100 bg-white px-2 py-1.5 shadow-lg">
               <button
                 type="button"
                 onClick={() => moveMonth(-1)}
                 aria-label="이전 달"
-                className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                className="rounded-full p-3 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -242,7 +242,7 @@ export default function CalendarPage(): JSX.Element {
                 type="button"
                 onClick={() => moveMonth(1)}
                 aria-label="다음 달"
-                className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
+                className="rounded-full p-3 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700"
               >
                 <svg
                   viewBox="0 0 24 24"

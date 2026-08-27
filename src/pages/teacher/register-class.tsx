@@ -225,7 +225,7 @@ export default function RegisterClass() {
               </form>
 
               {/* 검색 결과 리스트 */}
-              <div className="mt-4 max-h-96 overflow-y-auto space-y-2">
+              <div className="mt-4 space-y-2 sm:max-h-96 sm:overflow-y-auto">
                 {results.map((school) => (
                   <div 
                     key={school.code}
@@ -261,7 +261,7 @@ export default function RegisterClass() {
                 <div className="text-sm text-blue-700">{selectedSchool.address}</div>
                 <button 
                   onClick={() => setStep(0)}
-                  className="text-xs text-gray-500 underline mt-2 hover:text-gray-700"
+                  className="mt-1 inline-flex items-center min-h-[44px] px-3 -mx-3 text-sm text-gray-500 underline hover:text-gray-700"
                 >
                   다시 검색하기
                 </button>

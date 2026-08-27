@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth, db } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -43,6 +43,16 @@ export default function ClassQrPage() {
   const [pending, setPending] = useState<PendingStudent[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [approvedCount, setApprovedCount] = useState(0)
+  const pendingRef = useRef<HTMLDivElement>(null)
+  const prevPendingCount = useRef(0)
+
+  // 첫 신청이 들어오면 (모바일에서 화면 밖에 있는) 신청 패널로 스크롤
+  useEffect(() => {
+    if (prevPendingCount.current === 0 && pending.length > 0) {
+      pendingRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+    prevPendingCount.current = pending.length
+  }, [pending.length])
 
   // 토큰 발급 (로드 시 자동 + 새 코드 만들기)
   const issue = useCallback(
@@ -240,7 +250,7 @@ export default function ClassQrPage() {
           </div>
           <button
             onClick={() => router.push('/dashboard')}
-            className="shrink-0 whitespace-nowrap text-gray-500 hover:text-gray-700 font-medium px-3"
+            className="shrink-0 whitespace-nowrap min-h-[44px] text-gray-500 hover:text-gray-700 font-medium px-3"
           >
             나가기
           </button>
@@ -339,7 +349,7 @@ export default function ClassQrPage() {
         </div>
 
         {/* 실시간 입장 신청 — QR을 띄운 채 바로 승인 */}
-        <div className="mt-6 bg-white shadow-lg rounded-xl border border-gray-100 p-5">
+        <div ref={pendingRef} className="mt-6 bg-white shadow-lg rounded-xl border border-gray-100 p-5">
           <div className="flex items-center justify-between gap-3 mb-3">
             <h3 className="font-bold text-gray-900 flex items-center gap-2">
               <span className="relative flex h-2.5 w-2.5">
@@ -376,7 +386,7 @@ export default function ClassQrPage() {
                   <button
                     onClick={() => approveOne(s)}
                     disabled={!!busyId}
-                    className="whitespace-nowrap shrink-0 text-sm font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-4 py-1.5 rounded-lg disabled:opacity-50 transition"
+                    className="whitespace-nowrap shrink-0 text-sm font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-5 py-2.5 min-h-[44px] rounded-lg disabled:opacity-50 transition"
                   >
                     승인
                   </button>
@@ -387,7 +397,7 @@ export default function ClassQrPage() {
 
           <button
             onClick={() => router.push('/teacher/students')}
-            className="mt-3 w-full text-center text-xs text-gray-400 hover:text-gray-600 py-1"
+            className="mt-3 w-full text-center text-sm text-gray-400 hover:text-gray-600 py-3 min-h-[44px]"
           >
             거절·전체 명단은 학생 관리에서 →
           </button>

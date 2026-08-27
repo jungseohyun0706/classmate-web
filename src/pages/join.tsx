@@ -375,7 +375,7 @@ export default function JoinPage() {
 
         <button
           onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')}
-          className="mt-4 w-full text-center text-sm font-medium text-emerald-600 hover:text-emerald-500"
+          className="mt-2 w-full py-3 text-center text-sm font-medium text-emerald-600 hover:text-emerald-500"
         >
           {mode === 'signup' ? '이미 계정이 있어요 → 로그인' : '처음이에요 → 계정 만들기'}
         </button>
@@ -429,7 +429,7 @@ export default function JoinPage() {
           </button>
           <button
             onClick={handleSwitchAccount}
-            className="w-full text-center text-sm font-medium text-gray-400 hover:text-gray-600"
+            className="w-full py-3 text-center text-sm font-medium text-gray-400 hover:text-gray-600"
           >
             다른 계정 사용하기
           </button>

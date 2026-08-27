@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -41,6 +41,7 @@ export default function UploadTimetablePage() {
   const [uploading, setUploading] = useState(false)
   const [report, setReport] = useState<UploadReport | null>(null)
   const [debugInfo, setDebugInfo] = useState<string[] | null>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -121,6 +122,10 @@ export default function UploadTimetablePage() {
         return
       }
       setParsed(result)
+      // 모바일: 미리보기 섹션이 화면 아래에 생기므로 자동 스크롤
+      requestAnimationFrame(() =>
+        previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      )
       toast(`반 ${nClasses}개, 교사 ${nTeachers}명의 시간표를 읽었어요.`, 'success')
     } catch (e: any) {
       console.error(e)
@@ -191,7 +196,7 @@ export default function UploadTimetablePage() {
           </div>
           <button
             onClick={() => router.push('/dashboard')}
-            className="shrink-0 whitespace-nowrap text-gray-500 hover:text-gray-700 px-2 py-1"
+            className="shrink-0 whitespace-nowrap min-h-[44px] text-gray-500 hover:text-gray-700 px-2 py-1"
           >
             나가기
           </button>
@@ -240,7 +245,7 @@ export default function UploadTimetablePage() {
 
         {/* 2단계: 미리보기 */}
         {parsed && (
-          <div className="bg-white shadow rounded-xl border border-gray-200 p-6 mb-6">
+          <div ref={previewRef} className="bg-white shadow rounded-xl border border-gray-200 p-6 mb-6 scroll-mt-4">
             <h2 className="font-bold text-gray-900 mb-4">2. 읽은 내용 확인</h2>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -283,7 +288,7 @@ export default function UploadTimetablePage() {
                 <button
                   key={t}
                   onClick={() => setSelectedTeacher(selectedTeacher === t ? '' : t)}
-                  className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                  className={`text-sm px-3 py-1.5 rounded-full border transition ${
                     selectedTeacher === t
                       ? 'bg-blue-600 text-white border-blue-600'
                       : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-blue-50'
@@ -296,7 +301,7 @@ export default function UploadTimetablePage() {
 
             {selectedTeacher && parsed.teachers[selectedTeacher] && (
               <div className="overflow-x-auto mb-4 border border-gray-200 rounded-lg">
-                <table className="min-w-full text-xs">
+                <table className="min-w-[480px] w-full text-xs">
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-2 py-2 text-gray-500 w-12">교시</th>
@@ -312,7 +317,7 @@ export default function UploadTimetablePage() {
                         {DAYS.map((_, d) => {
                           const slot = parsed.teachers[selectedTeacher][d]?.[p] || null
                           return (
-                            <td key={d} className={`px-2 py-2 text-center ${slot ? 'text-gray-900' : 'text-gray-300'}`}>
+                            <td key={d} className={`px-2 py-2 text-center whitespace-nowrap ${slot ? 'text-gray-900' : 'text-gray-300'}`}>
                               {slot ? teacherSlotToText(slot) : '·'}
                             </td>
                           )

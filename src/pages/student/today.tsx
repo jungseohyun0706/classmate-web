@@ -369,7 +369,7 @@ export default function StudentToday(): JSX.Element {
                 </h2>
                 <Link
                   href="/student/notices"
-                  className="text-xs font-semibold text-emerald-600 transition-colors hover:text-emerald-700"
+                  className="-m-2 p-2 text-xs font-semibold text-emerald-600 transition-colors hover:text-emerald-700"
                 >
                   전체 보기 &rarr;
                 </Link>
@@ -436,13 +436,13 @@ export default function StudentToday(): JSX.Element {
               ))}
               <Link
                 href="/meals"
-                className="inline-flex items-center rounded-full bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700"
+                className="inline-flex items-center rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700"
               >
                 급식 리그 &rarr;
               </Link>
               <Link
                 href="/calendar"
-                className="inline-flex items-center rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-50"
+                className="inline-flex items-center rounded-full bg-white px-4 py-2.5 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200 transition-colors hover:bg-emerald-50"
               >
                 학사일정 &rarr;
               </Link>

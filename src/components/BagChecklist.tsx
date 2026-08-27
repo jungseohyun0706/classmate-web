@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type JSX } from 'react'
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import {
   buildChecklist,
   formatBagDate,
@@ -60,6 +60,12 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
     [items, checked]
   )
   const allDone = items.length > 0 && checkedCount === items.length
+
+  // 마지막 항목을 체크하는 순간 완료 도장이 화면 밖(아래)에 있으면 보여주기
+  const stampRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (allDone) stampRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [allDone])
 
   const handleToggle = (name: string): void => {
     const next = { ...checked, [name]: checked[name] !== true }
@@ -162,7 +168,7 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
 
           {/* 전부 체크 → 도장 */}
           {allDone && (
-            <div className="flex flex-col items-center gap-1.5 border-t border-emerald-100 bg-emerald-50/60 py-5">
+            <div ref={stampRef} className="flex flex-col items-center gap-1.5 border-t border-emerald-100 bg-emerald-50/60 py-5">
               <div className="bag-stamp flex h-24 w-24 flex-col items-center justify-center rounded-full border-4 border-emerald-500 bg-white/70 text-emerald-600">
                 <span className="text-lg font-extrabold leading-tight">가방</span>
                 <span className="text-lg font-extrabold leading-tight">완료!</span>
