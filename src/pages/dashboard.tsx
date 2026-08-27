@@ -10,7 +10,7 @@ import { useInstallPrompt } from '../components/ui/install'
 export default function Dashboard() {
   const router = useRouter()
   const { toast } = useUI()
-  const { canInstall, promptInstall, isIOS, isStandalone, showIOSGuide } = useInstallPrompt()
+  const { canInstall, promptInstall, isIOS, isStandalone, showInstallGuide } = useInstallPrompt()
   const [user, setUser] = useState<any>(null)
   const [userData, setUserData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -71,12 +71,12 @@ export default function Dashboard() {
       : isIOS
         ? 'ios'
         : 'hint'
-  const installInteractive = installMode === 'prompt' || installMode === 'ios'
+  const installInteractive = installMode !== 'installed'
   const installDesc =
     installMode === 'installed'
       ? '홈 화면에 설치되어 앱처럼 사용 중이에요.'
       : installMode === 'hint'
-        ? '모바일 브라우저에서 열면 홈 화면에 설치할 수 있어요.'
+        ? '눌러서 홈 화면 설치 방법을 확인해 보세요.'
         : '홈 화면에 추가하고 앱처럼 빠르게 사용해 보세요.'
 
   const cards = [
@@ -265,8 +265,9 @@ export default function Dashboard() {
             onClick={() => {
               if (installMode === 'prompt') {
                 void promptInstall()
-              } else if (installMode === 'ios') {
-                showIOSGuide()
+              } else if (installMode !== 'installed') {
+                // iOS·인앱 브라우저·프롬프트 미지원 환경 모두 안내 시트로
+                showInstallGuide()
               }
             }}
             className={`group bg-white overflow-hidden shadow-lg rounded-xl border border-gray-100 transition-all duration-200 ${

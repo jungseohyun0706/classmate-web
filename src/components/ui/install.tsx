@@ -23,6 +23,8 @@ export interface InstallContextValue {
   isIOS: boolean;
   isStandalone: boolean;
   showIOSGuide: () => void;
+  /** 플랫폼에 맞는 설치 안내 시트 열기 (iOS/인앱 브라우저/일반 브라우저 공통) */
+  showInstallGuide: () => void;
 }
 
 const InstallContext = createContext<InstallContextValue | null>(null);
@@ -80,6 +82,17 @@ function ShareIcon({ className }: { className?: string }): JSX.Element {
   );
 }
 
+/** 브라우저 메뉴 아이콘 (점 3개) */
+function MenuDotsIcon({ className }: { className?: string }): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
+      <circle cx="12" cy="5" r="1.8" />
+      <circle cx="12" cy="12" r="1.8" />
+      <circle cx="12" cy="19" r="1.8" />
+    </svg>
+  );
+}
+
 /** 홈 화면에 추가 아이콘 (사각형 + 플러스) */
 function AddToHomeIcon({ className }: { className?: string }): JSX.Element {
   return (
@@ -105,6 +118,7 @@ export function InstallProvider({ children }: { children: ReactNode }): JSX.Elem
   const [mounted, setMounted] = useState<boolean>(false);
   const [canInstall, setCanInstall] = useState<boolean>(false);
   const [isIOS, setIsIOS] = useState<boolean>(false);
+  const [isInApp, setIsInApp] = useState<boolean>(false);
   const [isStandalone, setIsStandalone] = useState<boolean>(false);
   const [guideOpen, setGuideOpen] = useState<boolean>(false);
 
@@ -121,6 +135,9 @@ export function InstallProvider({ children }: { children: ReactNode }): JSX.Elem
     const iPadOS =
       window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1;
     setIsIOS(iosByUA || iPadOS);
+
+    // 카카오톡·네이버·인스타그램 등 인앱 브라우저는 설치 프롬프트가 없음
+    setIsInApp(/KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\//i.test(ua));
 
     const nav = window.navigator as Navigator & { standalone?: boolean };
     const standalone =
@@ -185,7 +202,14 @@ export function InstallProvider({ children }: { children: ReactNode }): JSX.Elem
   }, [mounted, isIOS, isStandalone, router.pathname]);
 
   const value = useMemo<InstallContextValue>(
-    () => ({ canInstall, promptInstall, isIOS, isStandalone, showIOSGuide }),
+    () => ({
+      canInstall,
+      promptInstall,
+      isIOS,
+      isStandalone,
+      showIOSGuide,
+      showInstallGuide: showIOSGuide,
+    }),
     [canInstall, promptInstall, isIOS, isStandalone, showIOSGuide]
   );
 
@@ -225,24 +249,74 @@ export function InstallProvider({ children }: { children: ReactNode }): JSX.Elem
               </div>
 
               <ol className="mt-4 space-y-3 text-sm text-slate-600">
-                <li className="flex items-center gap-3">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                    <ShareIcon className="h-5 w-5" />
-                  </span>
-                  <span className="break-keep">
-                    Safari 하단의 <strong className="font-semibold text-slate-800">공유 버튼</strong>을
-                    눌러 주세요.
-                  </span>
-                </li>
-                <li className="flex items-center gap-3">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                    <AddToHomeIcon className="h-5 w-5" />
-                  </span>
-                  <span className="break-keep">
-                    <strong className="font-semibold text-slate-800">&ldquo;홈 화면에 추가&rdquo;</strong>를
-                    선택하면 설치가 완료돼요.
-                  </span>
-                </li>
+                {isIOS ? (
+                  <>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <ShareIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        Safari 하단의 <strong className="font-semibold text-slate-800">공유 버튼</strong>을
+                        눌러 주세요.
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <AddToHomeIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        <strong className="font-semibold text-slate-800">&ldquo;홈 화면에 추가&rdquo;</strong>를
+                        선택하면 설치가 완료돼요.
+                      </span>
+                    </li>
+                  </>
+                ) : isInApp ? (
+                  <>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <MenuDotsIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        지금은 앱 안 브라우저라 설치할 수 없어요. 화면의{' '}
+                        <strong className="font-semibold text-slate-800">메뉴</strong>에서{' '}
+                        <strong className="font-semibold text-slate-800">&ldquo;다른 브라우저로 열기&rdquo;</strong>
+                        (또는 &ldquo;Chrome으로 열기&rdquo;)를 눌러 주세요.
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <AddToHomeIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        Chrome에서 메뉴(⋮) →{' '}
+                        <strong className="font-semibold text-slate-800">&ldquo;홈 화면에 추가&rdquo;</strong>를
+                        선택하면 설치가 완료돼요.
+                      </span>
+                    </li>
+                  </>
+                ) : (
+                  <>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <MenuDotsIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        브라우저 오른쪽 위 <strong className="font-semibold text-slate-800">메뉴(⋮)</strong>를
+                        눌러 주세요. (컴퓨터라면 주소창 오른쪽의 설치 아이콘)
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <AddToHomeIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        <strong className="font-semibold text-slate-800">&ldquo;홈 화면에 추가&rdquo;</strong> 또는{' '}
+                        <strong className="font-semibold text-slate-800">&ldquo;앱 설치&rdquo;</strong>를
+                        선택하면 설치가 완료돼요.
+                      </span>
+                    </li>
+                  </>
+                )}
               </ol>
 
               <button
