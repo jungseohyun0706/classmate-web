@@ -77,18 +77,21 @@ export default function UploadTimetablePage() {
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return
+    // 주의: FileList는 input과 연결된 라이브 객체라 input.value='' 초기화 시 비워짐
+    //       — await 전에 동기적으로 스냅샷을 떠야 한다.
+    const files = Array.from(fileList)
     setParsing(true)
     setReport(null)
     setParsed(null)
     setSelectedTeacher('')
-    const names = Array.from(fileList).map((f) => f.name)
+    const names = files.map((f) => f.name)
     setFileNames(names)
     setDebugInfo(null)
     try {
       const XLSX = await import('xlsx')
       const sheets: SheetInput[] = []
       const debug: string[] = []
-      for (const file of Array.from(fileList)) {
+      for (const file of files) {
         const buf = await file.arrayBuffer()
         debug.push(`📄 ${file.name} — ${buf.byteLength.toLocaleString()} bytes`)
         const wb = XLSX.read(buf, { cellStyles: false })
