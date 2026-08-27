@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
+import { doc, onSnapshot } from 'firebase/firestore'
 import { auth } from '../../lib/firebase'
 import TodayCard from '../../components/TodayCard'
 import BagChecklist from '../../components/BagChecklist'
@@ -114,29 +114,46 @@ export default function StudentToday(): JSX.Element {
   const [ddays, setDdays] = useState<DdayEvent[]>([])
 
   // 로그인 + 학생 역할 가드
+  // 내 계정 문서를 실시간 구독 — 선생님이 승인하는 순간 새로고침 없이 반영됩니다.
   useEffect(() => {
+    let unsubDoc: (() => void) | null = null
     const unsub = onAuthStateChanged(auth, async (u) => {
+      if (unsubDoc) {
+        unsubDoc()
+        unsubDoc = null
+      }
       if (!u) {
         router.replace('/auth/login')
         return
       }
       try {
         const { db } = await import('../../lib/firebase')
-        const snap = await getDoc(doc(db, 'users', u.uid))
-        const data = snap.exists() ? (snap.data() as StudentData) : null
-        if (!data || data.role !== 'student') {
-          router.replace('/dashboard')
-          return
-        }
-        setUid(u.uid)
-        setUserData(data)
-        setLoading(false)
+        unsubDoc = onSnapshot(
+          doc(db, 'users', u.uid),
+          (snap) => {
+            const data = snap.exists() ? (snap.data() as StudentData) : null
+            if (!data || data.role !== 'student') {
+              router.replace('/dashboard')
+              return
+            }
+            setUid(u.uid)
+            setUserData(data)
+            setLoading(false)
+          },
+          (e) => {
+            console.error(e)
+            setLoading(false)
+          }
+        )
       } catch (e) {
         console.error(e)
         setLoading(false)
       }
     })
-    return () => unsub()
+    return () => {
+      if (unsubDoc) unsubDoc()
+      unsub()
+    }
   }, [router])
 
   // 최신 알림장 3건 + 내 읽음 확인
@@ -159,7 +176,8 @@ export default function StudentToday(): JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [uid, userData?.classId])
+    // status를 의존성에 포함 — 승인되는 순간 알림장을 다시 불러옵니다.
+  }, [uid, userData?.classId, userData?.status])
 
   // 30일 이내 학사일정 D-day 칩
   useEffect(() => {
