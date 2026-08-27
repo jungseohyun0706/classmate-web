@@ -40,6 +40,7 @@ export default function UploadTimetablePage() {
   const [overwriteTeachers, setOverwriteTeachers] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [report, setReport] = useState<UploadReport | null>(null)
+  const [debugInfo, setDebugInfo] = useState<string[] | null>(null)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -82,11 +83,14 @@ export default function UploadTimetablePage() {
     setSelectedTeacher('')
     const names = Array.from(fileList).map((f) => f.name)
     setFileNames(names)
+    setDebugInfo(null)
     try {
       const XLSX = await import('xlsx')
       const sheets: SheetInput[] = []
+      const debug: string[] = []
       for (const file of Array.from(fileList)) {
         const buf = await file.arrayBuffer()
+        debug.push(`📄 ${file.name} — ${buf.byteLength.toLocaleString()} bytes`)
         const wb = XLSX.read(buf, { cellStyles: false })
         for (const sheetName of wb.SheetNames) {
           const grid = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], {
@@ -95,6 +99,9 @@ export default function UploadTimetablePage() {
             defval: null,
             raw: false,
           }) as CellValue[][]
+          debug.push(
+            `  시트 "${sheetName}": ${grid.length}행 / 1행: ${JSON.stringify(grid[0]?.slice(0, 6) ?? null)} / 2행: ${JSON.stringify(grid[1]?.slice(0, 3) ?? null)}`
+          )
           sheets.push({ name: `${file.name}#${sheetName}`, grid })
         }
       }
@@ -102,6 +109,7 @@ export default function UploadTimetablePage() {
       const nClasses = Object.keys(result.classes).length
       const nTeachers = Object.keys(result.teachers).length
       if (nClasses === 0 && nTeachers === 0) {
+        setDebugInfo(debug)
         toast(
           result.warnings[0] ||
             '시간표를 찾지 못했어요. 컴시간에서 내보낸 엑셀 파일이 맞는지 확인해 주세요.',
@@ -111,8 +119,9 @@ export default function UploadTimetablePage() {
       }
       setParsed(result)
       toast(`반 ${nClasses}개, 교사 ${nTeachers}명의 시간표를 읽었어요.`, 'success')
-    } catch (e) {
+    } catch (e: any) {
       console.error(e)
+      setDebugInfo([`❌ 파일 읽기 오류: ${e?.message || String(e)}`])
       toast('파일을 읽지 못했어요. 엑셀(.xlsx) 파일인지 확인해 주세요.', 'error')
     } finally {
       setParsing(false)
@@ -210,6 +219,18 @@ export default function UploadTimetablePage() {
             />
           </label>
         </div>
+
+        {/* 파싱 실패 시 진단 정보 */}
+        {debugInfo && (
+          <div className="bg-gray-900 text-gray-100 rounded-xl p-4 mb-6 text-[11px] leading-relaxed">
+            <p className="font-bold mb-2 text-amber-300">
+              ⚠️ 시간표를 읽지 못했어요 — 아래 진단 내용을 캡처해서 개발자에게 보내주세요
+            </p>
+            {debugInfo.map((l, i) => (
+              <div key={i} className="whitespace-pre-wrap break-all">{l}</div>
+            ))}
+          </div>
+        )}
 
         {/* 2단계: 미리보기 */}
         {parsed && (
