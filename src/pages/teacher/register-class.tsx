@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
+import { onAuthStateChanged } from 'firebase/auth'
 import { auth, db } from '../../lib/firebase'
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
@@ -30,6 +31,30 @@ export default function RegisterClass() {
   const [grade, setGrade] = useState('')
   const [classNm, setClassNm] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  // 이미 담임인 반 (반 변경 모드 안내용)
+  const [currentClassLabel, setCurrentClassLabel] = useState('')
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) return
+      try {
+        const snap = await getDoc(doc(db, 'users', u.uid))
+        if (!snap.exists()) return
+        const d = snap.data()
+        if (d.role === 'student') {
+          router.replace('/student/today')
+          return
+        }
+        if (d.classId && d.schoolName) {
+          setCurrentClassLabel(`${d.schoolName} ${d.grade}학년 ${d.classNm}반`)
+        }
+      } catch (e) {
+        console.error(e)
+      }
+    })
+    return () => unsub()
+  }, [router])
 
   // 1. 학교 검색 함수
   const handleSearch = async (e: React.FormEvent) => {
@@ -74,6 +99,7 @@ export default function RegisterClass() {
         router.replace('/student/today')
         return
       }
+      const prevClassId = meSnap.exists() ? String(meSnap.data().classId || '') : ''
 
       // 고유 반 ID 생성 (학교코드_학년_반)
       // 이렇게 하면 중복 생성을 방지하거나 쉽게 찾을 수 있음
@@ -107,6 +133,19 @@ export default function RegisterClass() {
         role: 'teacher'
       }, { merge: true })
 
+      // 2.5. 반을 바꾼 경우: 이전 반의 담임 자리를 비워 다른 선생님이 맡을 수 있게 함
+      if (prevClassId && prevClassId !== classId) {
+        try {
+          await setDoc(
+            doc(db, 'classes', prevClassId),
+            { teacherId: null, teacherName: '담임 미정' },
+            { merge: true }
+          )
+        } catch (releaseErr) {
+          console.error('이전 반 담임 해제 실패:', releaseErr)
+        }
+      }
+
       // 3. 학교 시간표 엑셀(마스터)이 이미 업로드돼 있으면 우리 반 시간표를 자동으로 채움
       try {
         const masterSnap = await getDoc(doc(db, 'school_timetables', selectedSchool.code))
@@ -130,7 +169,11 @@ export default function RegisterClass() {
 
     } catch (e: any) {
       console.error(e)
-      toast('등록에 실패했어요: ' + (e.message || e.code || '알 수 없는 오류'), 'error')
+      if (String(e?.code || e?.message || '').includes('permission')) {
+        toast('이미 다른 선생님이 담임으로 등록된 반이에요. 학년·반을 다시 확인해 주세요.', 'error')
+      } else {
+        toast('등록에 실패했어요: ' + (e.message || e.code || '알 수 없는 오류'), 'error')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -142,11 +185,22 @@ export default function RegisterClass() {
         
         {/* Header */}
         <div className="text-center">
-          <h2 className="text-3xl font-extrabold text-gray-900">우리 반 등록하기</h2>
+          <h2 className="text-3xl font-extrabold text-gray-900">
+            {currentClassLabel ? '반 바꾸기' : '우리 반 등록하기'}
+          </h2>
           <p className="mt-2 text-sm text-gray-600">
             {step === 0 ? '먼저 학교를 검색해서 선택해주세요.' : '학년과 반을 입력해주세요.'}
           </p>
         </div>
+
+        {currentClassLabel && (
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-800 break-keep">
+            현재 담임: <b>{currentClassLabel}</b>
+            <br />
+            새로 등록하면 이전 반 담임에서는 해제돼요. 이전 반 학생들은 새 반 QR로 다시
+            들어와야 해요.
+          </div>
+        )}
 
         <div className="bg-white py-8 px-6 shadow-xl rounded-2xl border border-gray-100">
           

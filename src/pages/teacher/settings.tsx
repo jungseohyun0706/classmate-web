@@ -165,7 +165,15 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </div>
-              <p className="mt-2 text-xs text-gray-400">* 학급 정보 변경은 관리자에게 문의하세요.</p>
+              <button
+                onClick={() => router.push('/teacher/register-class')}
+                className="mt-3 w-full flex justify-center py-2.5 px-4 border border-blue-200 rounded-lg text-sm font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 transition"
+              >
+                🔄 반 바꾸기 (잘못 선택했거나 학급이 바뀌었을 때)
+              </button>
+              <p className="mt-2 text-xs text-gray-400">
+                * 반을 바꾸면 이전 반 담임에서 해제되고, 학생들은 새 반 QR로 다시 들어와야 해요.
+              </p>
             </div>
           )}
 
