@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth, db } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc, collection, query, where, getDocs, orderBy, updateDoc } from 'firebase/firestore'
+import { doc, getDoc, collection, query, where, getDocs, updateDoc, addDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 
 type Student = {
@@ -34,6 +34,10 @@ export default function StudentList() {
         if (!userSnap.exists()) return
         const userData = userSnap.data()
 
+        if (userData.role === 'student') {
+          router.replace('/student/today')
+          return
+        }
         if (!userData.classId) {
           toast('아직 등록된 학급이 없어요', 'info')
           router.replace('/dashboard')
@@ -43,11 +47,12 @@ export default function StudentList() {
 
         // 2. 학생 목록 가져오기 (해당 반 ID로 필터링)
         // users 컬렉션에서 role='student'이고 classId가 일치하는 애들
+        // 주의: orderBy('studentId')를 쿼리에 넣으면 번호를 안 적은 학생이
+        //       결과에서 통째로 빠지므로(필드 없는 문서 제외) 클라이언트에서 정렬한다.
         const q = query(
           collection(db, 'users'),
           where('classId', '==', userData.classId),
-          where('role', '==', 'student'),
-          orderBy('studentId', 'asc') // 번호순 정렬
+          where('role', '==', 'student')
         )
 
         const querySnapshot = await getDocs(q)
@@ -55,6 +60,14 @@ export default function StudentList() {
         querySnapshot.forEach((snap) => {
           const student = { id: snap.id, ...snap.data() } as Student
           if (student.status !== 'rejected') list.push(student)
+        })
+        list.sort((a, b) => {
+          const an = parseInt(String(a.studentId ?? ''), 10)
+          const bn = parseInt(String(b.studentId ?? ''), 10)
+          const av = Number.isFinite(an) ? an : 9999
+          const bv = Number.isFinite(bn) ? bn : 9999
+          if (av !== bv) return av - bv
+          return String(a.name || '').localeCompare(String(b.name || ''), 'ko')
         })
         setStudents(list)
 
@@ -76,6 +89,28 @@ export default function StudentList() {
     try {
       await updateDoc(doc(db, 'users', student.id), { status: 'approved' })
       toast('승인했어요', 'success')
+      // 학생에게 인앱 알림 + 푸시 (실패해도 무시)
+      try {
+        const title = '우리 반 입장 완료 🎉'
+        const body = `${classInfo?.schoolName || ''} ${classInfo?.grade || ''}학년 ${classInfo?.classNm || ''}반 학생이 되었어요!`
+        const url = '/student/today'
+        await addDoc(collection(db, 'users', student.id, 'notifications'), {
+          title,
+          body,
+          url,
+          createdAt: serverTimestamp(),
+          read: false,
+        })
+        void auth.currentUser?.getIdToken().then((t) =>
+          fetch('/api/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+            body: JSON.stringify({ toUid: student.id, title, body, url }),
+          }).catch(() => {})
+        )
+      } catch (notifyErr) {
+        console.error(notifyErr)
+      }
     } catch (e) {
       console.error(e)
       setStudents(prev)
@@ -125,18 +160,32 @@ export default function StudentList() {
             <h1 className="text-2xl font-bold text-gray-900">학생 관리</h1>
             <p className="text-sm text-gray-600">{classInfo?.schoolName} {classInfo?.grade}학년 {classInfo?.classNm}반</p>
           </div>
-          <button
-            onClick={() => router.push('/dashboard')}
-            className="shrink-0 whitespace-nowrap min-h-[44px] px-2 text-gray-500 hover:text-gray-700"
-          >
-            &larr; 대시보드로
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => router.push('/teacher/class-qr')}
+              className="shrink-0 whitespace-nowrap min-h-[44px] px-4 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition"
+            >
+              📱 학생 초대 QR
+            </button>
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="shrink-0 whitespace-nowrap min-h-[44px] px-2 text-gray-500 hover:text-gray-700"
+            >
+              &larr; 대시보드로
+            </button>
+          </div>
         </div>
 
         {students.length === 0 ? (
           <div className="bg-white shadow rounded-xl p-10 text-center text-gray-500">
             <p>아직 등록된 학생이 없어요.</p>
-            <p className="text-sm mt-2">학생들이 앱에서 가입하면 여기에 표시돼요.</p>
+            <p className="text-sm mt-2">QR 코드를 보여주면 학생들이 스캔해서 바로 가입할 수 있어요.</p>
+            <button
+              onClick={() => router.push('/teacher/class-qr')}
+              className="mt-5 inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-emerald-600 text-white font-bold hover:bg-emerald-700 transition"
+            >
+              📱 학급 QR로 학생 초대하기
+            </button>
           </div>
         ) : (
           <div className="space-y-8">

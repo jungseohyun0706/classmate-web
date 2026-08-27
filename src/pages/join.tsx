@@ -5,12 +5,23 @@ import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut,
   type User,
 } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
-import { getJoinClassInfo, joinClass, validateJoinToken, type JoinClassInfo } from '../lib/join'
 import { useUI } from '../components/ui/feedback'
+
+// 입장 검증·신청은 전부 서버(/api/join-info, /api/join)에서 처리 —
+// 신규 계정은 보안 규칙상 학급/토큰 문서를 직접 읽을 수 없기 때문.
+interface JoinClassInfo {
+  classId: string
+  schoolName: string
+  grade: string | number
+  classNm: string | number
+  teacherName?: string
+}
 
 function authErrorMessage(code?: string): string {
   switch (code) {
@@ -64,19 +75,21 @@ export default function JoinPage() {
     let cancelled = false
     ;(async () => {
       try {
-        const ok = await validateJoinToken(classId, token)
+        const res = await fetch('/api/join-info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ classId, token }),
+        })
+        const data = await res.json().catch(() => ({}))
         if (cancelled) return
-        if (!ok) {
+        if (!res.ok || !data.classInfo) {
           setInvalid(true)
           return
         }
-        const info = await getJoinClassInfo(classId)
-        if (cancelled) return
-        if (!info) {
-          setInvalid(true)
-          return
-        }
-        setClassInfo(info)
+        setClassInfo(data.classInfo as JoinClassInfo)
+      } catch (e) {
+        console.error(e)
+        if (!cancelled) setInvalid(true)
       } finally {
         if (!cancelled) setChecking(false)
       }
@@ -103,10 +116,15 @@ export default function JoinPage() {
       try {
         const { db } = await import('../lib/firebase')
         const snap = await getDoc(doc(db, 'users', user.uid))
-        if (cancelled || !snap.exists()) return
-        const data = snap.data()
-        setName((prev) => prev || String(data.name || data.displayName || ''))
-        setStudentNo((prev) => prev || (data.studentId ? String(data.studentId) : ''))
+        if (cancelled) return
+        if (snap.exists()) {
+          const data = snap.data()
+          setName((prev) => prev || String(data.name || data.displayName || user.displayName || ''))
+          setStudentNo((prev) => prev || (data.studentId ? String(data.studentId) : ''))
+        } else {
+          // 구글로 방금 만든 계정 — 프로필 이름으로 미리 채움
+          setName((prev) => prev || String(user.displayName || ''))
+        }
       } catch (e) {
         console.error(e)
       }
@@ -148,17 +166,53 @@ export default function JoinPage() {
       toast('이름을 입력해 주세요.', 'error')
       return
     }
+    if (!auth.currentUser) return
     setSubmitting(true)
     try {
-      await joinClass(classId, token, {
-        name: name.trim(),
-        studentId: studentNo.trim() || undefined,
+      const idToken = await auth.currentUser.getIdToken()
+      const res = await fetch('/api/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          classId,
+          token,
+          name: name.trim(),
+          studentId: studentNo.trim() || undefined,
+        }),
       })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        toast(data?.error || '입장 신청에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+        return
+      }
+      if (data.status === 'approved') {
+        toast('이미 우리 반 학생이에요!', 'success')
+        router.replace('/student/today')
+        return
+      }
       setJoined(true)
       toast('입장 신청을 보냈어요.', 'success')
     } catch (err: any) {
       console.error(err)
-      toast(err?.message || '입장 신청에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      toast('입장 신청에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleGoogle = async () => {
+    setSubmitting(true)
+    try {
+      const provider = new GoogleAuthProvider()
+      provider.setCustomParameters({ prompt: 'select_account' })
+      await signInWithPopup(auth, provider)
+      // onAuthStateChanged 가 확인 카드로 넘겨줍니다.
+    } catch (err: any) {
+      const code = err?.code || ''
+      if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        console.error(err)
+        toast('구글 로그인 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.', 'error')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -246,7 +300,31 @@ export default function JoinPage() {
           {mode === 'signup' ? '학생 계정을 만들고 입장해요' : '내 계정으로 로그인해요'}
         </h2>
 
-        <form className="mt-5 space-y-4" onSubmit={handleAuth}>
+        <button
+          type="button"
+          onClick={handleGoogle}
+          disabled={submitting}
+          className="mt-5 w-full flex justify-center items-center gap-2 py-3 px-4 border border-gray-300 rounded-xl shadow-sm text-base font-bold text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
+        >
+          <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0012 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 010-4.2V7.06H2.18a11 11 0 000 9.88l3.66-2.84z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1A11 11 0 002.18 7.06l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z"/>
+          </svg>
+          구글 계정으로 계속하기
+        </button>
+
+        <div className="relative py-4">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-200"></div>
+          </div>
+          <div className="relative flex justify-center text-xs">
+            <span className="px-2 bg-white text-gray-400">또는 이메일로</span>
+          </div>
+        </div>
+
+        <form className="space-y-4" onSubmit={handleAuth}>
           {mode === 'signup' && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">이름</label>

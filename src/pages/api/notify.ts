@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { isAdminConfigured, sendPushToUser, verifyIdToken } from '../../lib/fcm-admin'
+import { getFirestore } from 'firebase-admin/firestore'
+import { getAdminApp, isAdminConfigured, sendPushToUser, verifyIdToken } from '../../lib/fcm-admin'
 
 // POST /api/notify
 // Body: { toUid, title, body, url? }
@@ -40,6 +41,28 @@ export default async function handler(
     typeof body !== 'string'
   ) {
     return res.status(400).json({ error: '요청 형식이 올바르지 않아요.' })
+  }
+
+  // 발신자 검증: 같은 학교의 교사만 임의 사용자에게 푸시를 보낼 수 있음
+  // (익명 계정·타학교 사용자의 푸시 스팸 차단)
+  try {
+    const app = getAdminApp()
+    if (!app) return res.status(503).json({ error: '서버 초기화에 실패했어요.' })
+    const db = getFirestore(app)
+    const [senderSnap, targetSnap] = await Promise.all([
+      db.collection('users').doc(decoded.uid).get(),
+      db.collection('users').doc(toUid).get(),
+    ])
+    const sender = senderSnap.exists ? senderSnap.data() || {} : {}
+    const target = targetSnap.exists ? targetSnap.data() || {} : {}
+    const sameSchool =
+      sender.schoolCode && target.schoolCode && sender.schoolCode === target.schoolCode
+    if (sender.role !== 'teacher' || !sameSchool) {
+      return res.status(403).json({ error: '알림을 보낼 권한이 없어요.' })
+    }
+  } catch (e) {
+    console.error('notify: sender check error:', e)
+    return res.status(500).json({ error: '알림 전송에 실패했어요.' })
   }
 
   const result = await sendPushToUser(toUid, {

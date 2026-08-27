@@ -66,7 +66,15 @@ export default function RegisterClass() {
     setSubmitting(true)
     try {
       const user = auth.currentUser
-      
+
+      // 학생 계정은 반을 만들 수 없음
+      const meSnap = await getDoc(doc(db, 'users', user.uid))
+      if (meSnap.exists() && meSnap.data().role === 'student') {
+        toast('학생 계정으로는 반을 만들 수 없어요.', 'error')
+        router.replace('/student/today')
+        return
+      }
+
       // 고유 반 ID 생성 (학교코드_학년_반)
       // 이렇게 하면 중복 생성을 방지하거나 쉽게 찾을 수 있음
       // 숫자로 정규화해 "03" 같은 입력이 다른 ID를 만들지 않게 함

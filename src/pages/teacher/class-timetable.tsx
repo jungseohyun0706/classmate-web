@@ -36,6 +36,10 @@ export default function TimetablePage() {
         const snap = await getDoc(doc(db, 'users', u.uid))
         if (snap.exists()) {
           const data = snap.data()
+          if (data.role === 'student') {
+            router.replace('/student/today')
+            return
+          }
           if (!data.classId) {
             toast('담당 학급이 없어요.', 'error')
             router.replace('/dashboard')

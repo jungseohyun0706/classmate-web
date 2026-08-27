@@ -68,8 +68,12 @@ function BellIcon({ className }: { className?: string }): JSX.Element {
  * - 권한 차단됨 → 해제 방법 안내 카드
  * - 그 외 → '알림 켜기' 카드
  */
-export default function EnablePush(): JSX.Element | null {
+export default function EnablePush({ variant = 'teacher' }: { variant?: 'teacher' | 'student' } = {}): JSX.Element | null {
   const { toast } = useUI()
+  const benefitText =
+    variant === 'student'
+      ? '알림장과 준비물(가방싸기) 알림을 놓치지 마세요'
+      : '교환 요청·보결 SOS·아침 브리핑을 놓치지 마세요'
   const [state, setState] = useState<CardState>('checking')
   const [dismissed, setDismissed] = useState<boolean>(false)
   const [busy, setBusy] = useState<boolean>(false)
@@ -201,7 +205,7 @@ export default function EnablePush(): JSX.Element | null {
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-gray-900">알림 켜기</p>
           <p className="mt-1 text-xs leading-relaxed text-gray-600 break-keep">
-            교환 요청·보결 SOS·아침 브리핑을 놓치지 마세요
+            {benefitText}
           </p>
           <div className="mt-3 flex items-center gap-2">
             <button

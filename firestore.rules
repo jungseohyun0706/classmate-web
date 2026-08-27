@@ -179,9 +179,10 @@ service cloud.firestore {
 
       // ── classes/{classId}/joinTokens/{token}: 학생 가입 토큰 ──
       match /joinTokens/{token} {
-        // 읽기: 로그인한 사용자 누구나 (가입 링크의 토큰 유효성 검증용)
-        allow read: if signedIn();
-        // 쓰기: 담임 교사만
+        // 읽기 금지: 토큰 검증은 서버(/api/join-info, /api/join)가 admin으로 수행.
+        // (클라이언트 읽기를 열면 목록 조회로 유효 토큰이 유출될 수 있음)
+        allow read: if false;
+        // 쓰기: 담임 교사만 (QR 발급)
         allow write: if isClassTeacher(classId);
       }
     }

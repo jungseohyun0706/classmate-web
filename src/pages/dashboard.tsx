@@ -28,6 +28,10 @@ export default function Dashboard() {
         const snap = await getDoc(doc(db, 'users', u.uid))
         if (snap.exists()) {
           const data = snap.data()
+          if (data?.role === 'student') {
+            router.replace('/student/today')
+            return
+          }
           setUserData(data)
           // 대기중인 받은 교환 요청 수 (가벼운 배지 쿼리 — 실패해도 무시)
           if (data?.schoolCode) {
@@ -83,7 +87,7 @@ export default function Dashboard() {
     {
       id: 'students',
       title: hasClass ? '학생 관리' : '내 학교/반 등록',
-      desc: hasClass ? '우리 반 학생 목록을 확인하세요.' : '학교와 담당 학급을 설정하세요.',
+      desc: hasClass ? '학생 초대(QR)와 승인, 목록을 관리해요.' : '학교와 담당 학급을 설정하세요.',
       icon: (
         <svg className={`h-8 w-8 ${hasClass ? 'text-indigo-600' : 'text-blue-600'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           {hasClass ? (
@@ -103,15 +107,6 @@ export default function Dashboard() {
       icon: <svg className="h-8 w-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" /></svg>,
       bgColor: 'bg-green-100',
       path: '/teacher/notice/write',
-      needClass: true
-    },
-    {
-      id: 'class-qr',
-      title: '학급 QR 입장코드',
-      desc: '학생들을 우리 반에 초대해요.',
-      icon: <svg className="h-8 w-8 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" /></svg>,
-      bgColor: 'bg-emerald-100',
-      path: '/teacher/class-qr',
       needClass: true
     },
     {

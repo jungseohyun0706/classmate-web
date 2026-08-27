@@ -91,6 +91,10 @@ export default function SwapsInboxPage() {
         const { db } = await import('../../lib/firebase')
         const snap = await getDoc(doc(db, 'users', u.uid))
         const data = snap.exists() ? snap.data() : null
+        if (data?.role === 'student') {
+          router.replace('/student/today')
+          return
+        }
         setUserData(data)
         if (data?.schoolCode) {
           await loadAll(u.uid, String(data.schoolCode))

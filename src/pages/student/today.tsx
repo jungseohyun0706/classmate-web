@@ -401,7 +401,7 @@ export default function StudentToday(): JSX.Element {
               )}
             </section>
 
-            <EnablePush />
+            <EnablePush variant="student" />
 
             {/* 다가오는 학사일정 D-day + 바로가기 */}
             <div className="flex flex-wrap gap-2">

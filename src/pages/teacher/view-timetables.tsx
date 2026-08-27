@@ -30,6 +30,10 @@ export default function ViewTimetables() {
         if (!userSnap.exists()) return
         const userData = userSnap.data()
 
+        if (userData.role === 'student') {
+          router.replace('/student/today')
+          return
+        }
         if (!userData.schoolCode) {
           toast('학교 정보가 없어요.', 'error')
           router.replace('/dashboard')

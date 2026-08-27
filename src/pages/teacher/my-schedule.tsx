@@ -52,6 +52,10 @@ export default function MySchedulePage() {
         const snap = await getDoc(doc(db, 'users', u.uid))
         if (snap.exists()) {
           const data = snap.data()
+          if (data.role === 'student') {
+            router.replace('/student/today')
+            return
+          }
           setUserData(data)
           // 개인 시간표 불러오기 (없으면 빈 값)
           if (data.mySchedule) {

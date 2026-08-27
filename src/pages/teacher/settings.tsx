@@ -29,6 +29,10 @@ export default function SettingsPage() {
         const snap = await getDoc(doc(db, 'users', u.uid))
         if (snap.exists()) {
           const data = snap.data()
+          if (data.role === 'student') {
+            router.replace('/student/today')
+            return
+          }
           setUserData(data)
           setDisplayName(data.displayName || u.displayName || '')
         }
