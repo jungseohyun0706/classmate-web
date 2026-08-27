@@ -21,8 +21,11 @@ const LandingPage = () => {
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold text-xl">U</div>
           <span className="text-2xl font-bold tracking-tight text-gray-900">ururu.kr</span>
         </div>
-        <div className="flex items-center space-x-6">
-          <Link href="/auth/login" className="px-5 py-2.5 bg-gray-900 text-white rounded-xl font-bold text-sm hover:bg-gray-800 transition-all shadow-lg shadow-gray-200">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <Link href="/auth/login" className="whitespace-nowrap px-4 sm:px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold text-sm hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-100">
+            학생 로그인
+          </Link>
+          <Link href="/auth/login" className="whitespace-nowrap px-4 sm:px-5 py-2.5 bg-gray-900 text-white rounded-xl font-bold text-sm hover:bg-gray-800 transition-all shadow-lg shadow-gray-200">
             선생님 로그인
           </Link>
         </div>

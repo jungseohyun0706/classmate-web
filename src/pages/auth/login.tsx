@@ -215,6 +215,9 @@ export default function LoginPage() {
         <p className="mt-3 text-center text-base text-gray-600">
           클래스메이트 로그인
         </p>
+        <p className="mt-1 text-center text-sm text-gray-400">
+          선생님·학생 모두 여기서 로그인해요
+        </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-lg">
