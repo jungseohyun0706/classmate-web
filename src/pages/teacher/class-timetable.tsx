@@ -83,17 +83,17 @@ export default function TimetablePage() {
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-5xl mx-auto">
-        <div className="flex justify-between items-center mb-6 text-black">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-6 text-black">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">학급 시간표 관리</h1>
             <p className="text-sm text-gray-600">{userData?.schoolName} {userData?.grade}학년 {userData?.classNm}반</p>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 font-medium px-4">나가기</button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap text-gray-500 hover:text-gray-700 font-medium px-3">나가기</button>
             <button
               onClick={handleSave}
               disabled={saving}
-              className="inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50"
+              className="whitespace-nowrap inline-flex justify-center py-2 px-5 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50"
             >
               {saving ? '저장 중...' : '시간표 저장하기'}
             </button>

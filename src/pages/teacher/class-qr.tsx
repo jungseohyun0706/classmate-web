@@ -134,7 +134,7 @@ export default function ClassQrPage() {
           </div>
           <button
             onClick={() => router.push('/dashboard')}
-            className="text-gray-500 hover:text-gray-700 font-medium px-4"
+            className="shrink-0 whitespace-nowrap text-gray-500 hover:text-gray-700 font-medium px-3"
           >
             나가기
           </button>

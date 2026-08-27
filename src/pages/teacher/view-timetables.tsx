@@ -114,7 +114,7 @@ export default function ViewTimetables() {
             <h1 className="text-2xl font-bold text-gray-900">{schoolName} 전체 시간표 🏫</h1>
             <p className="text-sm text-gray-600">다른 반의 시간표를 조회할 수 있습니다.</p>
           </div>
-          <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 font-medium px-3">
+          <button onClick={() => router.push('/dashboard')} className="shrink-0 whitespace-nowrap text-gray-500 hover:text-gray-700 font-medium px-3">
             나가기
           </button>
         </div>

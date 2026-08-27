@@ -127,7 +127,7 @@ export default function StudentList() {
           </div>
           <button
             onClick={() => router.push('/dashboard')}
-            className="min-h-[44px] px-2 text-gray-500 hover:text-gray-700"
+            className="shrink-0 whitespace-nowrap min-h-[44px] px-2 text-gray-500 hover:text-gray-700"
           >
             &larr; 대시보드로
           </button>

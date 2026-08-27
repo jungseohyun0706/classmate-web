@@ -216,7 +216,7 @@ export default function SosPage() {
             <h1 className="text-2xl font-bold text-gray-900">보결 SOS 🚨</h1>
             <p className="text-sm text-gray-600">갑자기 자리를 비워야 할 때, 빈 시간 선생님을 찾아요.</p>
           </div>
-          <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 px-2 shrink-0">
+          <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap text-gray-500 hover:text-gray-700 px-2 shrink-0">
             나가기
           </button>
         </div>

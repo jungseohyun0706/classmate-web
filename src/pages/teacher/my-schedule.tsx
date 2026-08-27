@@ -263,32 +263,32 @@ export default function MySchedulePage() {
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">내 수업 시간표 📅</h1>
             <p className="text-sm text-gray-600">본인의 수업 스케줄을 입력하세요.</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={openImport}
               disabled={importLoading}
-              className="bg-white border border-emerald-200 text-emerald-700 font-bold py-2 px-4 rounded-xl hover:bg-emerald-50 transition disabled:opacity-50"
+              className="whitespace-nowrap bg-white border border-emerald-200 text-emerald-700 font-bold py-2 px-3 rounded-xl hover:bg-emerald-50 transition disabled:opacity-50"
             >
               {importLoading ? '⏳' : '📥'} 엑셀에서 불러오기
             </button>
             <button
               onClick={() => router.push('/teacher/swaps')}
-              className="bg-white border border-blue-200 text-blue-600 font-bold py-2 px-4 rounded-xl hover:bg-blue-50 transition"
+              className="whitespace-nowrap bg-white border border-blue-200 text-blue-600 font-bold py-2 px-3 rounded-xl hover:bg-blue-50 transition"
             >
               📮 교환 인박스
             </button>
-            <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 px-3">
+            <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap text-gray-500 hover:text-gray-700 px-2">
               나가기
             </button>
             <button
               onClick={handleSave}
               disabled={saving}
-              className="bg-blue-600 text-white font-bold py-2 px-6 rounded hover:bg-blue-700 transition disabled:opacity-50"
+              className="whitespace-nowrap bg-blue-600 text-white font-bold py-2 px-5 rounded hover:bg-blue-700 transition disabled:opacity-50"
             >
               {saving ? '저장 중...' : '저장하기'}
             </button>

@@ -264,7 +264,7 @@ export default function SwapsInboxPage() {
             <h1 className="text-2xl font-bold text-gray-900">교환 인박스 📮</h1>
             <p className="text-sm text-gray-600">받은 교시 품앗이 요청을 확인하고 처리하세요.</p>
           </div>
-          <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 px-3 shrink-0">
+          <button onClick={() => router.push('/dashboard')} className="whitespace-nowrap text-gray-500 hover:text-gray-700 px-3 shrink-0">
             나가기
           </button>
         </div>

@@ -181,7 +181,7 @@ export default function UploadTimetablePage() {
   return (
     <div className="min-h-screen bg-gray-50 py-10 px-4 sm:px-6 lg:px-8">
       <div className="max-w-5xl mx-auto">
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex justify-between items-start gap-3 mb-6">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">시간표 엑셀 업로드 📥</h1>
             <p className="text-sm text-gray-600">
@@ -189,7 +189,10 @@ export default function UploadTimetablePage() {
               시간표 엑셀을 올리면 우리 학교 모든 반·교사 시간표가 자동 등록돼요.
             </p>
           </div>
-          <button onClick={() => router.push('/dashboard')} className="text-gray-500 hover:text-gray-700 px-3">
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="shrink-0 whitespace-nowrap text-gray-500 hover:text-gray-700 px-2 py-1"
+          >
             나가기
           </button>
         </div>
