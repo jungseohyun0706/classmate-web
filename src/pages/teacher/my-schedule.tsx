@@ -5,6 +5,7 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 import { nextOccurrenceYmdKst } from '../../lib/swaps'
+import { storedTeacherGridToMySchedule, normalizeName } from '../../lib/timetableConvert'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri']
@@ -26,6 +27,12 @@ export default function MySchedulePage() {
     fri: ['', '', '', '', '', '', '']
   })
   const [saving, setSaving] = useState(false)
+
+  // 학교 엑셀 시간표(마스터)에서 불러오기
+  const [importOpen, setImportOpen] = useState(false)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importTeachers, setImportTeachers] = useState<Record<string, any> | null>(null)
+  const [importFilter, setImportFilter] = useState('')
 
   // 교환 관련 상태
   const [selectedCell, setSelectedCell] = useState<any>(null)
@@ -80,6 +87,51 @@ export default function MySchedulePage() {
     } finally {
       setSaving(false)
     }
+  }
+
+  // 학교 마스터 시간표(엑셀 업로드본) 열기
+  const openImport = async () => {
+    if (!userData?.schoolCode) {
+      toast('학교 정보가 없어요. 먼저 학교/반을 등록해 주세요.', 'error')
+      return
+    }
+    if (importOpen) {
+      setImportOpen(false)
+      return
+    }
+    setImportLoading(true)
+    try {
+      const { db } = await import('../../lib/firebase')
+      const snap = await getDoc(doc(db, 'school_timetables', userData.schoolCode))
+      if (!snap.exists()) {
+        toast('아직 학교 시간표 엑셀이 업로드되지 않았어요. 대시보드의 [시간표 엑셀 업로드]를 이용해 보세요.', 'info')
+        return
+      }
+      const teachers = snap.data().teachers || {}
+      if (Object.keys(teachers).length === 0) {
+        toast('업로드된 시간표에 교사 정보가 없어요.', 'info')
+        return
+      }
+      setImportTeachers(teachers)
+      setImportFilter('')
+      setImportOpen(true)
+    } catch (e) {
+      console.error(e)
+      toast('불러오지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  // 마스터 시간표에서 특정 교사 시간표를 내 시간표 폼에 채우기 (저장은 별도)
+  const applyImport = (name: string) => {
+    if (!importTeachers?.[name]) return
+    setSchedule(storedTeacherGridToMySchedule(importTeachers[name]))
+    setImportOpen(false)
+    // 열려 있던 교환 패널은 이전 시간표 기준 스냅샷이므로 닫는다
+    setSelectedCell(null)
+    setAvailableTeachers([])
+    toast(`${name} 선생님 시간표를 불러왔어요. [저장하기]를 누르면 확정돼요.`, 'success')
   }
 
   // 빈 선생님 찾기
@@ -218,6 +270,13 @@ export default function MySchedulePage() {
           </div>
           <div className="flex gap-2">
             <button
+              onClick={openImport}
+              disabled={importLoading}
+              className="bg-white border border-emerald-200 text-emerald-700 font-bold py-2 px-4 rounded-xl hover:bg-emerald-50 transition disabled:opacity-50"
+            >
+              {importLoading ? '⏳' : '📥'} 엑셀에서 불러오기
+            </button>
+            <button
               onClick={() => router.push('/teacher/swaps')}
               className="bg-white border border-blue-200 text-blue-600 font-bold py-2 px-4 rounded-xl hover:bg-blue-50 transition"
             >
@@ -235,6 +294,49 @@ export default function MySchedulePage() {
             </button>
           </div>
         </div>
+
+        {/* 학교 엑셀 시간표에서 불러오기 패널 */}
+        {importOpen && importTeachers && (
+          <div className="bg-white shadow rounded-xl border border-emerald-200 p-5 mb-6">
+            <div className="flex justify-between items-center mb-3">
+              <div>
+                <h3 className="font-bold text-gray-900">학교 시간표에서 내 이름 선택</h3>
+                <p className="text-xs text-gray-500">선택하면 아래 표에 채워지고, [저장하기]를 눌러야 확정돼요.</p>
+              </div>
+              <button onClick={() => setImportOpen(false)} className="text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+            <input
+              type="text"
+              value={importFilter}
+              onChange={(e) => setImportFilter(e.target.value)}
+              placeholder="이름 검색..."
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-3 text-gray-900"
+            />
+            <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto">
+              {Object.keys(importTeachers)
+                .sort((a, b) => a.localeCompare(b, 'ko'))
+                .filter((name) => !importFilter || name.includes(importFilter.trim()))
+                .map((name) => {
+                  const isMe =
+                    userData?.displayName &&
+                    normalizeName(name) === normalizeName(userData.displayName)
+                  return (
+                    <button
+                      key={name}
+                      onClick={() => applyImport(name)}
+                      className={`text-sm px-3 py-1.5 rounded-full border transition ${
+                        isMe
+                          ? 'bg-emerald-600 text-white border-emerald-600 font-bold'
+                          : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-emerald-50'
+                      }`}
+                    >
+                      {isMe ? `⭐ ${name} (나)` : name}
+                    </button>
+                  )
+                })}
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-6">
             {/* 왼쪽: 시간표 */}

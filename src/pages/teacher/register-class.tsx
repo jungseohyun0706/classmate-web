@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth, db } from '../../lib/firebase'
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
+import { storedClassGridToInfoTimetable } from '../../lib/timetableConvert'
 
 type School = {
   code: string
@@ -68,8 +69,11 @@ export default function RegisterClass() {
       
       // 고유 반 ID 생성 (학교코드_학년_반)
       // 이렇게 하면 중복 생성을 방지하거나 쉽게 찾을 수 있음
-      const classId = `${selectedSchool.code}_${grade}_${classNm}`
-      
+      // 숫자로 정규화해 "03" 같은 입력이 다른 ID를 만들지 않게 함
+      const gradeNum = parseInt(grade, 10)
+      const classNum = parseInt(classNm, 10)
+      const classId = `${selectedSchool.code}_${gradeNum}_${classNum}`
+
       // 1. Classes 컬렉션에 반 정보 저장
       // setDoc을 쓰면 이미 있으면 덮어쓰기(업데이트) 됨
       await setDoc(doc(db, 'classes', classId), {
@@ -77,8 +81,8 @@ export default function RegisterClass() {
         schoolCode: selectedSchool.code,
         officeCode: selectedSchool.officeCode,
         schoolName: selectedSchool.name,
-        grade: parseInt(grade),
-        classNm: parseInt(classNm),
+        grade: gradeNum,
+        classNm: classNum,
         teacherId: user.uid,
         teacherName: user.displayName || '담임 선생님',
         createdAt: serverTimestamp()
@@ -90,10 +94,28 @@ export default function RegisterClass() {
         schoolCode: selectedSchool.code,
         officeCode: selectedSchool.officeCode,
         schoolName: selectedSchool.name,
-        grade: parseInt(grade),
-        classNm: parseInt(classNm),
+        grade: gradeNum,
+        classNm: classNum,
         role: 'teacher'
       }, { merge: true })
+
+      // 3. 학교 시간표 엑셀(마스터)이 이미 업로드돼 있으면 우리 반 시간표를 자동으로 채움
+      try {
+        const masterSnap = await getDoc(doc(db, 'school_timetables', selectedSchool.code))
+        const classGrid = masterSnap.exists()
+          ? (masterSnap.data().classes || {})[`${gradeNum}-${classNum}`]
+          : null
+        if (classGrid) {
+          await setDoc(
+            doc(db, 'classes', classId, 'info', 'timetable'),
+            storedClassGridToInfoTimetable(classGrid)
+          )
+          toast('업로드된 학교 시간표에서 우리 반 시간표를 자동으로 채웠어요!', 'success')
+        }
+      } catch (autoFillError) {
+        // 자동 채움은 부가 기능 — 실패해도 반 등록 자체는 성공으로 처리
+        console.error('학교 시간표 자동 채움 실패:', autoFillError)
+      }
 
       toast('반 등록이 완료됐어요', 'success')
       router.replace('/dashboard')
