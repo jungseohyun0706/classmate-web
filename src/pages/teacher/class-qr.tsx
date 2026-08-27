@@ -1,11 +1,27 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
-import { auth } from '../../lib/firebase'
+import { auth, db } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from 'firebase/firestore'
 import { toDataURL } from 'qrcode'
 import { issueJoinToken, JOIN_TOKEN_TTL_MS } from '../../lib/join'
 import { useUI } from '../../components/ui/feedback'
+
+interface PendingStudent {
+  id: string
+  name: string
+  studentId?: string
+}
 
 const RING_RADIUS = 16
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -22,6 +38,11 @@ export default function ClassQrPage() {
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [expiresAtMs, setExpiresAtMs] = useState(0)
   const [nowMs, setNowMs] = useState(() => Date.now())
+
+  // 실시간 입장 신청 목록 (QR을 띄운 채 바로 승인)
+  const [pending, setPending] = useState<PendingStudent[]>([])
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [approvedCount, setApprovedCount] = useState(0)
 
   // 토큰 발급 (로드 시 자동 + 새 코드 만들기)
   const issue = useCallback(
@@ -82,6 +103,91 @@ export default function ClassQrPage() {
     const timer = setInterval(() => setNowMs(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [])
+
+  // 입장 신청 실시간 구독 — 학생이 신청하면 QR 아래에 바로 나타남
+  useEffect(() => {
+    const classId = userData?.classId
+    if (!classId) return
+    const q = query(
+      collection(db, 'users'),
+      where('classId', '==', String(classId)),
+      where('role', '==', 'student')
+    )
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: PendingStudent[] = []
+        snap.forEach((d) => {
+          const v = d.data()
+          if (v.status === 'pending') {
+            list.push({
+              id: d.id,
+              name: String(v.name || v.displayName || '이름 없음'),
+              studentId: v.studentId ? String(v.studentId) : undefined,
+            })
+          }
+        })
+        list.sort((a, b) => {
+          const an = parseInt(a.studentId ?? '', 10)
+          const bn = parseInt(b.studentId ?? '', 10)
+          const av = Number.isFinite(an) ? an : 9999
+          const bv = Number.isFinite(bn) ? bn : 9999
+          if (av !== bv) return av - bv
+          return a.name.localeCompare(b.name, 'ko')
+        })
+        setPending(list)
+      },
+      (e) => console.error('입장 신청 구독 실패', e)
+    )
+    return () => unsub()
+  }, [userData?.classId])
+
+  // 승인 + 학생에게 알림 (실패 시 목록은 스냅샷이 되돌려줌)
+  const approveOne = useCallback(
+    async (student: PendingStudent) => {
+      if (busyId) return
+      setBusyId(student.id)
+      try {
+        await updateDoc(doc(db, 'users', student.id), { status: 'approved' })
+        setApprovedCount((n) => n + 1)
+        toast(`${student.name} 승인 완료`, 'success')
+        try {
+          const title = '우리 반 입장 완료 🎉'
+          const body = `${userData?.schoolName || ''} ${userData?.grade || ''}학년 ${userData?.classNm || ''}반 학생이 되었어요!`
+          const url = '/student/today'
+          await addDoc(collection(db, 'users', student.id, 'notifications'), {
+            title,
+            body,
+            url,
+            createdAt: serverTimestamp(),
+            read: false,
+          })
+          void auth.currentUser?.getIdToken().then((t) =>
+            fetch('/api/notify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+              body: JSON.stringify({ toUid: student.id, title, body, url }),
+            }).catch(() => {})
+          )
+        } catch (notifyErr) {
+          console.error(notifyErr)
+        }
+      } catch (e) {
+        console.error(e)
+        toast('승인에 실패했어요. 다시 시도해 주세요.', 'error')
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [busyId, toast, userData]
+  )
+
+  const approveAll = useCallback(async () => {
+    for (const s of pending) {
+      // eslint-disable-next-line no-await-in-loop
+      await approveOne(s)
+    }
+  }, [pending, approveOne])
 
   // 링크 → QR 이미지
   useEffect(() => {
@@ -230,6 +336,61 @@ export default function ClassQrPage() {
               💡 사용법: 교실 TV나 화면에 이 QR을 띄우고, 학생들이 스마트폰 카메라로 스캔하면 돼요.
             </p>
           </div>
+        </div>
+
+        {/* 실시간 입장 신청 — QR을 띄운 채 바로 승인 */}
+        <div className="mt-6 bg-white shadow-lg rounded-xl border border-gray-100 p-5">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="font-bold text-gray-900 flex items-center gap-2">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              입장 신청 {pending.length > 0 && <span className="text-emerald-600">{pending.length}명</span>}
+            </h3>
+            {pending.length > 1 && (
+              <button
+                onClick={approveAll}
+                disabled={!!busyId}
+                className="whitespace-nowrap text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded-xl disabled:opacity-50 transition"
+              >
+                ✓ 모두 승인 ({pending.length})
+              </button>
+            )}
+          </div>
+
+          {pending.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-4">
+              {approvedCount > 0
+                ? `이번에 ${approvedCount}명을 승인했어요. 새 신청을 기다리는 중...`
+                : '학생이 QR을 스캔해 신청하면 여기에 실시간으로 나타나요.'}
+            </p>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {pending.map((s) => (
+                <li key={s.id} className="flex items-center justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <span className="font-bold text-gray-900">{s.name}</span>
+                    {s.studentId && <span className="ml-2 text-sm text-gray-400">{s.studentId}번</span>}
+                  </div>
+                  <button
+                    onClick={() => approveOne(s)}
+                    disabled={!!busyId}
+                    className="whitespace-nowrap shrink-0 text-sm font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 px-4 py-1.5 rounded-lg disabled:opacity-50 transition"
+                  >
+                    승인
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <button
+            onClick={() => router.push('/teacher/students')}
+            className="mt-3 w-full text-center text-xs text-gray-400 hover:text-gray-600 py-1"
+          >
+            거절·전체 명단은 학생 관리에서 →
+          </button>
         </div>
       </div>
     </div>
