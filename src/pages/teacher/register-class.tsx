@@ -35,6 +35,43 @@ export default function RegisterClass() {
   // 이미 담임인 반 (반 변경 모드 안내용)
   const [currentClassLabel, setCurrentClassLabel] = useState('')
 
+  // 담임이 아닌(교과 전담 등) 선생님: 반 없이 학교 소속만 등록
+  const handleSchoolOnly = async () => {
+    if (!selectedSchool) return
+    if (!auth.currentUser) {
+      toast('로그인이 필요해요', 'error')
+      router.replace('/auth/login')
+      return
+    }
+    setSubmitting(true)
+    try {
+      const user = auth.currentUser
+      const meSnap = await getDoc(doc(db, 'users', user.uid))
+      if (meSnap.exists() && meSnap.data().role === 'student') {
+        toast('학생 계정으로는 등록할 수 없어요.', 'error')
+        router.replace('/student/today')
+        return
+      }
+      await setDoc(
+        doc(db, 'users', user.uid),
+        {
+          schoolCode: selectedSchool.code,
+          officeCode: selectedSchool.officeCode,
+          schoolName: selectedSchool.name,
+          role: 'teacher',
+        },
+        { merge: true }
+      )
+      toast('학교 등록 완료! 시간표·교환·SOS를 바로 쓸 수 있어요.', 'success')
+      router.replace('/dashboard')
+    } catch (e: any) {
+      console.error(e)
+      toast('등록에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) return
@@ -310,6 +347,26 @@ export default function RegisterClass() {
                       : '반 숫자를 입력하면 버튼이 켜져요'}
                 </p>
               )}
+
+              <div className="relative py-2">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-gray-200"></div>
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="px-2 bg-white text-gray-400">또는</span>
+                </div>
+              </div>
+
+              <button
+                onClick={handleSchoolOnly}
+                disabled={submitting}
+                className="w-full flex justify-center py-3.5 px-4 border border-gray-300 rounded-lg text-base font-bold text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              >
+                🧑‍🏫 담임이 아니에요 — 학교만 등록하기
+              </button>
+              <p className="text-center text-xs text-gray-400 -mt-2 break-keep">
+                교과 선생님도 내 시간표·수업 교환·보결 SOS를 모두 쓸 수 있어요. 담임 반은 나중에 언제든 등록 가능해요.
+              </p>
             </div>
           )}
 
