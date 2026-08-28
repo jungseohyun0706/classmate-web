@@ -8,6 +8,7 @@ import TodayCard from '../../components/TodayCard'
 import BagChecklist from '../../components/BagChecklist'
 import MealRating from '../../components/MealRating'
 import EnablePush from '../../components/EnablePush'
+import { useInstallPrompt } from '../../components/ui/install'
 import {
   formatNoticeDate,
   getMyReceipts,
@@ -106,6 +107,7 @@ export function StudentTabBar({ active }: { active: 'today' | 'notices' }): JSX.
 
 export default function StudentToday(): JSX.Element {
   const router = useRouter()
+  const { canInstall, promptInstall, isStandalone, showInstallGuide } = useInstallPrompt()
   const [loading, setLoading] = useState<boolean>(true)
   const [uid, setUid] = useState<string | null>(null)
   const [userData, setUserData] = useState<StudentData | null>(null)
@@ -418,6 +420,25 @@ export default function StudentToday(): JSX.Element {
                 </ul>
               )}
             </section>
+
+            {/* 홈 화면 설치 유도 (이미 앱으로 쓰는 중이면 숨김) */}
+            {!isStandalone && (
+              <button
+                onClick={() => {
+                  if (canInstall) void promptInstall()
+                  else showInstallGuide()
+                }}
+                className="w-full flex items-center gap-3 rounded-xl border border-emerald-200 bg-white p-4 text-left shadow-sm transition hover:bg-emerald-50 active:scale-[0.99]"
+              >
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-xl">📱</span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-gray-900">홈 화면에 앱으로 설치하기</span>
+                  <span className="block text-xs text-gray-500 break-keep">
+                    아이콘 한 번으로 바로 열 수 있어요 (설치 방법 안내)
+                  </span>
+                </span>
+              </button>
+            )}
 
             <EnablePush variant="student" />
 
