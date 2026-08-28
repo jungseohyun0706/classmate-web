@@ -274,10 +274,10 @@ export default function RegisterClass() {
                     type="number"
                     min="1"
                     max="6"
-                    className="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-lg"
+                    className="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-lg text-gray-900 placeholder-gray-300"
                     value={grade}
                     onChange={(e) => setGrade(e.target.value)}
-                    placeholder="1"
+                    placeholder="예: 1"
                   />
                 </div>
                 <div>
@@ -286,10 +286,10 @@ export default function RegisterClass() {
                     type="number"
                     min="1"
                     max="20"
-                    className="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-lg"
+                    className="block w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-lg text-gray-900 placeholder-gray-300"
                     value={classNm}
                     onChange={(e) => setClassNm(e.target.value)}
-                    placeholder="3"
+                    placeholder="예: 3"
                   />
                 </div>
               </div>
@@ -301,6 +301,15 @@ export default function RegisterClass() {
               >
                 {submitting ? '등록 중...' : '이대로 반 생성하기'}
               </button>
+              {(!grade || !classNm) && (
+                <p className="text-center text-sm text-amber-600 -mt-2">
+                  {!grade && !classNm
+                    ? '학년과 반 숫자를 입력하면 버튼이 켜져요'
+                    : !grade
+                      ? '학년 숫자를 입력하면 버튼이 켜져요'
+                      : '반 숫자를 입력하면 버튼이 켜져요'}
+                </p>
+              )}
             </div>
           )}
 
