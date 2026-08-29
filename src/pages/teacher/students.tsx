@@ -38,6 +38,31 @@ function classLabel(classId: string): string {
   return `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
 }
 
+/** 마스터 시간표의 교사 그리드에서 수업 반 classId 목록 추출 */
+function suggestionsFromGrid(
+  grid: any,
+  schoolCode: string,
+  myClassId: string | undefined,
+  teaching: string[]
+): string[] {
+  const labels = new Set<string>()
+  for (const day of Object.values(grid || {}) as any[]) {
+    if (!Array.isArray(day)) continue
+    for (const slot of day) {
+      const label = slot?.classLabel
+      if (typeof label === 'string' && /^\d{1,2}-\d{1,2}$/.test(label)) labels.add(label)
+    }
+  }
+  const ids = Array.from(labels)
+    .map((label) => {
+      const [g, c] = label.split('-')
+      return `${schoolCode}_${parseInt(g, 10)}_${parseInt(c, 10)}`
+    })
+    .filter((id) => id !== myClassId && !teaching.includes(id))
+  ids.sort((a, b) => classLabel(a).localeCompare(classLabel(b), 'ko', { numeric: true }))
+  return ids
+}
+
 export default function StudentList() {
   const router = useRouter()
   const { toast, confirm } = useUI()
@@ -54,6 +79,11 @@ export default function StudentList() {
   const [addGrade, setAddGrade] = useState('')
   const [addClassNm, setAddClassNm] = useState('')
   const [adding, setAdding] = useState(false)
+
+  // 엑셀 이름 매칭 실패 시: 이름 선택 피커
+  const [masterTeachers, setMasterTeachers] = useState<Record<string, any> | null>(null)
+  const [needNamePick, setNeedNamePick] = useState(false)
+  const [nameFilter, setNameFilter] = useState('')
 
   const myClassId: string = me?.classId || ''
   const schoolCode: string = me?.schoolCode || ''
@@ -90,26 +120,19 @@ export default function StudentList() {
           const master = await getDoc(doc(db, 'school_timetables', String(userData.schoolCode)))
           if (master.exists()) {
             const teachers = master.data().teachers || {}
-            const myName = normalizeName(String(userData.displayName || userData.name || ''))
-            const matchKey = Object.keys(teachers).find((k) => normalizeName(k) === myName)
+            setMasterTeachers(teachers)
+            // masterName(직접 선택한 엑셀 이름) → displayName → name 순으로 매칭
+            const myNames = [userData.masterName, userData.displayName, userData.name]
+              .filter((n: unknown) => typeof n === 'string' && n)
+              .map((n: string) => normalizeName(n))
+            const matchKey = Object.keys(teachers).find((k) => myNames.includes(normalizeName(k)))
             if (matchKey) {
-              const labels = new Set<string>()
-              const grid = teachers[matchKey] || {}
-              for (const day of Object.values(grid) as any[]) {
-                if (!Array.isArray(day)) continue
-                for (const slot of day) {
-                  const label = slot?.classLabel
-                  if (typeof label === 'string' && /^\d{1,2}-\d{1,2}$/.test(label)) labels.add(label)
-                }
-              }
-              const ids = Array.from(labels)
-                .map((label) => {
-                  const [g, c] = label.split('-')
-                  return `${userData.schoolCode}_${parseInt(g, 10)}_${parseInt(c, 10)}`
-                })
-                .filter((id) => id !== userData.classId && !t.includes(id))
-              ids.sort((a, b) => classLabel(a).localeCompare(classLabel(b), 'ko', { numeric: true }))
-              setSuggestions(ids)
+              setSuggestions(
+                suggestionsFromGrid(teachers[matchKey], String(userData.schoolCode), userData.classId, t)
+              )
+            } else if (Object.keys(teachers).length > 0) {
+              // 구글 영문 이름 등으로 매칭 실패 → 이름 선택 피커 표시
+              setNeedNamePick(true)
             }
           }
         } catch (e) {
@@ -187,6 +210,20 @@ export default function StudentList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
 
+  // 엑셀 이름 직접 선택 → 계정에 영구 연결(masterName) + 제안 갱신
+  const pickMasterName = async (name: string) => {
+    if (!auth.currentUser || !masterTeachers) return
+    try {
+      await updateDoc(doc(db, 'users', auth.currentUser.uid), { masterName: name })
+      setNeedNamePick(false)
+      setSuggestions(suggestionsFromGrid(masterTeachers[name], schoolCode, myClassId, teaching))
+      toast(`'${name}' 선생님으로 연결했어요!`, 'success')
+    } catch (e) {
+      console.error(e)
+      toast('연결하지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
+    }
+  }
+
   const addTeaching = async (classId: string) => {
     if (!auth.currentUser || teaching.includes(classId)) return
     try {
@@ -233,7 +270,7 @@ export default function StudentList() {
     }
     const classId = `${schoolCode}_${g}_${c}`
     if (classId === myClassId) {
-      toast('우리 반은 이미 있어요.', 'info')
+      toast(`${classLabel(classId)}은 이미 🏠 우리 반 탭에 있어요.`, 'info')
       return
     }
     if (teaching.includes(classId)) {
@@ -380,6 +417,40 @@ export default function StudentList() {
                 {id === myClassId ? `🏠 우리 반 (${classLabel(id)})` : classLabel(id)}
               </button>
             ))}
+          </div>
+        )}
+
+        {/* 엑셀 이름 매칭 실패 → 이름 선택 피커 */}
+        {needNamePick && masterTeachers && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-xs font-bold text-amber-800 mb-1">
+              🔍 엑셀 시간표에서 선생님을 찾지 못했어요
+            </p>
+            <p className="text-xs text-amber-700 mb-2.5 break-keep">
+              계정 이름({me?.displayName})이 시간표의 이름과 달라서예요. 아래에서 본인 이름을
+              한 번만 선택하면 수업 반이 자동으로 나타나요.
+            </p>
+            <input
+              type="text"
+              value={nameFilter}
+              onChange={(e) => setNameFilter(e.target.value)}
+              placeholder="이름 검색..."
+              className="mb-2 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-900"
+            />
+            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+              {Object.keys(masterTeachers)
+                .sort((a, b) => a.localeCompare(b, 'ko'))
+                .filter((n) => !nameFilter || n.includes(nameFilter.trim()))
+                .map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => void pickMasterName(n)}
+                    className="rounded-full bg-white px-3 py-1.5 text-sm font-bold text-amber-800 ring-1 ring-amber-300 hover:bg-amber-100 transition"
+                  >
+                    {n}
+                  </button>
+                ))}
+            </div>
           </div>
         )}
 

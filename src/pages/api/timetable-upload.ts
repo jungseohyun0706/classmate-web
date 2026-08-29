@@ -170,11 +170,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const byName = new Map<string, { uid: string; hasSchedule: boolean }[]>()
     teacherSnap.forEach((docSnap) => {
       const d = docSnap.data()
-      const name = normalizeName(typeof d.displayName === 'string' ? d.displayName : '')
-      if (!name) return
-      const list = byName.get(name) || []
-      list.push({ uid: docSnap.id, hasSchedule: Boolean(d.mySchedule) })
-      byName.set(name, list)
+      // masterName(교사가 직접 연결한 엑셀 이름) 우선, displayName·name도 함께 매칭
+      const keys = new Set(
+        [d.masterName, d.displayName, d.name]
+          .filter((n): n is string => typeof n === 'string' && n.length > 0)
+          .map((n) => normalizeName(n))
+      )
+      for (const key of keys) {
+        const list = byName.get(key) || []
+        list.push({ uid: docSnap.id, hasSchedule: Boolean(d.mySchedule) })
+        byName.set(key, list)
+      }
     })
 
     for (const [name, grid] of Object.entries(data.teachers)) {

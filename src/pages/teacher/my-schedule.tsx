@@ -332,9 +332,9 @@ export default function MySchedulePage() {
                 .sort((a, b) => a.localeCompare(b, 'ko'))
                 .filter((name) => !importFilter || name.includes(importFilter.trim()))
                 .map((name) => {
-                  const isMe =
-                    userData?.displayName &&
-                    normalizeName(name) === normalizeName(userData.displayName)
+                  const isMe = [userData?.masterName, userData?.displayName].some(
+                    (x) => typeof x === 'string' && x && normalizeName(name) === normalizeName(x)
+                  )
                   return (
                     <button
                       key={name}
