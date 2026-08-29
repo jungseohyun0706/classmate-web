@@ -75,11 +75,13 @@ function formatDayLabel(ts: Timestamp | null): string {
   return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${days[d.getDay()]}요일`
 }
 
-/** classId(`{school}_{g}_{c}`) → '1학년 3반' */
+/** classId → '1학년 3반' (수업 그룹 `{base}_g_{uid6}`이면 '1학년 3반 수업') */
 function labelOf(classId: string): string {
-  const parts = classId.split('_')
+  const isGroup = /_g_[A-Za-z0-9]+$/.test(classId)
+  const parts = classId.replace(/_g_[A-Za-z0-9]+$/, '').split('_')
   if (parts.length < 3) return classId
-  return `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
+  const base = `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
+  return isGroup ? `${base} 수업` : base
 }
 
 /** 이름 첫 글자 아바타 색 (이름 기반 고정) */

@@ -12,6 +12,7 @@ import {
   getDocs,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
 } from 'firebase/firestore'
@@ -31,11 +32,18 @@ type Student = {
   homeClassId?: string
 }
 
-/** classId(`{school}_{g}_{c}`) → '1학년 3반' */
+/** 수업 그룹 id(`{base}_g_{uid6}`)에서 원본 반 id 추출 */
+function baseOf(id: string): string {
+  return id.replace(/_g_[A-Za-z0-9]+$/, '')
+}
+
+/** classId → '1학년 3반' (수업 그룹이면 '1학년 3반 수업') */
 function classLabel(classId: string): string {
-  const parts = classId.split('_')
+  const isGroup = /_g_[A-Za-z0-9]+$/.test(classId)
+  const parts = baseOf(classId).split('_')
   if (parts.length < 3) return classId
-  return `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
+  const base = `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
+  return isGroup ? `${base} 수업` : base
 }
 
 /** 마스터 시간표의 교사 그리드에서 수업 반 classId 목록 추출 */
@@ -53,12 +61,15 @@ function suggestionsFromGrid(
       if (typeof label === 'string' && /^\d{1,2}-\d{1,2}$/.test(label)) labels.add(label)
     }
   }
+  // 이미 추가한 수업 그룹의 원본 반은 제외. 본인 담임 반도 '수업 그룹'으로 또 만들 수 있음
+  // (수업 그룹엔 다른 반 학생이 섞일 수 있어 담임 반과 별개의 방이기 때문)
+  const teachingBases = new Set(teaching.map(baseOf))
   const ids = Array.from(labels)
     .map((label) => {
       const [g, c] = label.split('-')
       return `${schoolCode}_${parseInt(g, 10)}_${parseInt(c, 10)}`
     })
-    .filter((id) => id !== myClassId && !teaching.includes(id))
+    .filter((id) => !teachingBases.has(id))
   ids.sort((a, b) => classLabel(a).localeCompare(classLabel(b), 'ko', { numeric: true }))
   return ids
 }
@@ -224,16 +235,42 @@ export default function StudentList() {
     }
   }
 
-  const addTeaching = async (classId: string) => {
-    if (!auth.currentUser || teaching.includes(classId)) return
+  // 수업 반 추가 = 내 소유의 독립 그룹 생성 (담임 반과 별개 — 다른 반 학생이 섞여도 OK)
+  const addTeaching = async (baseClassId: string) => {
+    const user = auth.currentUser
+    if (!user) return
+    const gid = `${baseClassId}_g_${user.uid.slice(0, 6)}`
+    if (teaching.includes(gid)) {
+      toast('이미 추가된 수업 반이에요.', 'info')
+      return
+    }
+    const parts = baseClassId.split('_')
+    const g = parseInt(parts[parts.length - 2], 10)
+    const c = parseInt(parts[parts.length - 1], 10)
     try {
-      await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-        teachingClassIds: arrayUnion(classId),
+      await setDoc(
+        doc(db, 'classes', gid),
+        {
+          classId: gid,
+          schoolCode,
+          officeCode: me?.officeCode ?? null,
+          schoolName: me?.schoolName ?? '',
+          grade: g,
+          classNm: c,
+          teacherId: user.uid,
+          teacherName: me?.displayName || me?.name || '선생님',
+          isGroup: true,
+          createdAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+      await updateDoc(doc(db, 'users', user.uid), {
+        teachingClassIds: arrayUnion(gid),
       })
-      setTeaching((prev) => [...prev, classId])
-      setSuggestions((prev) => prev.filter((id) => id !== classId))
-      setActiveId(classId)
-      toast(`${classLabel(classId)}을 수업 반에 추가했어요.`, 'success')
+      setTeaching((prev) => [...prev, gid])
+      setSuggestions((prev) => prev.filter((id) => id !== baseClassId))
+      setActiveId(gid)
+      toast(`${classLabel(gid)} 반을 만들었어요. QR로 학생들을 초대하세요!`, 'success')
     } catch (e) {
       console.error(e)
       toast('추가하지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
@@ -268,28 +305,11 @@ export default function StudentList() {
       toast('학년과 반 숫자를 입력해 주세요.', 'error')
       return
     }
-    const classId = `${schoolCode}_${g}_${c}`
-    if (classId === myClassId) {
-      toast(`${classLabel(classId)}은 이미 🏠 우리 반 탭에 있어요.`, 'info')
-      return
-    }
-    if (teaching.includes(classId)) {
-      toast('이미 추가된 반이에요.', 'info')
-      return
-    }
     setAdding(true)
     try {
-      const cls = await getDoc(doc(db, 'classes', classId))
-      if (!cls.exists()) {
-        toast('아직 앱에 만들어지지 않은 반이에요. 학년·반을 확인해 주세요.', 'error')
-        return
-      }
-      await addTeaching(classId)
+      await addTeaching(`${schoolCode}_${g}_${c}`)
       setAddGrade('')
       setAddClassNm('')
-    } catch (e) {
-      console.error(e)
-      toast('추가하지 못했어요.', 'error')
     } finally {
       setAdding(false)
     }
@@ -491,7 +511,7 @@ export default function StudentList() {
             {!isMyClassActive && (
               <div className="flex items-center justify-between rounded-xl bg-white border border-gray-200 px-4 py-3">
                 <p className="text-xs text-gray-500 break-keep">
-                  수업 반이에요. QR 초대와 승인을 여기서 할 수 있어요.
+                  내 수업 반이에요. 어느 반 학생이든 QR로 초대할 수 있어요 (담임 반과 별개).
                 </p>
                 <button
                   onClick={() => void removeTeaching(activeId)}

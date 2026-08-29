@@ -38,6 +38,7 @@ export default function ClassQrPage() {
     grade: string | number
     classNm: string | number
     schoolName: string
+    isGroup: boolean
   } | null>(null)
 
   const [issuing, setIssuing] = useState(false)
@@ -114,6 +115,7 @@ export default function ClassQrPage() {
             grade: cls.grade,
             classNm: cls.classNm,
             schoolName: String(cls.schoolName || data.schoolName || ''),
+            isGroup: cls.isGroup === true,
           })
           setUserData(data)
           void issue(target)
@@ -282,6 +284,7 @@ export default function ClassQrPage() {
           <div className="p-6 sm:p-8 flex flex-col items-center text-center">
             <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 break-keep">
               {targetClass?.schoolName} {targetClass?.grade}학년 {targetClass?.classNm}반
+              {targetClass?.isGroup && <span className="ml-1.5 align-middle rounded-full bg-cyan-100 px-2 py-0.5 text-xs font-bold text-cyan-700">수업</span>}
             </h2>
             <p className="mt-1 text-sm text-gray-500">카메라로 QR 코드를 스캔하면 입장할 수 있어요.</p>
 

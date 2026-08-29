@@ -102,6 +102,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(200).json({ ok: true, status: 'joined-extra' })
     }
 
+    // 수업 그룹 QR은 본반(담임 반) 가입 후에만 추가 참여 가능 — 본반은 실제 학급이어야 함
+    if (cls.isGroup === true) {
+      return res.status(403).json({
+        error: '이 QR은 수업 반이에요. 먼저 담임 선생님의 우리 반 QR로 가입한 뒤 다시 찍어 주세요.',
+      })
+    }
+
     // 4) 학생 프로필 기록 (재입장/반 이동 포함 — 항상 승인 대기로)
     const profile: Record<string, unknown> = {
       role: 'student',
