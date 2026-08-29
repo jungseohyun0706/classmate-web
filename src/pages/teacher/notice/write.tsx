@@ -105,7 +105,8 @@ export default function WriteNotice() {
         requiresConsent,
         ...(supplies.length > 0 ? { supplies } : {}),
         createdAt: serverTimestamp(),
-        readCount: 0
+        readCount: 0,
+        checkCount: 0
       })
 
       toast('공지사항이 등록되었어요!', 'success')

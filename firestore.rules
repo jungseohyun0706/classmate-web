@@ -167,7 +167,8 @@ service cloud.firestore {
           && myDoc().status == 'approved'
           && myDoc().classId == classId
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readCount'])
-          && request.resource.data.readCount == resource.data.readCount + 1;
+          && request.resource.data.readCount ==
+             (('readCount' in resource.data) ? resource.data.readCount + 1 : 1);
 
         // 예외: 확인 체크 카운터(checkCount)도 +1만 가능
         allow update: if signedIn()
@@ -175,7 +176,8 @@ service cloud.firestore {
           && myDoc().status == 'approved'
           && myDoc().classId == classId
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['checkCount'])
-          && request.resource.data.checkCount == resource.data.checkCount + 1;
+          && request.resource.data.checkCount ==
+             (('checkCount' in resource.data) ? resource.data.checkCount + 1 : 1);
 
         // ── comments/{cid}: 알림장 댓글(의견 나누기) ──
         match /comments/{cid} {
