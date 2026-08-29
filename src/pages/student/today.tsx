@@ -97,7 +97,7 @@ export function StudentTabBar({ active }: { active: 'today' | 'notices' | 'room'
           >
             <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
           </svg>
-          이야기방
+          톡방
         </Link>
       </div>
     </nav>
@@ -372,7 +372,7 @@ export default function StudentToday(): JSX.Element {
                   href="/class-room"
                   className="-m-2 p-2 text-xs font-semibold text-emerald-600 transition-colors hover:text-emerald-700"
                 >
-                  이야기방에서 보기 &rarr;
+                  톡방에서 보기 &rarr;
                 </Link>
               </div>
               {notices.length === 0 ? (

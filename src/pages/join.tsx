@@ -190,6 +190,11 @@ export default function JoinPage() {
         router.replace('/student/today')
         return
       }
+      if (data.status === 'joined-extra') {
+        toast(data.already ? '이미 참여한 반이에요!' : '반 톡방에 참여했어요! 💬', 'success')
+        router.replace(`/class-room?classId=${encodeURIComponent(classId)}`)
+        return
+      }
       setJoined(true)
       toast('입장 신청을 보냈어요.', 'success')
     } catch (err: any) {

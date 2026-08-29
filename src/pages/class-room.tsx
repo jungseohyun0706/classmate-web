@@ -143,23 +143,34 @@ export default function ClassRoom(): JSX.Element {
     setChat([])
     setReceipts({})
     setRosterFor(null)
+    setRosterStudents(null)
     setBannerOpen(false)
     setMemberCount(null)
     setRoomClassId(id)
   }
 
-  // 인원수(승인 학생 + 담임) — 반이 바뀔 때마다
+  // 인원수(본반 + 추가 참여 학생 + 담임) — 반이 바뀔 때마다
   useEffect(() => {
     if (!classId) return
-    void getCountFromServer(
-      query(
-        collection(db, 'users'),
-        where('classId', '==', classId),
-        where('role', '==', 'student'),
-        where('status', '==', 'approved')
-      )
-    )
-      .then((s) => setMemberCount(s.data().count + 1))
+    void Promise.all([
+      getCountFromServer(
+        query(
+          collection(db, 'users'),
+          where('classId', '==', classId),
+          where('role', '==', 'student'),
+          where('status', '==', 'approved')
+        )
+      ),
+      getCountFromServer(
+        query(
+          collection(db, 'users'),
+          where('extraClassIds', 'array-contains', classId),
+          where('role', '==', 'student'),
+          where('status', '==', 'approved')
+        )
+      ),
+    ])
+      .then(([a, b]) => setMemberCount(a.data().count + b.data().count + 1))
       .catch(() => {})
   }, [classId])
 
@@ -188,7 +199,14 @@ export default function ClassRoom(): JSX.Element {
             setLoading(false)
             return
           }
-          setRoomClassId(String(data.classId))
+          // 본반 + 추가 참여 반
+          const extras: string[] = Array.isArray((data as any).extraClassIds)
+            ? (data as any).extraClassIds.filter((x: unknown) => typeof x === 'string')
+            : []
+          const m = [String(data.classId), ...extras.filter((id) => id !== data.classId)]
+          setManaged(m)
+          const requested = new URLSearchParams(window.location.search).get('classId')
+          setRoomClassId(requested && m.includes(requested) ? requested : m[0])
         } else {
           // 교사: 담임 반 + 수업 반 중 선택 (?classId= 우선)
           const teachingIds: string[] = Array.isArray((data as any).teachingClassIds)
@@ -391,24 +409,38 @@ export default function ClassRoom(): JSX.Element {
     if (!isTeacher || !rosterFor || !classId) return
     let cancelled = false
     if (!rosterStudents) {
-      void getDocs(
-        query(
-          collection(db, 'users'),
-          where('classId', '==', classId),
-          where('role', '==', 'student'),
-          where('status', '==', 'approved')
-        )
-      ).then((snap) => {
+      void Promise.all([
+        getDocs(
+          query(
+            collection(db, 'users'),
+            where('classId', '==', classId),
+            where('role', '==', 'student'),
+            where('status', '==', 'approved')
+          )
+        ),
+        getDocs(
+          query(
+            collection(db, 'users'),
+            where('extraClassIds', 'array-contains', classId),
+            where('role', '==', 'student'),
+            where('status', '==', 'approved')
+          )
+        ),
+      ]).then(([homeSnap, extraSnap]) => {
         if (cancelled) return
-        const list = snap.docs.map((d) => {
+        const seen = new Set<string>()
+        const list: { id: string; name: string; no: number }[] = []
+        for (const d of [...homeSnap.docs, ...extraSnap.docs]) {
+          if (seen.has(d.id)) continue
+          seen.add(d.id)
           const v = d.data()
           const no = parseInt(String(v.studentId ?? ''), 10)
-          return {
+          list.push({
             id: d.id,
             name: String(v.name || v.displayName || '이름 없음'),
             no: Number.isFinite(no) ? no : 9999,
-          }
-        })
+          })
+        }
         list.sort((a, b) => (a.no !== b.no ? a.no - b.no : a.name.localeCompare(b.name, 'ko')))
         setRosterStudents(list)
       })
@@ -455,8 +487,8 @@ export default function ClassRoom(): JSX.Element {
         </p>
         <p className="mt-1 text-sm text-gray-500 break-keep">
           {blocked === 'pending'
-            ? '승인이 끝나면 우리 반 이야기방에 들어올 수 있어요.'
-            : '반에 들어가면 이야기방이 열려요. 선생님은 학생 관리에서 수업 반을 추가해 주세요.'}
+            ? '승인이 끝나면 우리 반 톡방에 들어올 수 있어요.'
+            : '반에 들어가면 톡방이 열려요. 선생님은 학생 관리에서 수업 반을 추가해 주세요.'}
         </p>
         <button
           onClick={() => router.replace(blocked === 'pending' ? '/student/today' : '/dashboard')}
@@ -484,12 +516,19 @@ export default function ClassRoom(): JSX.Element {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="m15 6-6 6 6 6"/></svg>
             </button>
             <div className="min-w-0">
-              {isTeacher && roomOptions.length > 1 ? (
-                <div className="flex items-center gap-1">
+              {roomOptions.length > 1 ? (
+                <div className="flex items-center gap-1.5">
                   <select
                     value={classId}
                     onChange={(e) => switchRoom(e.target.value)}
-                    className="max-w-[11rem] truncate rounded-lg border-0 bg-black/5 px-2 py-1.5 text-[14px] font-bold text-gray-900 focus:outline-none"
+                    className="max-w-[13rem] truncate appearance-none rounded-xl border border-black/10 bg-white/70 pl-3 pr-8 py-2 text-base font-bold text-gray-900 shadow-sm focus:outline-none"
+                    style={{
+                      backgroundImage:
+                        "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\")",
+                      backgroundRepeat: 'no-repeat',
+                      backgroundPosition: 'right 0.6rem center',
+                      backgroundSize: '1rem',
+                    }}
                   >
                     {roomOptions.map((id) => (
                       <option key={id} value={id}>
@@ -497,14 +536,14 @@ export default function ClassRoom(): JSX.Element {
                       </option>
                     ))}
                   </select>
-                  <span className="text-[14px] font-bold text-gray-900">이야기방</span>
+                  <span className="text-[15px] font-bold text-gray-900">톡방</span>
                   {memberCount !== null && (
                     <span className="text-[13px] font-medium text-gray-600">{memberCount}</span>
                   )}
                 </div>
               ) : (
                 <h1 className="flex items-center gap-1.5 truncate text-[15px] font-bold text-gray-900">
-                  {classLabel} 이야기방
+                  {classLabel} 톡방
                   {memberCount !== null && <span className="text-[13px] font-medium text-gray-600">{memberCount}</span>}
                 </h1>
               )}

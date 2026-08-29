@@ -73,8 +73,33 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (prev.role === 'teacher') {
       return res.status(403).json({ error: '교사 계정으로는 학생 입장을 할 수 없어요.' })
     }
-    if (prev.role === 'student' && prev.status === 'approved' && prev.classId === classId) {
-      return res.status(200).json({ ok: true, status: 'approved', already: true })
+
+    // 본반이 확정(승인)된 학생: 본반은 그대로 두고, 다른 반 QR은 '추가 반' 참여로 처리
+    // (이동수업·교과 반 대응 — 선생님이 직접 보여주는 QR이므로 별도 승인 없이 즉시 참여)
+    if (prev.role === 'student' && prev.status === 'approved' && prev.classId) {
+      if (prev.classId === classId) {
+        return res.status(200).json({ ok: true, status: 'approved', already: true })
+      }
+      const extras: string[] = Array.isArray(prev.extraClassIds) ? prev.extraClassIds : []
+      if (extras.includes(classId)) {
+        return res.status(200).json({ ok: true, status: 'joined-extra', already: true })
+      }
+      await userRef.set({ extraClassIds: FieldValue.arrayUnion(classId) }, { merge: true })
+      const extraTeacherId = cls.teacherId ? String(cls.teacherId) : ''
+      if (extraTeacherId) {
+        try {
+          await db.collection('users').doc(extraTeacherId).collection('notifications').add({
+            title: '수업 반 참여',
+            body: `${String(prev.name || cleanName)} 학생이 ${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반 톡방에 참여했어요`,
+            url: '/teacher/students',
+            createdAt: FieldValue.serverTimestamp(),
+            read: false,
+          })
+        } catch (e) {
+          console.error('join: extra notify failed:', e)
+        }
+      }
+      return res.status(200).json({ ok: true, status: 'joined-extra' })
     }
 
     // 4) 학생 프로필 기록 (재입장/반 이동 포함 — 항상 승인 대기로)

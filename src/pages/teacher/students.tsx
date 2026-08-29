@@ -27,6 +27,8 @@ type Student = {
   name: string
   studentId: number // 출석번호
   status: 'pending' | 'approved' | 'rejected'
+  /** 추가 참여 학생의 본반 classId (본반 학생이면 undefined) */
+  homeClassId?: string
 }
 
 /** classId(`{school}_{g}_{c}`) → '1학년 3반' */
@@ -129,14 +131,39 @@ export default function StudentList() {
     setRosterLoading(true)
     ;(async () => {
       try {
-        const snap = await getDocs(
-          query(collection(db, 'users'), where('classId', '==', activeId), where('role', '==', 'student'))
-        )
+        const [homeSnap, extraSnap] = await Promise.all([
+          getDocs(
+            query(collection(db, 'users'), where('classId', '==', activeId), where('role', '==', 'student'))
+          ),
+          getDocs(
+            query(
+              collection(db, 'users'),
+              where('extraClassIds', 'array-contains', activeId),
+              where('role', '==', 'student'),
+              where('status', '==', 'approved')
+            )
+          ),
+        ])
         if (cancelled) return
+        const seen = new Set<string>()
         const list: Student[] = []
-        snap.forEach((d) => {
+        homeSnap.forEach((d) => {
           const s = { id: d.id, ...d.data() } as Student
-          if (s.status !== 'rejected') list.push(s)
+          if (s.status !== 'rejected') {
+            seen.add(d.id)
+            list.push(s)
+          }
+        })
+        extraSnap.forEach((d) => {
+          if (seen.has(d.id)) return
+          const v = d.data()
+          list.push({
+            id: d.id,
+            name: String(v.name || v.displayName || '이름 없음'),
+            studentId: Number(v.studentId ?? 0),
+            status: 'approved',
+            homeClassId: typeof v.classId === 'string' ? v.classId : undefined,
+          })
         })
         list.sort((a, b) => {
           const an = parseInt(String(a.studentId ?? ''), 10)
@@ -480,8 +507,13 @@ export default function StudentList() {
                         <span className="h-9 w-9 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-sm mr-3">
                           {student.studentId}
                         </span>
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex items-center gap-2">
                           <div className="text-sm font-medium text-gray-900 truncate">{student.name}</div>
+                          {student.homeClassId && (
+                            <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+                              본반 {classLabel(student.homeClassId)}
+                            </span>
+                          )}
                         </div>
                       </li>
                     ))}

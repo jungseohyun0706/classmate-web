@@ -46,29 +46,42 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!classSnap.exists) return res.status(404).json({ error: '학급을 찾을 수 없어요.' })
     const sender = senderSnap.exists ? senderSnap.data() || {} : {}
     const cls = classSnap.data() || {}
-    const isClassTeacher = String(cls.teacherId || '') === decoded.uid
+    const isSchoolTeacher =
+      sender.role === 'teacher' && String(sender.schoolCode || '') === String(cls.schoolCode || '')
     const isClassStudent =
-      sender.role === 'student' && sender.status === 'approved' && sender.classId === classId
-    if (!isClassTeacher && !isClassStudent) {
+      sender.role === 'student' &&
+      sender.status === 'approved' &&
+      (sender.classId === classId ||
+        (Array.isArray(sender.extraClassIds) && sender.extraClassIds.includes(classId)))
+    if (!isSchoolTeacher && !isClassStudent) {
       return res.status(403).json({ error: '이 반의 구성원만 보낼 수 있어요.' })
     }
 
     const senderName =
-      String(sender.name || sender.displayName || (isClassTeacher ? '선생님' : '학생')).slice(0, 12)
+      String(sender.name || sender.displayName || (isSchoolTeacher ? '선생님' : '학생')).slice(0, 12)
 
-    // 대상: 담임 + 승인된 학생 (발신자 제외)
-    const studentsSnap = await db
-      .collection('users')
-      .where('classId', '==', classId)
-      .where('role', '==', 'student')
-      .where('status', '==', 'approved')
-      .get()
+    // 대상: 담임 + 본반 학생 + 추가 참여 학생 (발신자 제외)
+    const [homeSnap, extraSnap] = await Promise.all([
+      db
+        .collection('users')
+        .where('classId', '==', classId)
+        .where('role', '==', 'student')
+        .where('status', '==', 'approved')
+        .get(),
+      db
+        .collection('users')
+        .where('extraClassIds', 'array-contains', classId)
+        .where('role', '==', 'student')
+        .where('status', '==', 'approved')
+        .get(),
+    ])
     const targets = new Set<string>()
     if (cls.teacherId) targets.add(String(cls.teacherId))
-    studentsSnap.forEach((d) => targets.add(d.id))
+    homeSnap.forEach((d) => targets.add(d.id))
+    extraSnap.forEach((d) => targets.add(d.id))
     targets.delete(decoded.uid)
 
-    const title = `${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반 이야기방`
+    const title = `${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반 톡방`
     const body = isNotice
       ? `📢 공지: ${previewText || '새 공지가 올라왔어요'}`
       : `${senderName}: ${previewText || '새 메시지'}`

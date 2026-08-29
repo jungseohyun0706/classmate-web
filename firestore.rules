@@ -51,6 +51,15 @@ service cloud.firestore {
       return signedIn() && classDoc(classId).teacherId == request.auth.uid;
     }
 
+    // 요청자가 이 반의 승인된 학생인지 (본반 또는 추가 참여 반)
+    function isClassStudent(classId) {
+      return signedIn()
+        && myDoc().role == 'student'
+        && myDoc().status == 'approved'
+        && (myDoc().classId == classId
+            || (('extraClassIds' in myDoc()) && classId in myDoc().extraClassIds));
+    }
+
     // ── users/{uid}: 사용자 프로필 ──────────────────────────
     match /users/{uid} {
       // 생성: 본인 문서만 만들 수 있고, role은 teacher/student 중 하나여야 합니다.
@@ -72,7 +81,7 @@ service cloud.firestore {
       allow update: if me(uid)
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(resource.data.role == 'student'
-               ? ['role', 'status', 'classId']
+               ? ['role', 'status', 'classId', 'extraClassIds']
                : ['role']);
 
       // 수정(교사): 승인/거절 흐름 — 같은 학교 교사면 가능
@@ -148,10 +157,7 @@ service cloud.firestore {
         // 읽기: 담임 교사 / 같은 학교 교사 / 이 학급에 승인된 학생
         allow read: if isClassTeacher(classId)
           || (isTeacher() && sameSchool(classDoc(classId).schoolCode))
-          || (signedIn()
-              && myDoc().role == 'student'
-              && myDoc().status == 'approved'
-              && myDoc().classId == classId);
+          || isClassStudent(classId);
 
         // 생성: 같은 학교 교사(담임 + 수업 교사), 본인 명의
         allow create: if isTeacher()
@@ -162,19 +168,13 @@ service cloud.firestore {
           || (isTeacher() && resource.data.authorId == request.auth.uid);
 
         // 예외: 이 반의 승인된 학생은 읽음 카운터(readCount)만 +1 할 수 있음
-        allow update: if signedIn()
-          && myDoc().role == 'student'
-          && myDoc().status == 'approved'
-          && myDoc().classId == classId
+        allow update: if isClassStudent(classId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readCount'])
           && request.resource.data.readCount ==
              (('readCount' in resource.data) ? resource.data.readCount + 1 : 1);
 
         // 예외: 확인 체크 카운터(checkCount)도 +1만 가능
-        allow update: if signedIn()
-          && myDoc().role == 'student'
-          && myDoc().status == 'approved'
-          && myDoc().classId == classId
+        allow update: if isClassStudent(classId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['checkCount'])
           && request.resource.data.checkCount ==
              (('checkCount' in resource.data) ? resource.data.checkCount + 1 : 1);
@@ -184,17 +184,11 @@ service cloud.firestore {
           // 읽기: 알림장을 읽을 수 있는 사람과 동일
           allow read: if isClassTeacher(classId)
             || (isTeacher() && sameSchool(classDoc(classId).schoolCode))
-            || (signedIn()
-                && myDoc().role == 'student'
-                && myDoc().status == 'approved'
-                && myDoc().classId == classId);
+            || isClassStudent(classId);
 
           // 생성: 담임 또는 이 반의 승인된 학생, 본인 명의 + 500자 제한
           allow create: if (isClassTeacher(classId)
-              || (signedIn()
-                  && myDoc().role == 'student'
-                  && myDoc().status == 'approved'
-                  && myDoc().classId == classId))
+              || isClassStudent(classId))
             && request.resource.data.authorId == request.auth.uid
             && request.resource.data.text is string
             && request.resource.data.text.size() > 0
@@ -225,17 +219,11 @@ service cloud.firestore {
       match /chat/{mid} {
         // 읽기: 같은 학교 교사(담임+수업 교사) / 이 반의 승인된 학생
         allow read: if (isTeacher() && sameSchool(classDoc(classId).schoolCode))
-          || (signedIn()
-              && myDoc().role == 'student'
-              && myDoc().status == 'approved'
-              && myDoc().classId == classId);
+          || isClassStudent(classId);
 
         // 생성: 같은 학교 교사 또는 이 반의 승인된 학생, 본인 명의 + 500자 제한
         allow create: if ((isTeacher() && sameSchool(classDoc(classId).schoolCode))
-            || (signedIn()
-                && myDoc().role == 'student'
-                && myDoc().status == 'approved'
-                && myDoc().classId == classId))
+            || isClassStudent(classId))
           && request.resource.data.authorId == request.auth.uid
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
