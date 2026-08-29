@@ -66,6 +66,7 @@ export default function Dashboard() {
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>
 
   const hasClass = userData?.classId && userData?.schoolName
+  const hasSchool = !!userData?.schoolCode
 
   // 홈 화면 설치 카드 상태
   const installMode: 'installed' | 'prompt' | 'ios' | 'hint' = isStandalone
@@ -86,8 +87,8 @@ export default function Dashboard() {
   const cards = [
     {
       id: 'students',
-      title: hasClass ? '학생 관리' : '내 학교/반 등록',
-      desc: hasClass ? '학생 초대(QR)와 승인, 목록을 관리해요.' : '학교와 담당 학급을 설정하세요.',
+      title: hasSchool ? '학생 관리' : '내 학교/반 등록',
+      desc: hasSchool ? '우리 반·수업 반 학생을 QR 초대·승인해요.' : '학교와 담당 학급을 설정하세요.',
       icon: (
         <svg className={`h-8 w-8 ${hasClass ? 'text-indigo-600' : 'text-blue-600'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           {hasClass ? (
@@ -98,7 +99,7 @@ export default function Dashboard() {
         </svg>
       ),
       bgColor: hasClass ? 'bg-indigo-100' : 'bg-blue-100',
-      path: hasClass ? '/teacher/students' : '/teacher/register-class'
+      path: hasSchool ? '/teacher/students' : '/teacher/register-class'
     },
     {
       id: 'class-room',

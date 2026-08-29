@@ -32,6 +32,13 @@ export default function ClassQrPage() {
 
   const [loading, setLoading] = useState(true)
   const [userData, setUserData] = useState<any>(null)
+  // 대상 반 — ?classId= 로 수업 반도 지정 가능 (기본: 담임 반)
+  const [targetClass, setTargetClass] = useState<{
+    classId: string
+    grade: string | number
+    classNm: string | number
+    schoolName: string
+  } | null>(null)
 
   const [issuing, setIssuing] = useState(false)
   const [joinUrl, setJoinUrl] = useState('')
@@ -88,13 +95,28 @@ export default function ClassQrPage() {
             router.replace('/student/today')
             return
           }
-          if (!data.classId) {
-            toast('먼저 반을 등록해야 해요.', 'error')
-            router.replace('/dashboard')
+          const requested = new URLSearchParams(window.location.search).get('classId')
+          const target = requested || String(data.classId || '')
+          if (!target) {
+            toast('먼저 반을 등록하거나 학생 관리에서 수업 반을 추가해 주세요.', 'error')
+            router.replace('/teacher/students')
             return
           }
+          const clsSnap = await getDoc(doc(db, 'classes', target))
+          if (!clsSnap.exists() || String(clsSnap.data().schoolCode) !== String(data.schoolCode)) {
+            toast('반 정보를 찾을 수 없어요.', 'error')
+            router.replace('/teacher/students')
+            return
+          }
+          const cls = clsSnap.data()
+          setTargetClass({
+            classId: target,
+            grade: cls.grade,
+            classNm: cls.classNm,
+            schoolName: String(cls.schoolName || data.schoolName || ''),
+          })
           setUserData(data)
-          void issue(String(data.classId))
+          void issue(target)
         } else {
           router.replace('/dashboard')
           return
@@ -116,7 +138,7 @@ export default function ClassQrPage() {
 
   // 입장 신청 실시간 구독 — 학생이 신청하면 QR 아래에 바로 나타남
   useEffect(() => {
-    const classId = userData?.classId
+    const classId = targetClass?.classId
     if (!classId) return
     const q = query(
       collection(db, 'users'),
@@ -150,7 +172,7 @@ export default function ClassQrPage() {
       (e) => console.error('입장 신청 구독 실패', e)
     )
     return () => unsub()
-  }, [userData?.classId])
+  }, [targetClass?.classId])
 
   // 승인 + 학생에게 알림 (실패 시 목록은 스냅샷이 되돌려줌)
   const approveOne = useCallback(
@@ -163,7 +185,7 @@ export default function ClassQrPage() {
         toast(`${student.name} 승인 완료`, 'success')
         try {
           const title = '우리 반 입장 완료 🎉'
-          const body = `${userData?.schoolName || ''} ${userData?.grade || ''}학년 ${userData?.classNm || ''}반 학생이 되었어요!`
+          const body = `${targetClass?.schoolName || ''} ${targetClass?.grade || ''}학년 ${targetClass?.classNm || ''}반 학생이 되었어요!`
           const url = '/student/today'
           await addDoc(collection(db, 'users', student.id, 'notifications'), {
             title,
@@ -189,7 +211,7 @@ export default function ClassQrPage() {
         setBusyId(null)
       }
     },
-    [busyId, toast, userData]
+    [busyId, toast, targetClass]
   )
 
   const approveAll = useCallback(async () => {
@@ -259,7 +281,7 @@ export default function ClassQrPage() {
         <div className="bg-white shadow-lg rounded-xl border border-gray-100 overflow-hidden">
           <div className="p-6 sm:p-8 flex flex-col items-center text-center">
             <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 break-keep">
-              {userData?.schoolName} {userData?.grade}학년 {userData?.classNm}반
+              {targetClass?.schoolName} {targetClass?.grade}학년 {targetClass?.classNm}반
             </h2>
             <p className="mt-1 text-sm text-gray-500">카메라로 QR 코드를 스캔하면 입장할 수 있어요.</p>
 
@@ -313,7 +335,7 @@ export default function ClassQrPage() {
 
             {/* 새 코드 만들기 */}
             <button
-              onClick={() => userData?.classId && issue(String(userData.classId))}
+              onClick={() => targetClass?.classId && issue(targetClass.classId)}
               disabled={issuing}
               className="mt-5 w-full sm:w-auto inline-flex justify-center items-center gap-2 py-3 px-8 border border-transparent shadow-sm text-base font-bold rounded-xl text-white bg-blue-600 hover:bg-blue-700 focus:outline-none disabled:opacity-50"
             >

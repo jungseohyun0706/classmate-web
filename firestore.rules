@@ -75,11 +75,12 @@ service cloud.firestore {
                ? ['role', 'status', 'classId']
                : ['role']);
 
-      // 수정(담임 교사): 승인/거절 흐름 — 해당 학생의 학급 담임만
-      //                 status/classId/grade/classNm 필드만 바꿀 수 있습니다.
+      // 수정(교사): 승인/거절 흐름 — 같은 학교 교사면 가능
+      //             (교과 교사가 수업 반 학생을 초대·승인하는 흐름 + 담임 미정 반 처리)
+      //             status/classId/grade/classNm 필드만 바꿀 수 있습니다.
       allow update: if isTeacher()
         && resource.data.role == 'student'
-        && classDoc(resource.data.classId).teacherId == request.auth.uid
+        && sameSchool(resource.data.schoolCode)
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'classId', 'grade', 'classNm']);
 
@@ -257,8 +258,8 @@ service cloud.firestore {
         // 읽기 금지: 토큰 검증은 서버(/api/join-info, /api/join)가 admin으로 수행.
         // (클라이언트 읽기를 열면 목록 조회로 유효 토큰이 유출될 수 있음)
         allow read: if false;
-        // 쓰기: 담임 교사만 (QR 발급)
-        allow write: if isClassTeacher(classId);
+        // 쓰기: 같은 학교 교사 (담임 + 수업 들어가는 교과 교사의 QR 발급)
+        allow write: if isTeacher() && sameSchool(classDoc(classId).schoolCode);
       }
     }
 
