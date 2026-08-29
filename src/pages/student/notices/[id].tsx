@@ -6,15 +6,27 @@ import { Timestamp, doc, getDoc } from 'firebase/firestore'
 import { auth } from '../../../lib/firebase'
 import { useUI } from '../../../components/ui/feedback'
 import {
+  COMMENT_MAX_LEN,
+  addComment,
+  deleteComment,
   formatNoticeDate,
   getAnnouncement,
   getReceipt,
   markRead,
+  notifyTeacherOfComment,
   setConsent,
+  watchComments,
   type Announcement,
   type ConsentValue,
+  type NoticeComment,
   type Receipt,
 } from '../../../lib/notices'
+
+function formatCommentTime(ts: Timestamp | null): string {
+  if (!ts) return ''
+  const d = ts.toDate()
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
 
 interface StudentData {
   role?: string
@@ -36,6 +48,12 @@ export default function StudentNoticeDetail(): JSX.Element {
   const [receipt, setReceipt] = useState<Receipt | null>(null)
   const [notFound, setNotFound] = useState<boolean>(false)
   const [saving, setSaving] = useState<boolean>(false)
+
+  // 댓글(의견 나누기)
+  const [comments, setComments] = useState<NoticeComment[]>([])
+  const [commentText, setCommentText] = useState<string>('')
+  const [sendingComment, setSendingComment] = useState<boolean>(false)
+  const [commentsBlocked, setCommentsBlocked] = useState<boolean>(false)
 
   // 로그인 + 학생 역할 가드
   useEffect(() => {
@@ -107,6 +125,63 @@ export default function StudentNoticeDetail(): JSX.Element {
       cancelled = true
     }
   }, [uid, userData, aid])
+
+  // 댓글 실시간 구독 (승인된 학생만 — 권한 없으면 조용히 잠금)
+  useEffect(() => {
+    const classId = userData?.classId
+    if (!uid || !classId || !aid || !notice) return
+    if (userData?.status !== 'approved') {
+      setCommentsBlocked(true)
+      return
+    }
+    const unsub = watchComments(
+      classId,
+      aid,
+      (list) => {
+        setComments(list)
+        setCommentsBlocked(false)
+      },
+      () => setCommentsBlocked(true)
+    )
+    return () => unsub()
+  }, [uid, userData?.classId, userData?.status, aid, notice])
+
+  const handleSendComment = async (): Promise<void> => {
+    const classId = userData?.classId
+    if (!uid || !classId || !aid || sendingComment) return
+    const text = commentText.trim()
+    if (!text) return
+    const studentName = userData?.name || userData?.displayName || '학생'
+    setSendingComment(true)
+    try {
+      await addComment(classId, aid, { uid, name: studentName, role: 'student' }, text)
+      setCommentText('')
+      void notifyTeacherOfComment(classId, notice?.title || '알림장', studentName)
+    } catch (e) {
+      console.error(e)
+      toast('의견을 보내지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
+    } finally {
+      setSendingComment(false)
+    }
+  }
+
+  const handleDeleteComment = async (cid: string): Promise<void> => {
+    const classId = userData?.classId
+    if (!classId || !aid) return
+    const ok = await confirm({
+      title: '의견을 삭제할까요?',
+      confirmText: '삭제',
+      cancelText: '취소',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await deleteComment(classId, aid, cid)
+    } catch (e) {
+      console.error(e)
+      toast('삭제하지 못했어요.', 'error')
+    }
+  }
 
   const handleConsent = async (value: ConsentValue): Promise<void> => {
     const classId = userData?.classId
@@ -191,6 +266,7 @@ export default function StudentNoticeDetail(): JSX.Element {
             </Link>
           </div>
         ) : (
+          <>
           <article className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">
             <div className="border-b border-gray-100 px-5 py-4">
               <div className="flex items-start justify-between gap-3">
@@ -288,6 +364,89 @@ export default function StudentNoticeDetail(): JSX.Element {
               </div>
             )}
           </article>
+
+          {/* 의견 나누기 (댓글) — 반 오픈채팅 느낌 */}
+          <section className="mt-4 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">
+            <div className="border-b border-gray-100 px-5 py-3.5">
+              <h2 className="text-sm font-bold text-gray-900">
+                💬 의견 나누기 {comments.length > 0 && <span className="text-emerald-600">{comments.length}</span>}
+              </h2>
+            </div>
+
+            {commentsBlocked ? (
+              <p className="px-5 py-6 text-center text-sm text-gray-400 break-keep">
+                선생님 승인이 끝나면 의견을 나눌 수 있어요.
+              </p>
+            ) : (
+              <>
+                <div className="max-h-96 space-y-3 overflow-y-auto px-4 py-4">
+                  {comments.length === 0 && (
+                    <p className="py-3 text-center text-sm text-gray-400">
+                      첫 의견을 남겨 보세요!
+                    </p>
+                  )}
+                  {comments.map((c) => {
+                    const mine = c.authorId === uid
+                    return (
+                      <div key={c.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] ${mine ? 'text-right' : 'text-left'}`}>
+                          <p className="mb-0.5 px-1 text-[11px] text-gray-400">
+                            {c.role === 'teacher' ? (
+                              <span className="font-bold text-blue-600">👩‍🏫 {c.authorName} 선생님</span>
+                            ) : (
+                              <span className={mine ? 'font-semibold text-emerald-700' : ''}>{c.authorName}</span>
+                            )}
+                            <span className="ml-1.5">{formatCommentTime(c.createdAt)}</span>
+                          </p>
+                          <div
+                            className={`inline-block rounded-2xl px-3.5 py-2 text-left text-sm leading-relaxed break-keep ${
+                              c.role === 'teacher'
+                                ? 'bg-blue-50 text-blue-900 ring-1 ring-blue-100'
+                                : mine
+                                  ? 'rounded-tr-sm bg-emerald-600 text-white'
+                                  : 'rounded-tl-sm bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            {c.text}
+                          </div>
+                          {mine && (
+                            <button
+                              onClick={() => void handleDeleteComment(c.id)}
+                              className="ml-1 p-1 text-[11px] text-gray-300 hover:text-red-400"
+                            >
+                              삭제
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="flex items-center gap-2 border-t border-gray-100 bg-gray-50/60 px-3 py-2.5">
+                  <input
+                    type="text"
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) void handleSendComment()
+                    }}
+                    maxLength={COMMENT_MAX_LEN}
+                    placeholder="의견을 입력하세요..."
+                    className="min-w-0 flex-1 rounded-full border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-emerald-400 focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                  />
+                  <button
+                    onClick={() => void handleSendComment()}
+                    disabled={sendingComment || !commentText.trim()}
+                    className="shrink-0 rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    보내기
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+          </>
         )}
       </main>
     </div>

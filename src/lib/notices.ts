@@ -1,16 +1,20 @@
 import {
   Timestamp,
+  addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
   increment,
   limit,
+  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from './firebase'
 
@@ -169,6 +173,96 @@ export async function setConsent(
     { studentName, consent, consentAt: serverTimestamp() },
     { merge: true }
   )
+}
+
+// ── 댓글(의견 나누기) ───────────────────────────────────────
+// classes/{classId}/announcements/{aid}/comments/{cid}
+//   {authorId, authorName, role: 'teacher'|'student', text, createdAt}
+
+export interface NoticeComment {
+  id: string
+  authorId: string
+  authorName: string
+  role: 'teacher' | 'student'
+  text: string
+  createdAt: Timestamp | null
+}
+
+export const COMMENT_MAX_LEN = 500
+
+function toComment(id: string, data: Record<string, unknown>): NoticeComment {
+  return {
+    id,
+    authorId: String(data.authorId ?? ''),
+    authorName: String(data.authorName ?? ''),
+    role: data.role === 'teacher' ? 'teacher' : 'student',
+    text: String(data.text ?? ''),
+    createdAt: data.createdAt instanceof Timestamp ? data.createdAt : null,
+  }
+}
+
+/** 댓글 실시간 구독 (작성순). 권한 없음 등 오류는 onError로 전달. */
+export function watchComments(
+  classId: string,
+  aid: string,
+  onChange: (comments: NoticeComment[]) => void,
+  onError?: (e: unknown) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'classes', classId, 'announcements', aid, 'comments'),
+    orderBy('createdAt', 'asc'),
+    limit(200)
+  )
+  return onSnapshot(
+    q,
+    (snap) => onChange(snap.docs.map((d) => toComment(d.id, d.data() as Record<string, unknown>))),
+    (e) => onError?.(e)
+  )
+}
+
+/** 댓글 작성 */
+export async function addComment(
+  classId: string,
+  aid: string,
+  author: { uid: string; name: string; role: 'teacher' | 'student' },
+  text: string
+): Promise<void> {
+  const clean = text.trim().slice(0, COMMENT_MAX_LEN)
+  if (!clean) throw new Error('내용을 입력해 주세요.')
+  await addDoc(collection(db, 'classes', classId, 'announcements', aid, 'comments'), {
+    authorId: author.uid,
+    authorName: author.name,
+    role: author.role,
+    text: clean,
+    createdAt: serverTimestamp(),
+  })
+}
+
+/** 댓글 삭제 (본인 또는 담임) */
+export async function deleteComment(classId: string, aid: string, cid: string): Promise<void> {
+  await deleteDoc(doc(db, 'classes', classId, 'announcements', aid, 'comments', cid))
+}
+
+/** 학생 댓글 작성 시 담임에게 인앱 알림 (실패 무시) */
+export async function notifyTeacherOfComment(
+  classId: string,
+  noticeTitle: string,
+  studentName: string
+): Promise<void> {
+  try {
+    const cls = await getDoc(doc(db, 'classes', classId))
+    const teacherId = cls.exists() ? String(cls.data().teacherId || '') : ''
+    if (!teacherId) return
+    await addDoc(collection(db, 'users', teacherId, 'notifications'), {
+      title: '알림장에 새 의견 💬',
+      body: `${studentName}: "${noticeTitle}"에 의견을 남겼어요`,
+      url: '/teacher/notices',
+      createdAt: serverTimestamp(),
+      read: false,
+    })
+  } catch (e) {
+    console.error('댓글 알림 실패(무시):', e)
+  }
 }
 
 /** Timestamp → '8월 26일' (올해가 아니면 '2025년 8월 26일') */

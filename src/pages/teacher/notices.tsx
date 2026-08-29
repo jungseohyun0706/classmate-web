@@ -15,8 +15,15 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
+import {
+  COMMENT_MAX_LEN,
+  addComment,
+  deleteComment,
+  watchComments,
+  type NoticeComment,
+} from '../../lib/notices'
 
-// 교사용 알림장 목록: 읽음/전체 카운터 + 동의 현황 + 행별 확장 명단(읽은 학생 / 미확인)
+// 교사용 알림장 목록: 읽음/전체 카운터 + 동의 현황 + 행별 확장(읽은 학생/미확인/의견)
 
 type NoticeRow = {
   id: string
@@ -68,7 +75,7 @@ function ConsentChip({ consent }: { consent?: 'agreed' | 'declined' }) {
 
 export default function NoticeList() {
   const router = useRouter()
-  const { toast } = useUI()
+  const { toast, confirm } = useUI()
 
   const [loading, setLoading] = useState(true)
   const [userData, setUserData] = useState<any>(null)
@@ -79,6 +86,63 @@ export default function NoticeList() {
   const [receiptsMap, setReceiptsMap] = useState<Record<string, Receipt[]>>({})
   const [students, setStudents] = useState<StudentLite[] | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+
+  // 확장된 알림장의 댓글 실시간 구독
+  const [comments, setComments] = useState<NoticeComment[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [sendingComment, setSendingComment] = useState(false)
+
+  useEffect(() => {
+    const cid = userData?.classId
+    if (!cid || !expandedId) {
+      setComments([])
+      return
+    }
+    const unsub = watchComments(cid, expandedId, setComments, () => setComments([]))
+    return () => unsub()
+  }, [userData?.classId, expandedId])
+
+  const handleSendComment = async () => {
+    const cid = userData?.classId
+    const u = auth.currentUser
+    if (!cid || !expandedId || !u || sendingComment) return
+    const text = commentText.trim()
+    if (!text) return
+    setSendingComment(true)
+    try {
+      await addComment(
+        cid,
+        expandedId,
+        { uid: u.uid, name: userData?.displayName || '선생님', role: 'teacher' },
+        text
+      )
+      setCommentText('')
+    } catch (e) {
+      console.error(e)
+      toast('의견을 보내지 못했어요.', 'error')
+    } finally {
+      setSendingComment(false)
+    }
+  }
+
+  const handleDeleteComment = async (cid2: string) => {
+    const cid = userData?.classId
+    if (!cid || !expandedId) return
+    const ok = await confirm({
+      title: '이 의견을 삭제할까요?',
+      description: '학생 화면에서도 사라져요.',
+      confirmText: '삭제',
+      cancelText: '취소',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await deleteComment(cid, expandedId, cid2)
+    } catch (e) {
+      console.error(e)
+      toast('삭제하지 못했어요.', 'error')
+    }
+  }
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -344,6 +408,60 @@ export default function NoticeList() {
                                   ))}
                                 </div>
                               )}
+                            </div>
+
+                            {/* 의견(댓글) — 실시간 */}
+                            <div className="pt-5">
+                              <h3 className="text-xs font-bold text-gray-500 mb-2">
+                                💬 의견 {comments.length > 0 && `${comments.length}개`}
+                              </h3>
+                              {comments.length === 0 ? (
+                                <p className="text-sm text-gray-400">아직 의견이 없어요.</p>
+                              ) : (
+                                <ul className="space-y-2 max-h-72 overflow-y-auto">
+                                  {comments.map((c) => (
+                                    <li key={c.id} className="flex items-start justify-between gap-2 bg-white rounded-lg px-3 py-2">
+                                      <div className="min-w-0">
+                                        <p className="text-[11px] text-gray-400">
+                                          {c.role === 'teacher' ? (
+                                            <span className="font-bold text-blue-600">나 (선생님)</span>
+                                          ) : (
+                                            <span className="font-semibold text-gray-600">{c.authorName}</span>
+                                          )}
+                                          <span className="ml-1.5">{formatReadAt(c.createdAt)}</span>
+                                        </p>
+                                        <p className="text-sm text-gray-800 break-keep">{c.text}</p>
+                                      </div>
+                                      <button
+                                        onClick={() => void handleDeleteComment(c.id)}
+                                        className="shrink-0 p-1 text-[11px] text-gray-300 hover:text-red-500"
+                                      >
+                                        삭제
+                                      </button>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                              <div className="mt-2.5 flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={commentText}
+                                  onChange={(e) => setCommentText(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) void handleSendComment()
+                                  }}
+                                  maxLength={COMMENT_MAX_LEN}
+                                  placeholder="학생들에게 답글 남기기..."
+                                  className="min-w-0 flex-1 rounded-full border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                />
+                                <button
+                                  onClick={() => void handleSendComment()}
+                                  disabled={sendingComment || !commentText.trim()}
+                                  className="shrink-0 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-blue-700 disabled:opacity-40"
+                                >
+                                  보내기
+                                </button>
+                              </div>
                             </div>
                           </>
                         )}
