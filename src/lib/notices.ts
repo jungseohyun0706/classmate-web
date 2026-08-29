@@ -41,6 +41,7 @@ export interface Announcement {
   attachmentName: string | null
   createdAt: Timestamp | null
   readCount: number
+  checkCount: number
   requiresConsent: boolean
 }
 
@@ -63,6 +64,7 @@ function toAnnouncement(id: string, data: Record<string, unknown>): Announcement
       typeof data.attachmentName === 'string' && data.attachmentName ? data.attachmentName : null,
     createdAt: data.createdAt instanceof Timestamp ? data.createdAt : null,
     readCount: typeof data.readCount === 'number' ? data.readCount : 0,
+    checkCount: typeof data.checkCount === 'number' ? data.checkCount : 0,
     requiresConsent: data.requiresConsent === true,
   }
 }
@@ -181,6 +183,31 @@ export async function markRead(
     })
   } catch {
     // 학생 권한으로 readCount 쓰기가 거부될 수 있음 — receipts가 원본이므로 무시
+  }
+}
+
+/**
+ * 공지 확인 체크. receipt에 확인 표시(consent:'agreed' 재사용)를 남기고
+ * 공지의 checkCount를 +1 합니다(규칙상 실패해도 receipt가 원본이므로 무시).
+ */
+export async function checkNotice(
+  classId: string,
+  aid: string,
+  uid: string,
+  studentName: string
+): Promise<void> {
+  const receiptRef = doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid)
+  await setDoc(
+    receiptRef,
+    { studentName, consent: 'agreed', consentAt: serverTimestamp() },
+    { merge: true }
+  )
+  try {
+    await updateDoc(doc(db, 'classes', classId, 'announcements', aid), {
+      checkCount: increment(1),
+    })
+  } catch {
+    // 구버전 문서 등에서 실패 가능 — receipts가 원본이므로 무시
   }
 }
 

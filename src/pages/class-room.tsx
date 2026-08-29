@@ -8,6 +8,8 @@ import {
   doc,
   getCountFromServer,
   getDoc,
+  getDocs,
+  onSnapshot,
   query,
   serverTimestamp,
   where,
@@ -15,13 +17,12 @@ import {
 import { auth, db } from '../lib/firebase'
 import { useUI } from '../components/ui/feedback'
 import {
+  checkNotice,
   formatNoticeDate,
   getMyReceipts,
   markRead,
-  setConsent,
   watchAnnouncements,
   type Announcement,
-  type ConsentValue,
   type Receipt,
 } from '../lib/notices'
 import { CHAT_MAX_LEN, deleteChat, sendChat, watchChat, type ChatMessage } from '../lib/classChat'
@@ -102,7 +103,11 @@ export default function ClassRoom(): JSX.Element {
   // 공지 배너 + 공지 작성 토글
   const [bannerOpen, setBannerOpen] = useState(false)
   const [noticeMode, setNoticeMode] = useState(false)
-  const [askConsent, setAskConsent] = useState(false)
+
+  // 교사용: 공지 확인 명단 시트
+  const [rosterFor, setRosterFor] = useState<Announcement | null>(null)
+  const [rosterStudents, setRosterStudents] = useState<{ id: string; name: string; no: number }[] | null>(null)
+  const [rosterChecked, setRosterChecked] = useState<Record<string, Timestamp | null>>({})
 
   const feedRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
@@ -280,10 +285,10 @@ export default function ClassRoom(): JSX.Element {
           authorName: myName,
           createdAt: serverTimestamp(),
           readCount: 0,
-          requiresConsent: askConsent,
+          checkCount: 0,
+          requiresConsent: false,
         })
         setNoticeMode(false)
-        setAskConsent(false)
         toast('공지를 올렸어요. 학생들 확인 현황은 [명단]에서 볼 수 있어요.', 'success')
         firePush('notice', t)
       } else {
@@ -312,22 +317,23 @@ export default function ClassRoom(): JSX.Element {
     }
   }
 
-  const handleConsent = async (n: Announcement, value: ConsentValue) => {
+  // 학생: 공지 확인 체크
+  const handleCheck = async (n: Announcement) => {
     if (!uid || !classId || consentBusy) return
-    if (receipts[n.id]?.consent === value) return
+    if (receipts[n.id]?.consent === 'agreed') return
     setConsentBusy(n.id)
     try {
-      await setConsent(classId, n.id, uid, myName, value)
+      await checkNotice(classId, n.id, uid, myName)
       setReceipts((prev) => ({
         ...prev,
         [n.id]: {
           readAt: prev[n.id]?.readAt ?? null,
           studentName: myName,
-          consent: value,
+          consent: 'agreed',
           consentAt: Timestamp.now(),
         },
       }))
-      toast(value === 'agreed' ? '동의를 전달했어요.' : "'동의하지 않음'으로 전달했어요.", 'success')
+      toast('확인 체크 완료! ✔', 'success')
     } catch (e) {
       console.error(e)
       toast('저장하지 못했어요.', 'error')
@@ -335,6 +341,55 @@ export default function ClassRoom(): JSX.Element {
       setConsentBusy(null)
     }
   }
+
+  // 교사: 공지 확인 명단 시트 — 학생 목록 1회 로드 + 확인(receipts) 실시간 구독
+  useEffect(() => {
+    if (!isTeacher || !rosterFor || !classId) return
+    let cancelled = false
+    if (!rosterStudents) {
+      void getDocs(
+        query(
+          collection(db, 'users'),
+          where('classId', '==', classId),
+          where('role', '==', 'student'),
+          where('status', '==', 'approved')
+        )
+      ).then((snap) => {
+        if (cancelled) return
+        const list = snap.docs.map((d) => {
+          const v = d.data()
+          const no = parseInt(String(v.studentId ?? ''), 10)
+          return {
+            id: d.id,
+            name: String(v.name || v.displayName || '이름 없음'),
+            no: Number.isFinite(no) ? no : 9999,
+          }
+        })
+        list.sort((a, b) => (a.no !== b.no ? a.no - b.no : a.name.localeCompare(b.name, 'ko')))
+        setRosterStudents(list)
+      })
+    }
+    const unsub = onSnapshot(
+      collection(db, 'classes', classId, 'announcements', rosterFor.id, 'receipts'),
+      (snap) => {
+        if (cancelled) return
+        const map: Record<string, Timestamp | null> = {}
+        snap.forEach((d) => {
+          const v = d.data()
+          if (v.consent === 'agreed') {
+            map[d.id] = v.consentAt instanceof Timestamp ? v.consentAt : null
+          }
+        })
+        setRosterChecked(map)
+      },
+      (e) => console.error('명단 구독 실패', e)
+    )
+    return () => {
+      cancelled = true
+      unsub()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTeacher, rosterFor?.id, classId])
 
   const classLabel = me ? `${me.grade}학년 ${me.classNm}반` : ''
 
@@ -413,23 +468,14 @@ export default function ClassRoom(): JSX.Element {
               </span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${bannerOpen ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6"/></svg>
             </button>
-            {bannerOpen && !isTeacher && latestNotice.requiresConsent && !receipts[latestNotice.id]?.consent && (
-              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-                <button
-                  disabled={consentBusy === latestNotice.id}
-                  onClick={() => void handleConsent(latestNotice, 'agreed')}
-                  className="rounded-lg bg-emerald-600 py-2 text-sm font-bold text-white disabled:opacity-50"
-                >
-                  동의해요
-                </button>
-                <button
-                  disabled={consentBusy === latestNotice.id}
-                  onClick={() => void handleConsent(latestNotice, 'declined')}
-                  className="rounded-lg bg-white py-2 text-sm font-bold text-gray-600 disabled:opacity-50"
-                >
-                  동의 안 해요
-                </button>
-              </div>
+            {bannerOpen && !isTeacher && receipts[latestNotice.id]?.consent !== 'agreed' && (
+              <button
+                disabled={consentBusy === latestNotice.id}
+                onClick={() => void handleCheck(latestNotice)}
+                className="mt-1.5 w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+              >
+                ✔ 공지 확인했어요
+              </button>
             )}
           </div>
         )}
@@ -501,53 +547,31 @@ export default function ClassRoom(): JSX.Element {
                           </a>
                         )}
                         {isTeacher ? (
-                          <p className="mt-1.5 text-[11px] text-gray-400">
-                            읽음 {item.notice.readCount}명{item.notice.requiresConsent && ' · 동의 필요'}
-                          </p>
+                          <button
+                            onClick={() => setRosterFor(item.notice)}
+                            className="mt-2 flex w-full items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-left ring-1 ring-emerald-100 transition hover:bg-emerald-100"
+                          >
+                            <span className="text-[12px] font-bold text-emerald-700">
+                              ✔ 확인 {item.notice.checkCount}명
+                            </span>
+                            <span className="text-[11px] font-semibold text-emerald-600">명단 보기 ›</span>
+                          </button>
                         ) : (
-                          item.notice.requiresConsent && (
-                            <div className="mt-2">
-                              {receipts[item.notice.id]?.consent ? (
-                                <span
-                                  className={`inline-block rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                                    receipts[item.notice.id].consent === 'agreed'
-                                      ? 'bg-emerald-100 text-emerald-800'
-                                      : 'bg-gray-200 text-gray-600'
-                                  }`}
-                                >
-                                  {receipts[item.notice.id].consent === 'agreed' ? '✓ 동의했어요' : '동의하지 않았어요'}
-                                  <button
-                                    onClick={() =>
-                                      void handleConsent(
-                                        item.notice,
-                                        receipts[item.notice.id].consent === 'agreed' ? 'declined' : 'agreed'
-                                      )
-                                    }
-                                    className="ml-1.5 underline opacity-60"
-                                  >
-                                    바꾸기
-                                  </button>
-                                </span>
-                              ) : (
-                                <div className="grid grid-cols-2 gap-1.5">
-                                  <button
-                                    disabled={consentBusy === item.notice.id}
-                                    onClick={() => void handleConsent(item.notice, 'agreed')}
-                                    className="rounded-lg bg-emerald-600 py-2 text-[13px] font-bold text-white disabled:opacity-50"
-                                  >
-                                    동의해요
-                                  </button>
-                                  <button
-                                    disabled={consentBusy === item.notice.id}
-                                    onClick={() => void handleConsent(item.notice, 'declined')}
-                                    className="rounded-lg bg-gray-100 py-2 text-[13px] font-bold text-gray-600 disabled:opacity-50"
-                                  >
-                                    동의 안 해요
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          )
+                          <div className="mt-2">
+                            {receipts[item.notice.id]?.consent === 'agreed' ? (
+                              <span className="inline-block rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                                ✔ 확인 완료
+                              </span>
+                            ) : (
+                              <button
+                                disabled={consentBusy === item.notice.id}
+                                onClick={() => void handleCheck(item.notice)}
+                                className="w-full rounded-lg bg-emerald-600 py-2.5 text-[13px] font-bold text-white disabled:opacity-50"
+                              >
+                                ✔ 공지 확인했어요
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -646,15 +670,7 @@ export default function ClassRoom(): JSX.Element {
                 📢 공지로 보내기
               </button>
               {noticeMode && (
-                <label className="flex items-center gap-1.5 text-xs text-gray-600">
-                  <input
-                    type="checkbox"
-                    checked={askConsent}
-                    onChange={(e) => setAskConsent(e.target.checked)}
-                    className="rounded border-gray-300"
-                  />
-                  동의 받기
-                </label>
+                <span className="text-xs text-gray-400">학생들에게 확인 체크 버튼이 함께 가요</span>
               )}
             </div>
           )}
@@ -688,6 +704,92 @@ export default function ClassRoom(): JSX.Element {
           </div>
         </div>
       </div>
+
+      {/* 교사: 공지 확인 명단 시트 (실시간) */}
+      {isTeacher && rosterFor && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end" onClick={() => setRosterFor(null)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className="relative max-h-[80vh] overflow-hidden rounded-t-2xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mx-auto mt-2.5 h-1.5 w-10 rounded-full bg-gray-200" />
+            <div className="border-b border-gray-100 px-5 py-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-gray-900">공지 확인 명단</h3>
+                  <p className="mt-0.5 truncate text-xs text-gray-400">{rosterFor.title}</p>
+                </div>
+                <button
+                  onClick={() => setRosterFor(null)}
+                  className="shrink-0 p-2 -m-1 text-lg text-gray-400 hover:text-gray-600"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div
+              className="overflow-y-auto px-5 py-4"
+              style={{ maxHeight: 'calc(80vh - 90px)', paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}
+            >
+              {!rosterStudents ? (
+                <p className="py-8 text-center text-sm text-gray-400">명단을 불러오는 중...</p>
+              ) : (
+                (() => {
+                  const checked = rosterStudents.filter((s) => rosterChecked[s.id] !== undefined)
+                  const unchecked = rosterStudents.filter((s) => rosterChecked[s.id] === undefined)
+                  return (
+                    <>
+                      <div className="mb-4 grid grid-cols-2 gap-2 text-center">
+                        <div className="rounded-xl bg-emerald-50 py-2.5">
+                          <p className="text-lg font-extrabold text-emerald-700">{checked.length}</p>
+                          <p className="text-[11px] text-emerald-600">확인 완료</p>
+                        </div>
+                        <div className="rounded-xl bg-gray-100 py-2.5">
+                          <p className="text-lg font-extrabold text-gray-500">{unchecked.length}</p>
+                          <p className="text-[11px] text-gray-400">미확인</p>
+                        </div>
+                      </div>
+
+                      <ul className="space-y-1.5">
+                        {rosterStudents.map((s) => {
+                          const done = rosterChecked[s.id] !== undefined
+                          const at = rosterChecked[s.id]
+                          return (
+                            <li
+                              key={s.id}
+                              className={`flex items-center justify-between rounded-lg px-3 py-2.5 ${
+                                done ? 'bg-emerald-50' : 'bg-gray-50'
+                              }`}
+                            >
+                              <span className={`text-sm ${done ? 'font-semibold text-gray-900' : 'text-gray-400'}`}>
+                                {s.no !== 9999 ? `${s.no}번 ` : ''}
+                                {s.name}
+                              </span>
+                              {done ? (
+                                <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-600">
+                                  ✔ 확인
+                                  {at && <span className="font-normal text-emerald-500/70">{formatTime(at)}</span>}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-gray-300">아직</span>
+                              )}
+                            </li>
+                          )
+                        })}
+                        {rosterStudents.length === 0 && (
+                          <p className="py-6 text-center text-sm text-gray-400">승인된 학생이 아직 없어요.</p>
+                        )}
+                      </ul>
+                    </>
+                  )
+                })()
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
