@@ -155,6 +155,14 @@ service cloud.firestore {
         // 쓰기: 담임 교사만
         allow create, update, delete: if isClassTeacher(classId);
 
+        // 예외: 이 반의 승인된 학생은 읽음 카운터(readCount)만 +1 할 수 있음
+        allow update: if signedIn()
+          && myDoc().role == 'student'
+          && myDoc().status == 'approved'
+          && myDoc().classId == classId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readCount'])
+          && request.resource.data.readCount == resource.data.readCount + 1;
+
         // ── comments/{cid}: 알림장 댓글(의견 나누기) ──
         match /comments/{cid} {
           // 읽기: 알림장을 읽을 수 있는 사람과 동일

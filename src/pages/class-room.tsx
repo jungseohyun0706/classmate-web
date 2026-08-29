@@ -250,6 +250,20 @@ export default function ClassRoom(): JSX.Element {
     stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120
   }
 
+  // 반 구성원들에게 푸시 fan-out (실패해도 무시 — 방을 열어둔 사람은 실시간으로 받음)
+  const firePush = (kind: 'chat' | 'notice', preview: string) => {
+    void auth.currentUser
+      ?.getIdToken()
+      .then((t) =>
+        fetch('/api/chat-push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+          body: JSON.stringify({ classId, kind, preview }),
+        })
+      )
+      .catch(() => {})
+  }
+
   const handleSend = async () => {
     if (!uid || !classId || sending) return
     const t = text.trim()
@@ -271,8 +285,10 @@ export default function ClassRoom(): JSX.Element {
         setNoticeMode(false)
         setAskConsent(false)
         toast('공지를 올렸어요. 학생들 확인 현황은 [명단]에서 볼 수 있어요.', 'success')
+        firePush('notice', t)
       } else {
         await sendChat(classId, { uid, name: myName, role: isTeacher ? 'teacher' : 'student' }, t)
+        firePush('chat', t)
       }
       setText('')
       stickBottom.current = true
