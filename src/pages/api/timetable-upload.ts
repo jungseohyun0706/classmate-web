@@ -176,7 +176,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           .filter((n): n is string => typeof n === 'string' && n.length > 0)
           .map((n) => normalizeName(n))
       )
-      for (const key of keys) {
+      for (const key of Array.from(keys)) {
         const list = byName.get(key) || []
         list.push({ uid: docSnap.id, hasSchedule: Boolean(d.mySchedule) })
         byName.set(key, list)
