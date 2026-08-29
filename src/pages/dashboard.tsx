@@ -15,6 +15,7 @@ export default function Dashboard() {
   const [userData, setUserData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [pendingSwaps, setPendingSwaps] = useState(0)
+  const [hasMasterTimetable, setHasMasterTimetable] = useState(false)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -33,6 +34,12 @@ export default function Dashboard() {
             return
           }
           setUserData(data)
+          // 학교 시간표 등록 여부 (업로드 카드 문구용 — 실패해도 무시)
+          if (data?.schoolCode) {
+            getDoc(doc(db, 'school_timetables', String(data.schoolCode)))
+              .then((m) => setHasMasterTimetable(m.exists()))
+              .catch(() => {})
+          }
           // 대기중인 받은 교환 요청 수 (가벼운 배지 쿼리 — 실패해도 무시)
           if (data?.schoolCode) {
             try {
@@ -122,7 +129,9 @@ export default function Dashboard() {
     {
       id: 'upload-timetable',
       title: '시간표 엑셀 업로드',
-      desc: '학교 시간표 엑셀로 모든 반·교사 시간표 자동 등록.',
+      desc: hasMasterTimetable
+        ? '✓ 우리 학교 등록 완료 — 시간표가 바뀔 때만 교체해요.'
+        : '학교 시간표 엑셀로 모든 반·교사 시간표 자동 등록.',
       icon: <svg className="h-8 w-8 text-cyan-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>,
       bgColor: 'bg-cyan-100',
       path: '/teacher/upload-timetable',

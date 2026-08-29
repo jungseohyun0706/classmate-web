@@ -43,6 +43,15 @@ export default function UploadTimetablePage() {
   const [debugInfo, setDebugInfo] = useState<string[] | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
 
+  // 이미 등록된 학교 시간표 정보 (있으면 업로드 UI를 접어둠)
+  const [existing, setExisting] = useState<{
+    uploadedByName: string
+    uploadedAt: Date | null
+    classCount: number
+    teacherCount: number
+  } | null>(null)
+  const [showUploadUi, setShowUploadUi] = useState(true)
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) {
@@ -64,6 +73,23 @@ export default function UploadTimetablePage() {
           return
         }
         setUserData(data)
+
+        // 이미 등록된 학교 시간표가 있는지 확인 → 있으면 업로드 UI를 접어둠
+        try {
+          const master = await getDoc(doc(db, 'school_timetables', String(data.schoolCode)))
+          if (master.exists()) {
+            const m = master.data()
+            setExisting({
+              uploadedByName: String(m.uploadedByName || '어느 선생님'),
+              uploadedAt: m.uploadedAt?.toDate?.() ?? null,
+              classCount: Object.keys(m.classes || {}).length,
+              teacherCount: Object.keys(m.teachers || {}).length,
+            })
+            setShowUploadUi(false)
+          }
+        } catch (e) {
+          console.error('마스터 확인 실패(무시):', e)
+        }
       } catch (e) {
         console.error(e)
         toast('내 정보를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
@@ -202,7 +228,56 @@ export default function UploadTimetablePage() {
           </button>
         </div>
 
+        {/* 이미 등록된 학교: 상태 카드 + 업로드 UI 접기 */}
+        {existing && (
+          <div className="bg-white shadow rounded-xl border border-emerald-200 p-6 mb-6">
+            <div className="flex items-start gap-3">
+              <span className="text-2xl">✅</span>
+              <div className="min-w-0">
+                <h2 className="font-bold text-gray-900">
+                  {userData?.schoolName} 시간표가 이미 등록되어 있어요
+                </h2>
+                <p className="mt-1 text-sm text-gray-600 break-keep">
+                  {existing.uploadedAt
+                    ? `${existing.uploadedAt.getMonth() + 1}월 ${existing.uploadedAt.getDate()}일에 `
+                    : ''}
+                  <b>{existing.uploadedByName}</b> 선생님이 올렸어요 — 반 {existing.classCount}개 ·
+                  교사 {existing.teacherCount}명
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 leading-relaxed break-keep">
+              <b>선생님은 다시 올릴 필요 없어요!</b> 이미 등록된 시간표로 바로 쓸 수 있어요:
+              <br />· 내 시간표: <b>내 수업 시간표 → 📥 엑셀에서 불러오기</b>
+              <br />· 수업 반: <b>학생 관리</b>에 자동으로 제안돼요
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => router.push('/teacher/my-schedule')}
+                className="rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white hover:bg-emerald-700 transition"
+              >
+                내 시간표 불러오기
+              </button>
+              <button
+                onClick={() => router.push('/teacher/students')}
+                className="rounded-xl bg-white py-3 text-sm font-bold text-emerald-700 ring-1 ring-emerald-300 hover:bg-emerald-50 transition"
+              >
+                학생 관리 열기
+              </button>
+            </div>
+            {!showUploadUi && (
+              <button
+                onClick={() => setShowUploadUi(true)}
+                className="mt-3 w-full py-2.5 text-center text-xs text-gray-400 hover:text-gray-600"
+              >
+                시간표가 바뀌었나요? 새 파일로 교체하기 ▾
+              </button>
+            )}
+          </div>
+        )}
+
         {/* 1단계: 파일 선택 */}
+        {showUploadUi && (
         <div className="bg-white shadow rounded-xl border border-gray-200 p-6 mb-6">
           <h2 className="font-bold text-gray-900 mb-1">1. 엑셀 파일 선택</h2>
           <p className="text-sm text-gray-600 mb-4">
@@ -230,6 +305,7 @@ export default function UploadTimetablePage() {
             />
           </label>
         </div>
+        )}
 
         {/* 파싱 실패 시 진단 정보 */}
         {debugInfo && (
