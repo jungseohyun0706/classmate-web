@@ -41,7 +41,8 @@ export function watchChat(
     q,
     (snap) => {
       const list: ChatMessage[] = snap.docs.map((d) => {
-        const v = d.data()
+        // 전송 직후(서버 타임스탬프 확정 전)에도 올바른 위치에 바로 보이도록 추정치 사용
+        const v = d.data({ serverTimestamps: 'estimate' })
         return {
           id: d.id,
           authorId: String(v.authorId ?? ''),

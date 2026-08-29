@@ -104,7 +104,9 @@ export function watchAnnouncements(
   return onSnapshot(
     q,
     (snap) => {
-      const list = snap.docs.map((d) => toAnnouncement(d.id, d.data() as Record<string, unknown>))
+      const list = snap.docs.map((d) =>
+        toAnnouncement(d.id, d.data({ serverTimestamps: 'estimate' }) as Record<string, unknown>)
+      )
       list.reverse()
       onChange(list)
     },
@@ -238,7 +240,12 @@ export function watchComments(
   )
   return onSnapshot(
     q,
-    (snap) => onChange(snap.docs.map((d) => toComment(d.id, d.data() as Record<string, unknown>))),
+    (snap) =>
+      onChange(
+        snap.docs.map((d) =>
+          toComment(d.id, d.data({ serverTimestamps: 'estimate' }) as Record<string, unknown>)
+        )
+      ),
     (e) => onError?.(e)
   )
 }

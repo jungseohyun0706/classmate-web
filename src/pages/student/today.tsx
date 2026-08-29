@@ -99,25 +99,6 @@ export function StudentTabBar({ active }: { active: 'today' | 'notices' | 'room'
           </svg>
           이야기방
         </Link>
-        <Link
-          href="/student/notices"
-          className={`${base} ${active === 'notices' ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-6 w-6"
-            aria-hidden="true"
-          >
-            <rect x="4" y="3" width="16" height="18" rx="2" />
-            <path d="M8 8h8M8 12h8M8 16h5" />
-          </svg>
-          알림장
-        </Link>
       </div>
     </nav>
   )
@@ -388,10 +369,10 @@ export default function StudentToday(): JSX.Element {
                   최신 알림장
                 </h2>
                 <Link
-                  href="/student/notices"
+                  href="/class-room"
                   className="-m-2 p-2 text-xs font-semibold text-emerald-600 transition-colors hover:text-emerald-700"
                 >
-                  전체 보기 &rarr;
+                  이야기방에서 보기 &rarr;
                 </Link>
               </div>
               {notices.length === 0 ? (

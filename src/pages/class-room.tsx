@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useRouter } from 'next/router'
 import { onAuthStateChanged } from 'firebase/auth'
-import { Timestamp, doc, getDoc } from 'firebase/firestore'
-import { auth } from '../lib/firebase'
+import {
+  Timestamp,
+  addDoc,
+  collection,
+  doc,
+  getCountFromServer,
+  getDoc,
+  query,
+  serverTimestamp,
+  where,
+} from 'firebase/firestore'
+import { auth, db } from '../lib/firebase'
 import { useUI } from '../components/ui/feedback'
 import {
   formatNoticeDate,
@@ -16,8 +26,8 @@ import {
 } from '../lib/notices'
 import { CHAT_MAX_LEN, deleteChat, sendChat, watchChat, type ChatMessage } from '../lib/classChat'
 
-// 우리 반 이야기방 — 공지(알림장)와 반 대화가 한 흐름에 섞이는 오픈채팅방.
-// 교사(담임)와 승인된 학생이 같은 화면을 사용합니다.
+// 우리 반 이야기방 — 카카오톡 오픈채팅 스타일의 반 단톡방.
+// 공지도 여기서 보냅니다(선생님 입력창의 📢 토글). 알림장 별도 화면은 관리(명단)용만 유지.
 
 interface MyData {
   role?: string
@@ -39,14 +49,37 @@ const atOf = (ts: Timestamp | null): number => (ts ? ts.toMillis() : Number.MAX_
 function formatTime(ts: Timestamp | null): string {
   if (!ts) return ''
   const d = ts.toDate()
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const h = d.getHours()
+  const ampm = h < 12 ? '오전' : '오후'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${ampm} ${h12}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/** 날짜 구분선용 (YYYY-M-D) */
+function minuteKey(ts: Timestamp | null): string {
+  if (!ts) return ''
+  const d = ts.toDate()
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${d.getHours()}-${d.getMinutes()}`
+}
+
 function dayKey(ts: Timestamp | null): string {
   if (!ts) return ''
   const d = ts.toDate()
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+function formatDayLabel(ts: Timestamp | null): string {
+  if (!ts) return ''
+  const d = ts.toDate()
+  const days = ['일', '월', '화', '수', '목', '금', '토']
+  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${days[d.getDay()]}요일`
+}
+
+/** 이름 첫 글자 아바타 색 (이름 기반 고정) */
+const AVATAR_COLORS = ['bg-orange-300', 'bg-rose-300', 'bg-violet-300', 'bg-sky-300', 'bg-lime-300', 'bg-amber-300', 'bg-teal-300', 'bg-fuchsia-300']
+function avatarColor(name: string): string {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 997
+  return AVATAR_COLORS[h % AVATAR_COLORS.length]
 }
 
 export default function ClassRoom(): JSX.Element {
@@ -57,6 +90,7 @@ export default function ClassRoom(): JSX.Element {
   const [uid, setUid] = useState<string | null>(null)
   const [me, setMe] = useState<MyData | null>(null)
   const [blocked, setBlocked] = useState<'pending' | 'no-class' | null>(null)
+  const [memberCount, setMemberCount] = useState<number | null>(null)
 
   const [notices, setNotices] = useState<Announcement[]>([])
   const [chat, setChat] = useState<ChatMessage[]>([])
@@ -65,8 +99,23 @@ export default function ClassRoom(): JSX.Element {
   const [sending, setSending] = useState(false)
   const [consentBusy, setConsentBusy] = useState<string | null>(null)
 
+  // 공지 배너 + 공지 작성 토글
+  const [bannerOpen, setBannerOpen] = useState(false)
+  const [noticeMode, setNoticeMode] = useState(false)
+  const [askConsent, setAskConsent] = useState(false)
+
   const feedRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
+
+  // 백그라운드에서 돌아오면 구독을 새로 열어 밀린 메시지를 즉시 동기화
+  const [wakeTick, setWakeTick] = useState(0)
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') setWakeTick((t) => t + 1)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
 
   const isTeacher = me?.role === 'teacher'
   const myName = me?.name || me?.displayName || (isTeacher ? '선생님' : '학생')
@@ -80,7 +129,6 @@ export default function ClassRoom(): JSX.Element {
         return
       }
       try {
-        const { db } = await import('../lib/firebase')
         const snap = await getDoc(doc(db, 'users', u.uid))
         const data = snap.exists() ? (snap.data() as MyData) : null
         if (!data) {
@@ -99,6 +147,17 @@ export default function ClassRoom(): JSX.Element {
         }
         setUid(u.uid)
         setMe(data)
+        // 인원수(승인 학생 + 선생님) — 백그라운드
+        void getCountFromServer(
+          query(
+            collection(db, 'users'),
+            where('classId', '==', String(data.classId)),
+            where('role', '==', 'student'),
+            where('status', '==', 'approved')
+          )
+        )
+          .then((s) => setMemberCount(s.data().count + 1))
+          .catch(() => {})
       } catch (e) {
         console.error(e)
         setLoading(false)
@@ -128,21 +187,14 @@ export default function ClassRoom(): JSX.Element {
         done()
       }
     )
-    const un2 = watchChat(
-      classId,
-      (list) => {
-        setChat(list)
-        done()
-      },
-      (e) => console.error('채팅 구독 실패', e)
-    )
+    const un2 = watchChat(classId, setChat, (e) => console.error('채팅 구독 실패', e))
     return () => {
       un1()
       un2()
     }
-  }, [classId, uid])
+  }, [classId, uid, wakeTick])
 
-  // 학생: 내 읽음 확인 로드 + 새 공지 자동 읽음 처리
+  // 학생: 읽음 확인 로드 + 자동 읽음 처리
   useEffect(() => {
     if (!classId || !uid || isTeacher || notices.length === 0) return
     let cancelled = false
@@ -172,11 +224,9 @@ export default function ClassRoom(): JSX.Element {
     return () => {
       cancelled = true
     }
-    // notices.length만 봐서 새 공지 도착 시에만 재실행
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classId, uid, isTeacher, notices.length])
 
-  // 병합 피드
   const feed = useMemo<FeedItem[]>(() => {
     const items: FeedItem[] = [
       ...notices.map((n): FeedItem => ({ kind: 'notice', at: atOf(n.createdAt), notice: n })),
@@ -186,13 +236,12 @@ export default function ClassRoom(): JSX.Element {
     return items
   }, [notices, chat])
 
-  // 새 메시지 오면 (바닥 근처일 때) 자동 스크롤
+  const latestNotice = notices.length > 0 ? notices[notices.length - 1] : null
+
   useEffect(() => {
     const el = feedRef.current
     if (!el) return
-    if (stickBottom.current) {
-      el.scrollTop = el.scrollHeight
-    }
+    if (stickBottom.current) el.scrollTop = el.scrollHeight
   }, [feed.length, loading])
 
   const onFeedScroll = () => {
@@ -207,12 +256,29 @@ export default function ClassRoom(): JSX.Element {
     if (!t) return
     setSending(true)
     try {
-      await sendChat(classId, { uid, name: myName, role: isTeacher ? 'teacher' : 'student' }, t)
+      if (isTeacher && noticeMode) {
+        // 📢 공지로 보내기 — 알림장(announcements)으로 저장되어 읽음/동의 추적
+        const firstLine = t.split('\n')[0].slice(0, 30)
+        await addDoc(collection(db, 'classes', classId, 'announcements'), {
+          title: firstLine,
+          body: t,
+          authorId: uid,
+          authorName: myName,
+          createdAt: serverTimestamp(),
+          readCount: 0,
+          requiresConsent: askConsent,
+        })
+        setNoticeMode(false)
+        setAskConsent(false)
+        toast('공지를 올렸어요. 학생들 확인 현황은 [명단]에서 볼 수 있어요.', 'success')
+      } else {
+        await sendChat(classId, { uid, name: myName, role: isTeacher ? 'teacher' : 'student' }, t)
+      }
       setText('')
       stickBottom.current = true
     } catch (e) {
       console.error(e)
-      toast('메시지를 보내지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      toast('보내지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSending(false)
     }
@@ -254,20 +320,19 @@ export default function ClassRoom(): JSX.Element {
     }
   }
 
-  const accent = isTeacher ? 'blue' : 'emerald'
   const classLabel = me ? `${me.grade}학년 ${me.classNm}반` : ''
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50">
-        <div className={`h-12 w-12 animate-spin rounded-full border-b-2 ${isTeacher ? 'border-blue-600' : 'border-emerald-600'}`} />
+      <div className="flex min-h-screen items-center justify-center" style={{ background: '#b2c7d9' }}>
+        <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-gray-700" />
       </div>
     )
   }
 
   if (blocked) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-6 text-center">
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-6 text-center text-black">
         <p className="text-3xl">💬</p>
         <p className="mt-3 font-bold text-gray-900">
           {blocked === 'pending' ? '선생님 승인을 기다리고 있어요' : '아직 소속된 반이 없어요'}
@@ -290,192 +355,253 @@ export default function ClassRoom(): JSX.Element {
   let lastDay = ''
 
   return (
-    <div className="flex h-[100dvh] flex-col bg-gray-100 text-black">
-      {/* 헤더 */}
-      <header className="shrink-0 border-b border-gray-200 bg-white">
-        <div className="mx-auto flex h-14 max-w-2xl items-center justify-between gap-2 px-3">
-          <div className="flex min-w-0 items-center gap-2">
+    <div className="flex h-[100dvh] flex-col text-black" style={{ background: '#b2c7d9' }}>
+      {/* 헤더 — 카톡 채팅방풍 */}
+      <header className="shrink-0" style={{ background: '#a6bdd1' }}>
+        <div className="mx-auto flex h-13 max-w-2xl items-center justify-between gap-2 px-2 py-2.5">
+          <div className="flex min-w-0 items-center gap-1">
             <button
               onClick={() => router.push(isTeacher ? '/dashboard' : '/student/today')}
-              className="shrink-0 rounded-lg p-2 text-gray-500 hover:bg-gray-100"
+              className="shrink-0 rounded-lg p-2 text-gray-700 hover:bg-black/5"
               aria-label="뒤로"
             >
-              ←
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="m15 6-6 6 6 6"/></svg>
             </button>
             <div className="min-w-0">
-              <h1 className="truncate text-base font-bold text-gray-900">{classLabel} 이야기방</h1>
-              <p className="truncate text-[11px] text-gray-400">{me?.schoolName}</p>
+              <h1 className="flex items-center gap-1.5 truncate text-[15px] font-bold text-gray-900">
+                {classLabel} 이야기방
+                {memberCount !== null && <span className="text-[13px] font-medium text-gray-600">{memberCount}</span>}
+              </h1>
             </div>
           </div>
           {isTeacher && (
-            <div className="flex shrink-0 items-center gap-1.5">
-              <button
-                onClick={() => router.push('/teacher/notice/write')}
-                className="whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700"
-              >
-                ✏️ 공지
-              </button>
-              <button
-                onClick={() => router.push('/teacher/notices')}
-                className="whitespace-nowrap rounded-lg border border-gray-200 px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-50"
-              >
-                확인 명단
-              </button>
-            </div>
+            <button
+              onClick={() => router.push('/teacher/notices')}
+              className="shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-bold text-gray-700 hover:bg-black/5"
+            >
+              ☰ 명단
+            </button>
           )}
         </div>
+
+        {/* 📢 고정 공지 배너 (카톡 공지) */}
+        {latestNotice && (
+          <div className="mx-auto max-w-2xl px-2 pb-2">
+            <button
+              onClick={() => setBannerOpen((v) => !v)}
+              className="flex w-full items-center gap-2 rounded-lg bg-white/95 px-3 py-2 text-left shadow-sm"
+            >
+              <span className="shrink-0 text-sm">📢</span>
+              <span className={`min-w-0 flex-1 text-[13px] text-gray-800 ${bannerOpen ? 'break-keep' : 'truncate'}`}>
+                {bannerOpen ? latestNotice.body : latestNotice.title}
+              </span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${bannerOpen ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            {bannerOpen && !isTeacher && latestNotice.requiresConsent && !receipts[latestNotice.id]?.consent && (
+              <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+                <button
+                  disabled={consentBusy === latestNotice.id}
+                  onClick={() => void handleConsent(latestNotice, 'agreed')}
+                  className="rounded-lg bg-emerald-600 py-2 text-sm font-bold text-white disabled:opacity-50"
+                >
+                  동의해요
+                </button>
+                <button
+                  disabled={consentBusy === latestNotice.id}
+                  onClick={() => void handleConsent(latestNotice, 'declined')}
+                  className="rounded-lg bg-white py-2 text-sm font-bold text-gray-600 disabled:opacity-50"
+                >
+                  동의 안 해요
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* 피드 */}
       <div ref={feedRef} onScroll={onFeedScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-2xl space-y-3 px-3 py-4">
+        <div className="mx-auto max-w-2xl px-3 py-3">
           {feed.length === 0 && (
-            <p className="py-16 text-center text-sm text-gray-400 break-keep">
+            <p className="py-16 text-center text-sm text-gray-600 break-keep">
               아직 이야기가 없어요. 첫 메시지를 남겨 보세요!
             </p>
           )}
 
-          {feed.map((item) => {
+          {feed.map((item, idx) => {
             const ts = item.kind === 'notice' ? item.notice.createdAt : item.msg.createdAt
             const dk = dayKey(ts)
             const showDay = dk && dk !== lastDay
             if (showDay) lastDay = dk
 
+            // 연속 메시지 묶음 계산 (채팅만)
+            const prev = idx > 0 ? feed[idx - 1] : null
+            const next = idx < feed.length - 1 ? feed[idx + 1] : null
+            const sameAuthorAsPrev =
+              !showDay &&
+              item.kind === 'chat' &&
+              prev?.kind === 'chat' &&
+              prev.msg.authorId === item.msg.authorId &&
+              minuteKey(prev.msg.createdAt) === minuteKey(item.msg.createdAt)
+            const sameAuthorAsNext =
+              item.kind === 'chat' &&
+              next?.kind === 'chat' &&
+              next.msg.authorId === item.msg.authorId &&
+              minuteKey(next.msg.createdAt) === minuteKey(item.msg.createdAt) &&
+              dayKey(next.msg.createdAt) === dk
+            const showTime = !sameAuthorAsNext
+
             return (
               <div key={item.kind === 'notice' ? `n-${item.notice.id}` : `c-${item.msg.id}`}>
                 {showDay && (
-                  <div className="my-4 flex items-center justify-center">
-                    <span className="rounded-full bg-gray-200/80 px-3 py-1 text-[11px] font-medium text-gray-500">
-                      {formatNoticeDate(ts)}
+                  <div className="my-3 flex items-center justify-center">
+                    <span className="rounded-full bg-black/10 px-3.5 py-1 text-[11px] font-medium text-gray-700">
+                      {formatDayLabel(ts)}
                     </span>
                   </div>
                 )}
 
                 {item.kind === 'notice' ? (
-                  /* 공지 카드 */
-                  <div className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
-                    <div className="flex items-center justify-between gap-2 bg-amber-50 px-4 py-2">
-                      <span className="text-xs font-bold text-amber-700">
-                        📢 공지 · {item.notice.authorName} 선생님
-                      </span>
-                      <span className="text-[11px] text-amber-600/70">{formatTime(item.notice.createdAt)}</span>
-                    </div>
-                    <div className="px-4 py-3">
-                      <p className="font-bold text-gray-900 break-keep">{item.notice.title}</p>
-                      <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-gray-700 break-keep">
-                        {item.notice.body}
-                      </p>
-                      {item.notice.attachmentUrl && (
-                        <a
-                          href={item.notice.attachmentUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-2.5 flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-200 hover:bg-gray-100"
-                        >
-                          📎 <span className="min-w-0 flex-1 truncate">{item.notice.attachmentName || '첨부파일'}</span>
-                          <span className="shrink-0 text-xs font-bold text-emerald-600">열기</span>
-                        </a>
-                      )}
-
-                      {/* 교사: 읽음 현황 / 학생: 동의 버튼 */}
-                      {isTeacher ? (
-                        <p className="mt-2.5 text-xs text-gray-400">
-                          읽음 {item.notice.readCount}명
-                          {item.notice.requiresConsent && ' · 동의 필요 공지'}
+                  /* 공지 메시지 — 카톡 공지 카드풍 */
+                  <div className="my-2 flex justify-center">
+                    <div className="w-full max-w-md overflow-hidden rounded-xl bg-white/95 shadow-sm">
+                      <div className="flex items-center gap-1.5 border-b border-gray-100 px-3.5 py-2">
+                        <span className="text-[13px]">📢</span>
+                        <span className="text-xs font-bold text-gray-700">공지 · {item.notice.authorName} 선생님</span>
+                        <span className="ml-auto text-[10px] text-gray-400">{formatTime(item.notice.createdAt)}</span>
+                      </div>
+                      <div className="px-3.5 py-2.5">
+                        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-gray-800 break-keep">
+                          {item.notice.body}
                         </p>
-                      ) : (
-                        item.notice.requiresConsent && (
-                          <div className="mt-3">
-                            {receipts[item.notice.id]?.consent ? (
-                              <span
-                                className={`inline-block rounded-full px-2.5 py-1 text-xs font-semibold ${
-                                  receipts[item.notice.id].consent === 'agreed'
-                                    ? 'bg-emerald-100 text-emerald-800'
-                                    : 'bg-gray-200 text-gray-600'
-                                }`}
-                              >
-                                {receipts[item.notice.id].consent === 'agreed' ? '✓ 동의했어요' : '동의하지 않았어요'}
-                                <button
-                                  onClick={() =>
-                                    void handleConsent(
-                                      item.notice,
-                                      receipts[item.notice.id].consent === 'agreed' ? 'declined' : 'agreed'
-                                    )
-                                  }
-                                  className="ml-2 underline opacity-60"
+                        {item.notice.attachmentUrl && (
+                          <a
+                            href={item.notice.attachmentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-2 flex items-center gap-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700"
+                          >
+                            📎 <span className="min-w-0 flex-1 truncate">{item.notice.attachmentName || '첨부파일'}</span>
+                          </a>
+                        )}
+                        {isTeacher ? (
+                          <p className="mt-1.5 text-[11px] text-gray-400">
+                            읽음 {item.notice.readCount}명{item.notice.requiresConsent && ' · 동의 필요'}
+                          </p>
+                        ) : (
+                          item.notice.requiresConsent && (
+                            <div className="mt-2">
+                              {receipts[item.notice.id]?.consent ? (
+                                <span
+                                  className={`inline-block rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                                    receipts[item.notice.id].consent === 'agreed'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-gray-200 text-gray-600'
+                                  }`}
                                 >
-                                  바꾸기
-                                </button>
-                              </span>
-                            ) : (
-                              <div className="grid grid-cols-2 gap-2">
-                                <button
-                                  disabled={consentBusy === item.notice.id}
-                                  onClick={() => void handleConsent(item.notice, 'agreed')}
-                                  className="rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white disabled:opacity-50"
-                                >
-                                  동의해요
-                                </button>
-                                <button
-                                  disabled={consentBusy === item.notice.id}
-                                  onClick={() => void handleConsent(item.notice, 'declined')}
-                                  className="rounded-xl bg-white py-2.5 text-sm font-bold text-gray-600 ring-1 ring-gray-300 disabled:opacity-50"
-                                >
-                                  동의 안 해요
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      )}
+                                  {receipts[item.notice.id].consent === 'agreed' ? '✓ 동의했어요' : '동의하지 않았어요'}
+                                  <button
+                                    onClick={() =>
+                                      void handleConsent(
+                                        item.notice,
+                                        receipts[item.notice.id].consent === 'agreed' ? 'declined' : 'agreed'
+                                      )
+                                    }
+                                    className="ml-1.5 underline opacity-60"
+                                  >
+                                    바꾸기
+                                  </button>
+                                </span>
+                              ) : (
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <button
+                                    disabled={consentBusy === item.notice.id}
+                                    onClick={() => void handleConsent(item.notice, 'agreed')}
+                                    className="rounded-lg bg-emerald-600 py-2 text-[13px] font-bold text-white disabled:opacity-50"
+                                  >
+                                    동의해요
+                                  </button>
+                                  <button
+                                    disabled={consentBusy === item.notice.id}
+                                    onClick={() => void handleConsent(item.notice, 'declined')}
+                                    className="rounded-lg bg-gray-100 py-2 text-[13px] font-bold text-gray-600 disabled:opacity-50"
+                                  >
+                                    동의 안 해요
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
-                  /* 채팅 말풍선 */
+                  /* 채팅 말풍선 — 카톡풍 */
                   (() => {
                     const m = item.msg
                     const mine = m.authorId === uid
-                    return (
-                      <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[85%] ${mine ? 'text-right' : 'text-left'}`}>
-                          {!mine && (
-                            <p className="mb-0.5 px-1 text-[11px] text-gray-400">
-                              {m.role === 'teacher' ? (
-                                <span className="font-bold text-blue-600">👩‍🏫 {m.authorName} 선생님</span>
-                              ) : (
-                                m.authorName
-                              )}
-                            </p>
+                    if (mine) {
+                      return (
+                        <div className={`flex items-end justify-end gap-1 ${sameAuthorAsPrev ? 'mt-1' : 'mt-2.5'}`}>
+                          {showTime && (
+                            <span className="mb-0.5 shrink-0 text-[10px] text-gray-600/80">{formatTime(m.createdAt)}</span>
                           )}
-                          <div className="flex items-end gap-1.5">
-                            {mine && (
-                              <span className="order-first shrink-0 text-[10px] text-gray-400">{formatTime(m.createdAt)}</span>
-                            )}
+                          <div className="group relative max-w-[72%]">
                             <div
-                              className={`inline-block rounded-2xl px-3.5 py-2 text-left text-sm leading-relaxed break-keep ${
-                                mine
-                                  ? isTeacher
-                                    ? 'rounded-tr-sm bg-blue-600 text-white'
-                                    : 'rounded-tr-sm bg-emerald-600 text-white'
-                                  : m.role === 'teacher'
-                                    ? 'rounded-tl-sm bg-blue-50 text-blue-900 ring-1 ring-blue-100'
-                                    : 'rounded-tl-sm bg-white text-gray-800 ring-1 ring-gray-200'
-                              }`}
+                              className="inline-block whitespace-pre-wrap rounded-2xl rounded-tr-md px-3 py-1.5 text-left text-[13.5px] leading-relaxed text-gray-900 break-keep shadow-sm"
+                              style={{ background: '#fee500' }}
                             >
                               {m.text}
                             </div>
-                            {!mine && (
-                              <span className="shrink-0 text-[10px] text-gray-400">{formatTime(m.createdAt)}</span>
-                            )}
-                          </div>
-                          {(mine || isTeacher) && (
                             <button
                               onClick={() => void handleDelete(m.id)}
-                              className="px-1 py-0.5 text-[10px] text-gray-300 hover:text-red-400"
+                              className="absolute -left-8 top-1/2 hidden -translate-y-1/2 rounded p-1 text-[10px] text-gray-500 group-hover:block"
                             >
                               삭제
                             </button>
+                          </div>
+                        </div>
+                      )
+                    }
+                    return (
+                      <div className={`flex items-start gap-2 ${sameAuthorAsPrev ? 'mt-1 pl-10' : 'mt-2.5'}`}>
+                        {!sameAuthorAsPrev && (
+                          <div
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[14px] text-sm font-bold text-white ${
+                              m.role === 'teacher' ? 'bg-blue-500' : avatarColor(m.authorName)
+                            }`}
+                          >
+                            {m.role === 'teacher' ? '👩‍🏫' : (m.authorName || '?').charAt(0)}
+                          </div>
+                        )}
+                        <div className="min-w-0 max-w-[72%]">
+                          {!sameAuthorAsPrev && (
+                            <p className="mb-1 text-[11.5px] text-gray-700">
+                              {m.authorName}
+                              {m.role === 'teacher' && (
+                                <span className="ml-1 rounded bg-blue-500/90 px-1 py-px text-[9px] font-bold text-white align-[1px]">선생님</span>
+                              )}
+                            </p>
                           )}
+                          <div className="flex items-end gap-1">
+                            <div className="group relative">
+                              <div className="inline-block whitespace-pre-wrap rounded-2xl rounded-tl-md bg-white px-3 py-1.5 text-left text-[13.5px] leading-relaxed text-gray-900 break-keep shadow-sm">
+                                {m.text}
+                              </div>
+                              {isTeacher && (
+                                <button
+                                  onClick={() => void handleDelete(m.id)}
+                                  className="absolute -right-8 top-1/2 hidden -translate-y-1/2 rounded p-1 text-[10px] text-gray-500 group-hover:block"
+                                >
+                                  삭제
+                                </button>
+                              )}
+                            </div>
+                            {showTime && (
+                              <span className="mb-0.5 shrink-0 text-[10px] text-gray-600/80">{formatTime(m.createdAt)}</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )
@@ -489,32 +615,61 @@ export default function ClassRoom(): JSX.Element {
 
       {/* 입력 바 */}
       <div
-        className="shrink-0 border-t border-gray-200 bg-white px-3 py-2.5"
-        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.625rem)' }}
+        className="shrink-0 bg-white px-2 pt-1.5"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.375rem)' }}
       >
-        <div className="mx-auto flex max-w-2xl items-center gap-2">
-          <input
-            type="text"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing) void handleSend()
-            }}
-            maxLength={CHAT_MAX_LEN}
-            placeholder={`${classLabel}에 메시지 보내기...`}
-            className={`min-w-0 flex-1 rounded-full border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 focus:bg-white focus:outline-none focus:ring-1 ${
-              accent === 'blue' ? 'focus:border-blue-400 focus:ring-blue-400' : 'focus:border-emerald-400 focus:ring-emerald-400'
-            }`}
-          />
-          <button
-            onClick={() => void handleSend()}
-            disabled={sending || !text.trim()}
-            className={`shrink-0 rounded-full px-4 py-3 text-sm font-bold text-white transition disabled:opacity-40 ${
-              accent === 'blue' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-emerald-600 hover:bg-emerald-700'
-            }`}
-          >
-            보내기
-          </button>
+        <div className="mx-auto max-w-2xl">
+          {isTeacher && (
+            <div className="flex items-center gap-2 px-1 pb-1">
+              <button
+                onClick={() => setNoticeMode((v) => !v)}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
+                  noticeMode ? 'bg-amber-400 text-gray-900' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+              >
+                📢 공지로 보내기
+              </button>
+              {noticeMode && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-600">
+                  <input
+                    type="checkbox"
+                    checked={askConsent}
+                    onChange={(e) => setAskConsent(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  동의 받기
+                </label>
+              )}
+            </div>
+          )}
+          <div className="flex items-end gap-1.5">
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  void handleSend()
+                }
+              }}
+              maxLength={CHAT_MAX_LEN}
+              rows={1}
+              placeholder={noticeMode ? '공지 내용을 입력하세요...' : '메시지 입력'}
+              className={`max-h-28 min-w-0 flex-1 resize-none rounded-2xl border-0 px-3.5 py-2.5 text-[14px] text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-0 ${
+                noticeMode ? 'bg-amber-50' : 'bg-gray-100'
+              }`}
+            />
+            <button
+              onClick={() => void handleSend()}
+              disabled={sending || !text.trim()}
+              className={`shrink-0 rounded-full px-3.5 py-2.5 text-sm font-bold transition disabled:opacity-30 ${
+                text.trim() ? 'text-gray-900' : 'text-gray-400'
+              }`}
+              style={{ background: text.trim() ? '#fee500' : '#f3f4f6' }}
+            >
+              전송
+            </button>
+          </div>
         </div>
       </div>
     </div>
