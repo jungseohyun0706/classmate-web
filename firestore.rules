@@ -153,8 +153,13 @@ service cloud.firestore {
               && myDoc().status == 'approved'
               && myDoc().classId == classId);
 
-        // 쓰기: 담임 교사만
-        allow create, update, delete: if isClassTeacher(classId);
+        // 생성: 같은 학교 교사(담임 + 수업 교사), 본인 명의
+        allow create: if isTeacher()
+          && sameSchool(classDoc(classId).schoolCode)
+          && request.resource.data.authorId == request.auth.uid;
+        // 수정/삭제: 담임 또는 작성자 본인
+        allow update, delete: if isClassTeacher(classId)
+          || (isTeacher() && resource.data.authorId == request.auth.uid);
 
         // 예외: 이 반의 승인된 학생은 읽음 카운터(readCount)만 +1 할 수 있음
         allow update: if signedIn()
@@ -208,22 +213,23 @@ service cloud.firestore {
             && request.resource.data.keys()
                  .hasOnly(['readAt', 'studentName', 'consent', 'consentAt']);
 
-          // 읽기: 담임 교사와 학생 본인
-          allow read: if isClassTeacher(classId) || me(studentUid);
+          // 읽기: 같은 학교 교사(담임+수업 교사·확인 명단용)와 학생 본인
+          allow read: if me(studentUid)
+            || (isTeacher() && sameSchool(classDoc(classId).schoolCode));
         }
       }
 
       // ── classes/{classId}/chat/{mid}: 우리 반 이야기방 메시지 ──
       match /chat/{mid} {
-        // 읽기: 담임 / 이 반의 승인된 학생
-        allow read: if isClassTeacher(classId)
+        // 읽기: 같은 학교 교사(담임+수업 교사) / 이 반의 승인된 학생
+        allow read: if (isTeacher() && sameSchool(classDoc(classId).schoolCode))
           || (signedIn()
               && myDoc().role == 'student'
               && myDoc().status == 'approved'
               && myDoc().classId == classId);
 
-        // 생성: 담임 또는 이 반의 승인된 학생, 본인 명의 + 500자 제한
-        allow create: if (isClassTeacher(classId)
+        // 생성: 같은 학교 교사 또는 이 반의 승인된 학생, 본인 명의 + 500자 제한
+        allow create: if ((isTeacher() && sameSchool(classDoc(classId).schoolCode))
             || (signedIn()
                 && myDoc().role == 'student'
                 && myDoc().status == 'approved'

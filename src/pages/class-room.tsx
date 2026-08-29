@@ -75,6 +75,13 @@ function formatDayLabel(ts: Timestamp | null): string {
   return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${days[d.getDay()]}요일`
 }
 
+/** classId(`{school}_{g}_{c}`) → '1학년 3반' */
+function labelOf(classId: string): string {
+  const parts = classId.split('_')
+  if (parts.length < 3) return classId
+  return `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
+}
+
 /** 이름 첫 글자 아바타 색 (이름 기반 고정) */
 const AVATAR_COLORS = ['bg-orange-300', 'bg-rose-300', 'bg-violet-300', 'bg-sky-300', 'bg-lime-300', 'bg-amber-300', 'bg-teal-300', 'bg-fuchsia-300']
 function avatarColor(name: string): string {
@@ -92,6 +99,9 @@ export default function ClassRoom(): JSX.Element {
   const [me, setMe] = useState<MyData | null>(null)
   const [blocked, setBlocked] = useState<'pending' | 'no-class' | null>(null)
   const [memberCount, setMemberCount] = useState<number | null>(null)
+  // 교사: 현재 보고 있는 반 + 전환 가능한 반 목록 (담임 반 + 수업 반)
+  const [roomClassId, setRoomClassId] = useState('')
+  const [managed, setManaged] = useState<string[]>([])
 
   const [notices, setNotices] = useState<Announcement[]>([])
   const [chat, setChat] = useState<ChatMessage[]>([])
@@ -124,7 +134,34 @@ export default function ClassRoom(): JSX.Element {
 
   const isTeacher = me?.role === 'teacher'
   const myName = me?.name || me?.displayName || (isTeacher ? '선생님' : '학생')
-  const classId = me?.classId || ''
+  const classId = roomClassId
+
+  // 반 전환 (교사)
+  const switchRoom = (id: string) => {
+    if (id === roomClassId) return
+    setNotices([])
+    setChat([])
+    setReceipts({})
+    setRosterFor(null)
+    setBannerOpen(false)
+    setMemberCount(null)
+    setRoomClassId(id)
+  }
+
+  // 인원수(승인 학생 + 담임) — 반이 바뀔 때마다
+  useEffect(() => {
+    if (!classId) return
+    void getCountFromServer(
+      query(
+        collection(db, 'users'),
+        where('classId', '==', classId),
+        where('role', '==', 'student'),
+        where('status', '==', 'approved')
+      )
+    )
+      .then((s) => setMemberCount(s.data().count + 1))
+      .catch(() => {})
+  }, [classId])
 
   // 로그인 + 역할/반 확인
   useEffect(() => {
@@ -140,29 +177,36 @@ export default function ClassRoom(): JSX.Element {
           router.replace('/auth/login')
           return
         }
-        if (!data.classId) {
-          setBlocked('no-class')
-          setLoading(false)
-          return
-        }
-        if (data.role === 'student' && data.status !== 'approved') {
-          setBlocked('pending')
-          setLoading(false)
-          return
+        if (data.role === 'student') {
+          if (!data.classId) {
+            setBlocked('no-class')
+            setLoading(false)
+            return
+          }
+          if (data.status !== 'approved') {
+            setBlocked('pending')
+            setLoading(false)
+            return
+          }
+          setRoomClassId(String(data.classId))
+        } else {
+          // 교사: 담임 반 + 수업 반 중 선택 (?classId= 우선)
+          const teachingIds: string[] = Array.isArray((data as any).teachingClassIds)
+            ? (data as any).teachingClassIds.filter((x: unknown) => typeof x === 'string')
+            : []
+          const m = [...(data.classId ? [String(data.classId)] : []), ...teachingIds]
+          setManaged(m)
+          const requested = new URLSearchParams(window.location.search).get('classId')
+          const target = requested || m[0] || ''
+          if (!target) {
+            setBlocked('no-class')
+            setLoading(false)
+            return
+          }
+          setRoomClassId(target)
         }
         setUid(u.uid)
         setMe(data)
-        // 인원수(승인 학생 + 선생님) — 백그라운드
-        void getCountFromServer(
-          query(
-            collection(db, 'users'),
-            where('classId', '==', String(data.classId)),
-            where('role', '==', 'student'),
-            where('status', '==', 'approved')
-          )
-        )
-          .then((s) => setMemberCount(s.data().count + 1))
-          .catch(() => {})
       } catch (e) {
         console.error(e)
         setLoading(false)
@@ -391,7 +435,8 @@ export default function ClassRoom(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTeacher, rosterFor?.id, classId])
 
-  const classLabel = me ? `${me.grade}학년 ${me.classNm}반` : ''
+  const classLabel = classId ? labelOf(classId) : me ? `${me.grade}학년 ${me.classNm}반` : ''
+  const roomOptions = managed.includes(classId) || !classId ? managed : [...managed, classId]
 
   if (loading) {
     return (
@@ -411,7 +456,7 @@ export default function ClassRoom(): JSX.Element {
         <p className="mt-1 text-sm text-gray-500 break-keep">
           {blocked === 'pending'
             ? '승인이 끝나면 우리 반 이야기방에 들어올 수 있어요.'
-            : '반에 들어가면 이야기방이 열려요.'}
+            : '반에 들어가면 이야기방이 열려요. 선생님은 학생 관리에서 수업 반을 추가해 주세요.'}
         </p>
         <button
           onClick={() => router.replace(blocked === 'pending' ? '/student/today' : '/dashboard')}
@@ -439,13 +484,33 @@ export default function ClassRoom(): JSX.Element {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="m15 6-6 6 6 6"/></svg>
             </button>
             <div className="min-w-0">
-              <h1 className="flex items-center gap-1.5 truncate text-[15px] font-bold text-gray-900">
-                {classLabel} 이야기방
-                {memberCount !== null && <span className="text-[13px] font-medium text-gray-600">{memberCount}</span>}
-              </h1>
+              {isTeacher && roomOptions.length > 1 ? (
+                <div className="flex items-center gap-1">
+                  <select
+                    value={classId}
+                    onChange={(e) => switchRoom(e.target.value)}
+                    className="max-w-[11rem] truncate rounded-lg border-0 bg-black/5 px-2 py-1.5 text-[14px] font-bold text-gray-900 focus:outline-none"
+                  >
+                    {roomOptions.map((id) => (
+                      <option key={id} value={id}>
+                        {id === me?.classId ? `🏠 ${labelOf(id)}` : labelOf(id)}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-[14px] font-bold text-gray-900">이야기방</span>
+                  {memberCount !== null && (
+                    <span className="text-[13px] font-medium text-gray-600">{memberCount}</span>
+                  )}
+                </div>
+              ) : (
+                <h1 className="flex items-center gap-1.5 truncate text-[15px] font-bold text-gray-900">
+                  {classLabel} 이야기방
+                  {memberCount !== null && <span className="text-[13px] font-medium text-gray-600">{memberCount}</span>}
+                </h1>
+              )}
             </div>
           </div>
-          {isTeacher && (
+          {isTeacher && classId === me?.classId && (
             <button
               onClick={() => router.push('/teacher/notices')}
               className="shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-xs font-bold text-gray-700 hover:bg-black/5"
