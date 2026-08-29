@@ -196,6 +196,34 @@ service cloud.firestore {
         }
       }
 
+      // ── classes/{classId}/chat/{mid}: 우리 반 이야기방 메시지 ──
+      match /chat/{mid} {
+        // 읽기: 담임 / 이 반의 승인된 학생
+        allow read: if isClassTeacher(classId)
+          || (signedIn()
+              && myDoc().role == 'student'
+              && myDoc().status == 'approved'
+              && myDoc().classId == classId);
+
+        // 생성: 담임 또는 이 반의 승인된 학생, 본인 명의 + 500자 제한
+        allow create: if (isClassTeacher(classId)
+            || (signedIn()
+                && myDoc().role == 'student'
+                && myDoc().status == 'approved'
+                && myDoc().classId == classId))
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 500
+          && request.resource.data.keys()
+               .hasOnly(['authorId', 'authorName', 'role', 'text', 'createdAt']);
+
+        // 삭제: 본인 또는 담임(중재). 수정 불가.
+        allow delete: if signedIn()
+          && (resource.data.authorId == request.auth.uid || isClassTeacher(classId));
+        allow update: if false;
+      }
+
       // ── classes/{classId}/overrides/{ymd}: 시간표 변경(보강/교체) ──
       match /overrides/{ymd} {
         // 읽기: 이 학급 구성원(classId 일치) + 같은 학교 교사

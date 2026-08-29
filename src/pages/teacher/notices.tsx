@@ -169,8 +169,8 @@ export default function NoticeList() {
         setUserData(data)
         const cid: string = data.classId
 
-        // 전체(승인된 학생) 수
-        const totalSnap = await getCountFromServer(
+        // 전체(승인된 학생) 수 — 화면을 막지 않도록 백그라운드로
+        void getCountFromServer(
           query(
             collection(db, 'users'),
             where('classId', '==', cid),
@@ -178,9 +178,10 @@ export default function NoticeList() {
             where('status', '==', 'approved')
           )
         )
-        setTotalStudents(totalSnap.data().count)
+          .then((s) => setTotalStudents(s.data().count))
+          .catch(() => {})
 
-        // 알림장 최신순 + 행별 읽음/동의 카운트
+        // 알림장 목록을 먼저 그리고(체감 속도), 읽음/동의 카운트는 뒤에서 채운다
         const annSnap = await getDocs(
           query(
             collection(db, 'classes', cid, 'announcements'),
@@ -188,10 +189,23 @@ export default function NoticeList() {
             limit(MAX_NOTICES)
           )
         )
-        const rows = await Promise.all(
+        const baseRows: NoticeRow[] = annSnap.docs.map((annDoc) => {
+          const a = annDoc.data()
+          return {
+            id: annDoc.id,
+            title: typeof a.title === 'string' && a.title ? a.title : '(제목 없음)',
+            createdAt: (a.createdAt as Timestamp) ?? null,
+            requiresConsent: a.requiresConsent === true,
+            readCount: typeof a.readCount === 'number' ? a.readCount : 0,
+            consentCount: 0,
+          }
+        })
+        setNotices(baseRows)
+        setLoading(false)
+
+        void Promise.all(
           annSnap.docs.map(async (annDoc) => {
-            const a = annDoc.data()
-            const requiresConsent = a.requiresConsent === true
+            const requiresConsent = annDoc.data().requiresConsent === true
             const receiptsCol = collection(db, 'classes', cid, 'announcements', annDoc.id, 'receipts')
             const readSnap = await getCountFromServer(receiptsCol)
             let consentCount = 0
@@ -201,17 +215,15 @@ export default function NoticeList() {
               )
               consentCount = consentSnap.data().count
             }
-            return {
-              id: annDoc.id,
-              title: typeof a.title === 'string' && a.title ? a.title : '(제목 없음)',
-              createdAt: (a.createdAt as Timestamp) ?? null,
-              requiresConsent,
-              readCount: readSnap.data().count,
-              consentCount,
-            } as NoticeRow
+            setNotices((prev) =>
+              prev.map((r) =>
+                r.id === annDoc.id
+                  ? { ...r, readCount: readSnap.data().count, consentCount }
+                  : r
+              )
+            )
           })
-        )
-        setNotices(rows)
+        ).catch(() => {})
       } catch (e) {
         console.error(e)
         toast('알림장 목록을 불러오지 못했어요.', 'error')

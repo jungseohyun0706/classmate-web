@@ -89,6 +89,29 @@ export async function listAnnouncements(classId: string, max: number = 30): Prom
   return snap.docs.map((d) => toAnnouncement(d.id, d.data() as Record<string, unknown>))
 }
 
+/** 알림장 실시간 구독 (최신 max개, 시간 오름차순으로 콜백) */
+export function watchAnnouncements(
+  classId: string,
+  onChange: (list: Announcement[]) => void,
+  onError?: (e: unknown) => void,
+  max: number = 20
+): Unsubscribe {
+  const q = query(
+    collection(db, 'classes', classId, 'announcements'),
+    orderBy('createdAt', 'desc'),
+    limit(max)
+  )
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs.map((d) => toAnnouncement(d.id, d.data() as Record<string, unknown>))
+      list.reverse()
+      onChange(list)
+    },
+    (e) => onError?.(e)
+  )
+}
+
 /** 알림장 한 건을 가져옵니다. 없으면 null. */
 export async function getAnnouncement(classId: string, aid: string): Promise<Announcement | null> {
   const snap = await getDoc(doc(db, 'classes', classId, 'announcements', aid))
