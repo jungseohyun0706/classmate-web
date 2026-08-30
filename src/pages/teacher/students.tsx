@@ -9,12 +9,9 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
-  query,
   serverTimestamp,
   setDoc,
   updateDoc,
-  where,
 } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 import { normalizeName } from '../../lib/timetableConvert'
@@ -120,9 +117,52 @@ export default function StudentList() {
           return
         }
         setMe(userData)
-        const t: string[] = Array.isArray(userData.teachingClassIds)
+        let t: string[] = Array.isArray(userData.teachingClassIds)
           ? userData.teachingClassIds.filter((x: unknown) => typeof x === 'string')
           : []
+
+        // 자가 치유: 구버전 앱이 넣은 실반 id(그룹 아님)를 내 수업 그룹으로 전환하고
+        // 형식이 깨진 id는 제거합니다. (수업 반 = 항상 내 소유 그룹이어야 함)
+        if (t.some((id) => !/_g_[A-Za-z0-9]+$/.test(id))) {
+          try {
+            const uid6 = user.uid.slice(0, 6)
+            const healed: string[] = []
+            for (const id of t) {
+              const isG = /_g_[A-Za-z0-9]+$/.test(id)
+              const base = baseOf(id)
+              const parts = base.split('_')
+              const g = parseInt(parts[parts.length - 2], 10)
+              const c = parseInt(parts[parts.length - 1], 10)
+              if (parts.length < 3 || !Number.isFinite(g) || !Number.isFinite(c)) continue
+              const gid = isG ? id : `${base}_g_${uid6}`
+              if (healed.indexOf(gid) !== -1) continue
+              healed.push(gid)
+              if (!isG) {
+                await setDoc(
+                  doc(db, 'classes', gid),
+                  {
+                    classId: gid,
+                    schoolCode: userData.schoolCode,
+                    officeCode: userData.officeCode ?? null,
+                    schoolName: userData.schoolName ?? null,
+                    grade: g,
+                    classNm: c,
+                    teacherId: user.uid,
+                    teacherName:
+                      userData.masterName || userData.displayName || userData.name || '선생님',
+                    isGroup: true,
+                    createdAt: serverTimestamp(),
+                  },
+                  { merge: true }
+                )
+              }
+            }
+            await updateDoc(doc(db, 'users', user.uid), { teachingClassIds: healed })
+            t = healed
+          } catch (e) {
+            console.error('수업 반 자동 전환 실패(무시):', e)
+          }
+        }
         setTeaching(t)
         setActiveId(userData.classId || t[0] || '')
 
@@ -165,40 +205,21 @@ export default function StudentList() {
     setRosterLoading(true)
     ;(async () => {
       try {
-        const [homeSnap, extraSnap] = await Promise.all([
-          getDocs(
-            query(collection(db, 'users'), where('classId', '==', activeId), where('role', '==', 'student'))
-          ),
-          getDocs(
-            query(
-              collection(db, 'users'),
-              where('extraClassIds', 'array-contains', activeId),
-              where('role', '==', 'student'),
-              where('status', '==', 'approved')
-            )
-          ),
-        ])
+        // 본반+추가 참여를 합치는 목록 쿼리는 보안 규칙상 클라이언트에서 불가 → 서버 API
+        const token = await auth.currentUser?.getIdToken()
+        const resp = await fetch(`/api/class-roster?classId=${encodeURIComponent(activeId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const data = await resp.json().catch(() => ({}))
+        if (!resp.ok) throw new Error(data?.error || `roster ${resp.status}`)
         if (cancelled) return
-        const seen = new Set<string>()
-        const list: Student[] = []
-        homeSnap.forEach((d) => {
-          const s = { id: d.id, ...d.data() } as Student
-          if (s.status !== 'rejected') {
-            seen.add(d.id)
-            list.push(s)
-          }
-        })
-        extraSnap.forEach((d) => {
-          if (seen.has(d.id)) return
-          const v = d.data()
-          list.push({
-            id: d.id,
-            name: String(v.name || v.displayName || '이름 없음'),
-            studentId: Number(v.studentId ?? 0),
-            status: 'approved',
-            homeClassId: typeof v.classId === 'string' ? v.classId : undefined,
-          })
-        })
+        const list: Student[] = (Array.isArray(data.members) ? data.members : []).map((m: any) => ({
+          id: String(m.id),
+          name: String(m.name || '이름 없음'),
+          studentId: Number(m.studentId ?? 0),
+          status: m.status === 'approved' ? 'approved' : 'pending',
+          homeClassId: typeof m.homeClassId === 'string' ? m.homeClassId : undefined,
+        }))
         list.sort((a, b) => {
           const an = parseInt(String(a.studentId ?? ''), 10)
           const bn = parseInt(String(b.studentId ?? ''), 10)

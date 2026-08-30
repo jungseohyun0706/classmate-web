@@ -80,7 +80,8 @@ export default async function handler(
       const c = classDoc.data()
       const teacherId: string = typeof c.teacherId === 'string' ? c.teacherId : ''
       const schoolCode: string = typeof c.schoolCode === 'string' ? c.schoolCode : ''
-      if (!teacherId || !schoolCode) {
+      // 수업 그룹(교사 개인 소유)은 브리핑 대상이 아님 — 실반(담임 반)만
+      if (!teacherId || !schoolCode || c.isGroup === true) {
         skipped += 1
         continue
       }

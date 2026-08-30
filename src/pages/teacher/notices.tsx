@@ -169,16 +169,19 @@ export default function NoticeList() {
         setUserData(data)
         const cid: string = data.classId
 
-        // 전체(승인된 학생) 수 — 화면을 막지 않도록 백그라운드로
-        void getCountFromServer(
-          query(
-            collection(db, 'users'),
-            where('classId', '==', cid),
-            where('role', '==', 'student'),
-            where('status', '==', 'approved')
+        // 전체(승인된 학생) 수 — 추가 참여 학생 포함, 서버 API로 (화면을 막지 않도록 백그라운드)
+        void auth.currentUser
+          ?.getIdToken()
+          .then((t) =>
+            fetch(`/api/class-roster?classId=${encodeURIComponent(cid)}`, {
+              headers: { Authorization: `Bearer ${t}` },
+            })
           )
-        )
-          .then((s) => setTotalStudents(s.data().count))
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => {
+            if (!j || !Array.isArray(j.members)) return
+            setTotalStudents(j.members.filter((m: any) => m.status === 'approved').length)
+          })
           .catch(() => {})
 
         // 알림장 목록을 먼저 그리고(체감 속도), 읽음/동의 카운트는 뒤에서 채운다
@@ -247,24 +250,21 @@ export default function NoticeList() {
     try {
       const cid: string = userData.classId
 
-      // 승인된 학생 명단은 한 번만 가져와요 (미확인 명단 계산용)
+      // 승인된 학생 명단은 한 번만 가져와요 (미확인 명단 계산용 — 추가 참여 학생 포함, 서버 API)
       if (!students) {
-        const sSnap = await getDocs(
-          query(
-            collection(db, 'users'),
-            where('classId', '==', cid),
-            where('role', '==', 'student'),
-            where('status', '==', 'approved')
-          )
-        )
-        const list: StudentLite[] = sSnap.docs.map((d) => {
-          const s = d.data()
-          return {
-            id: d.id,
-            name: (typeof s.name === 'string' && s.name) || (typeof s.displayName === 'string' && s.displayName) || '이름 없음',
-            studentId: Number(s.studentId ?? 0),
-          }
+        const token = await auth.currentUser?.getIdToken()
+        const resp = await fetch(`/api/class-roster?classId=${encodeURIComponent(cid)}`, {
+          headers: { Authorization: `Bearer ${token}` },
         })
+        const data = await resp.json().catch(() => ({}))
+        if (!resp.ok) throw new Error(data?.error || `roster ${resp.status}`)
+        const list: StudentLite[] = (Array.isArray(data.members) ? data.members : [])
+          .filter((m: any) => m.status === 'approved')
+          .map((m: any) => ({
+            id: String(m.id),
+            name: String(m.name || '이름 없음'),
+            studentId: Number(m.studentId ?? 0),
+          }))
         list.sort((a, b) => a.studentId - b.studentId)
         setStudents(list)
       }

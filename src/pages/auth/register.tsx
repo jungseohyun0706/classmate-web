@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
 import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 
 export default function RegisterPage() {
@@ -61,19 +61,24 @@ export default function RegisterPage() {
       const cred = await createUserWithEmailAndPassword(auth, email, password)
       const user = cred.user
 
-      // 4. Firestore에 유저 정보 저장
-      try {
-        const { db } = await import('../../lib/firebase')
-        await setDoc(doc(db, 'users', user.uid), {
-          email: user.email,
-          displayName: displayName || null,
-          role: 'teacher', // 교사 권한 부여
-          schoolId: null,
-          createdAt: serverTimestamp()
-        })
-      } catch (e) {
-        console.warn('users doc write failed', e)
-        // 치명적이지 않으므로 계속 진행 (단, 나중에 프로필 로드 이슈 가능성 있음)
+      // 4. 교사 role 부여는 서버에서만 (보안 규칙상 클라이언트는 role을 쓸 수 없음)
+      const idToken = await user.getIdToken()
+      const signupRes = await fetch('/api/complete-signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken, code: secretCode.trim() }),
+      })
+      if (!signupRes.ok) {
+        const d = await signupRes.json().catch(() => ({}))
+        throw new Error(d?.error || '교사 등록에 실패했어요. 잠시 후 다시 시도해 주세요.')
+      }
+      if (displayName) {
+        try {
+          const { db } = await import('../../lib/firebase')
+          await setDoc(doc(db, 'users', user.uid), { displayName }, { merge: true })
+        } catch (e) {
+          console.warn('displayName write failed', e)
+        }
       }
 
       // 5. 이메일 인증 발송

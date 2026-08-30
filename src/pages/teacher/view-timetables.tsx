@@ -51,7 +51,11 @@ export default function ViewTimetables() {
         )
         const snapshot = await getDocs(q)
         const list: any[] = []
-        snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }))
+        // 수업 그룹(교사 개인 소유)은 학급 목록에서 제외 — 실반만 표시
+        snapshot.forEach(doc => {
+          if (doc.data().isGroup === true) return
+          list.push({ id: doc.id, ...doc.data() })
+        })
         setClasses(list)
 
       } catch (e) {

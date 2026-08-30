@@ -6,13 +6,9 @@ import {
   addDoc,
   collection,
   doc,
-  getCountFromServer,
   getDoc,
-  getDocs,
   onSnapshot,
-  query,
   serverTimestamp,
-  where,
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import { useUI } from '../components/ui/feedback'
@@ -151,29 +147,26 @@ export default function ClassRoom(): JSX.Element {
     setRoomClassId(id)
   }
 
-  // 인원수(본반 + 추가 참여 학생 + 담임) — 반이 바뀔 때마다
+  // 인원수(본반 + 추가 참여 학생 + 담임) — 반이 바뀔 때마다 서버 API로 조회
+  // (본반+추가 참여를 합치는 목록 쿼리는 보안 규칙상 클라이언트에서 불가)
   useEffect(() => {
     if (!classId) return
-    void Promise.all([
-      getCountFromServer(
-        query(
-          collection(db, 'users'),
-          where('classId', '==', classId),
-          where('role', '==', 'student'),
-          where('status', '==', 'approved')
-        )
-      ),
-      getCountFromServer(
-        query(
-          collection(db, 'users'),
-          where('extraClassIds', 'array-contains', classId),
-          where('role', '==', 'student'),
-          where('status', '==', 'approved')
-        )
-      ),
-    ])
-      .then(([a, b]) => setMemberCount(a.data().count + b.data().count + 1))
+    let cancelled = false
+    void auth.currentUser
+      ?.getIdToken()
+      .then((t) =>
+        fetch(`/api/class-roster?classId=${encodeURIComponent(classId)}`, {
+          headers: { Authorization: `Bearer ${t}` },
+        })
+      )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!cancelled && j && typeof j.count === 'number') setMemberCount(j.count)
+      })
       .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [classId])
 
   // 로그인 + 역할/반 확인
@@ -411,41 +404,40 @@ export default function ClassRoom(): JSX.Element {
     if (!isTeacher || !rosterFor || !classId) return
     let cancelled = false
     if (!rosterStudents) {
-      void Promise.all([
-        getDocs(
-          query(
-            collection(db, 'users'),
-            where('classId', '==', classId),
-            where('role', '==', 'student'),
-            where('status', '==', 'approved')
-          )
-        ),
-        getDocs(
-          query(
-            collection(db, 'users'),
-            where('extraClassIds', 'array-contains', classId),
-            where('role', '==', 'student'),
-            where('status', '==', 'approved')
-          )
-        ),
-      ]).then(([homeSnap, extraSnap]) => {
-        if (cancelled) return
-        const seen = new Set<string>()
-        const list: { id: string; name: string; no: number }[] = []
-        for (const d of [...homeSnap.docs, ...extraSnap.docs]) {
-          if (seen.has(d.id)) continue
-          seen.add(d.id)
-          const v = d.data()
-          const no = parseInt(String(v.studentId ?? ''), 10)
-          list.push({
-            id: d.id,
-            name: String(v.name || v.displayName || '이름 없음'),
-            no: Number.isFinite(no) ? no : 9999,
+      // 본반+추가 참여 합산 명단은 서버 API로 (보안 규칙상 클라이언트 쿼리 불가)
+      void auth.currentUser
+        ?.getIdToken()
+        .then((t) =>
+          fetch(`/api/class-roster?classId=${encodeURIComponent(classId)}`, {
+            headers: { Authorization: `Bearer ${t}` },
           })
-        }
-        list.sort((a, b) => (a.no !== b.no ? a.no - b.no : a.name.localeCompare(b.name, 'ko')))
-        setRosterStudents(list)
-      })
+        )
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}))
+          if (!r.ok) throw new Error(j?.error || `roster ${r.status}`)
+          return j
+        })
+        .then((j) => {
+          if (cancelled) return
+          const list: { id: string; name: string; no: number }[] = (
+            Array.isArray(j?.members) ? j.members : []
+          )
+            .filter((m: any) => m.status === 'approved')
+            .map((m: any) => {
+              const no = parseInt(String(m.studentId ?? ''), 10)
+              return {
+                id: String(m.id),
+                name: String(m.name || '이름 없음'),
+                no: Number.isFinite(no) ? no : 9999,
+              }
+            })
+          list.sort((a, b) => (a.no !== b.no ? a.no - b.no : a.name.localeCompare(b.name, 'ko')))
+          setRosterStudents(list)
+        })
+        .catch((e) => {
+          console.error('명단 로드 실패', e)
+          toast('명단을 불러오지 못했어요.', 'error')
+        })
     }
     const unsub = onSnapshot(
       collection(db, 'classes', classId, 'announcements', rosterFor.id, 'receipts'),

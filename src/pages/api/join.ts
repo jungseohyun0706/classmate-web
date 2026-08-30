@@ -31,7 +31,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const { classId, token, name, studentId } = (req.body ?? {}) as Record<string, unknown>
   const cleanName = typeof name === 'string' ? name.trim().slice(0, 20) : ''
-  const cleanStudentId = typeof studentId === 'string' ? studentId.trim().slice(0, 10) : ''
+  const cleanStudentId =
+    typeof studentId === 'string' ? studentId.replace(/[^0-9]/g, '').slice(0, 10) : ''
   if (
     typeof classId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,80}$/.test(classId) ||

@@ -71,6 +71,11 @@ export default async function handler(
       const classId: string =
         (typeof c.classId === 'string' && c.classId) || classDoc.id
       const teacherId: string = typeof c.teacherId === 'string' ? c.teacherId : ''
+      // 수업 그룹(교사 개인 소유)은 브리핑 대상이 아님 — 실반(담임 반)만
+      if (c.isGroup === true) {
+        skipped += 1
+        continue
+      }
 
       try {
         // 1) 내일 기본 시간표 (classes/{id}/info/timetable 의 mon..fri 배열)
