@@ -81,7 +81,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     extraSnap.forEach((d) => targets.add(d.id))
     targets.delete(decoded.uid)
 
-    const title = `${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반 톡방`
+    const title = `${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반${cls.isGroup === true ? ' 수업' : ''} 톡방`
     const body = isNotice
       ? `📢 공지: ${previewText || '새 공지가 올라왔어요'}`
       : `${senderName}: ${previewText || '새 메시지'}`

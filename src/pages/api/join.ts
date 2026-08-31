@@ -77,40 +77,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // 본반이 확정(승인)된 학생: 본반은 그대로 두고, 다른 반 QR은 '추가 반' 참여로 처리
     // (이동수업·교과 반 대응 — 선생님이 직접 보여주는 QR이므로 별도 승인 없이 즉시 참여)
+    // 예외: 본반이 '수업 그룹'(담임이 앱 미등록이라 임시 본반)인 학생이 실반 QR을 찍으면
+    //       → 실반으로 승급(승인 대기), 기존 수업 그룹은 추가 참여로 이동
+    let promoteFromGroupId = ''
     if (prev.role === 'student' && prev.status === 'approved' && prev.classId) {
       if (prev.classId === classId) {
         return res.status(200).json({ ok: true, status: 'approved', already: true })
       }
-      const extras: string[] = Array.isArray(prev.extraClassIds) ? prev.extraClassIds : []
-      if (extras.includes(classId)) {
-        return res.status(200).json({ ok: true, status: 'joined-extra', already: true })
-      }
-      await userRef.set({ extraClassIds: FieldValue.arrayUnion(classId) }, { merge: true })
-      const extraTeacherId = cls.teacherId ? String(cls.teacherId) : ''
-      if (extraTeacherId) {
-        try {
-          await db.collection('users').doc(extraTeacherId).collection('notifications').add({
-            title: '수업 반 참여',
-            body: `${String(prev.name || cleanName)} 학생이 ${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반 톡방에 참여했어요`,
-            url: '/teacher/students',
-            createdAt: FieldValue.serverTimestamp(),
-            read: false,
-          })
-        } catch (e) {
-          console.error('join: extra notify failed:', e)
+      const prevIsGroup = /_g_[A-Za-z0-9]+$/.test(String(prev.classId))
+      if (prevIsGroup && cls.isGroup !== true) {
+        promoteFromGroupId = String(prev.classId) // 아래 일반 가입 흐름으로 진행
+      } else {
+        const extras: string[] = Array.isArray(prev.extraClassIds) ? prev.extraClassIds : []
+        if (extras.includes(classId)) {
+          return res.status(200).json({ ok: true, status: 'joined-extra', already: true })
         }
+        await userRef.set({ extraClassIds: FieldValue.arrayUnion(classId) }, { merge: true })
+        const extraTeacherId = cls.teacherId ? String(cls.teacherId) : ''
+        if (extraTeacherId) {
+          try {
+            await db.collection('users').doc(extraTeacherId).collection('notifications').add({
+              title: '수업 반 참여',
+              body: `${String(prev.name || cleanName)} 학생이 ${cls.grade ?? ''}학년 ${cls.classNm ?? ''}반 톡방에 참여했어요`,
+              url: '/teacher/students',
+              createdAt: FieldValue.serverTimestamp(),
+              read: false,
+            })
+          } catch (e) {
+            console.error('join: extra notify failed:', e)
+          }
+        }
+        return res.status(200).json({ ok: true, status: 'joined-extra' })
       }
-      return res.status(200).json({ ok: true, status: 'joined-extra' })
-    }
-
-    // 수업 그룹 QR은 본반(담임 반) 가입 후에만 추가 참여 가능 — 본반은 실제 학급이어야 함
-    if (cls.isGroup === true) {
-      return res.status(403).json({
-        error: '이 QR은 수업 반이에요. 먼저 담임 선생님의 우리 반 QR로 가입한 뒤 다시 찍어 주세요.',
-      })
     }
 
     // 4) 학생 프로필 기록 (재입장/반 이동 포함 — 항상 승인 대기로)
+    //    수업 그룹 QR도 그대로 허용: 담임이 아직 앱에 없으면 그룹이 임시 본반이 되고,
+    //    그룹 소유 교사가 승인합니다. (실반 담임이 등록하면 위 승급 흐름으로 전환)
     const profile: Record<string, unknown> = {
       role: 'student',
       status: 'pending',
@@ -126,6 +129,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (cls.officeCode) profile.officeCode = cls.officeCode
     if (cleanStudentId) profile.studentId = cleanStudentId
     if (!existing.exists) profile.createdAt = FieldValue.serverTimestamp()
+    if (promoteFromGroupId) profile.extraClassIds = FieldValue.arrayUnion(promoteFromGroupId)
     await userRef.set(profile, { merge: true })
 
     // 5) 담임에게 인앱 알림 + 푸시 (실패해도 입장 신청은 성공)

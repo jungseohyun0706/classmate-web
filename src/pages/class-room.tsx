@@ -71,6 +71,14 @@ function formatDayLabel(ts: Timestamp | null): string {
   return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${days[d.getDay()]}요일`
 }
 
+/** 학년·반 순 정렬 키 (그룹 접미사는 무시) */
+function classOrderKey(id: string): number {
+  const parts = id.replace(/_g_[A-Za-z0-9]+$/, '').split('_')
+  const g = parseInt(parts[parts.length - 2], 10)
+  const c = parseInt(parts[parts.length - 1], 10)
+  return (Number.isFinite(g) ? g : 99) * 1000 + (Number.isFinite(c) ? c : 999)
+}
+
 /** classId → '1학년 3반' (수업 그룹 `{base}_g_{uid6}`이면 '1학년 3반 수업') */
 function labelOf(classId: string): string {
   const isGroup = /_g_[A-Za-z0-9]+$/.test(classId)
@@ -198,7 +206,12 @@ export default function ClassRoom(): JSX.Element {
           const extras: string[] = Array.isArray((data as any).extraClassIds)
             ? (data as any).extraClassIds.filter((x: unknown) => typeof x === 'string')
             : []
-          const m = [String(data.classId), ...extras.filter((id) => id !== data.classId)]
+          const m = [
+            String(data.classId),
+            ...extras
+              .filter((id) => id !== data.classId)
+              .sort((a, b) => classOrderKey(a) - classOrderKey(b)),
+          ]
           setManaged(m)
           const requested = new URLSearchParams(window.location.search).get('classId')
           setRoomClassId(requested && m.includes(requested) ? requested : m[0])
@@ -207,7 +220,10 @@ export default function ClassRoom(): JSX.Element {
           const teachingIds: string[] = Array.isArray((data as any).teachingClassIds)
             ? (data as any).teachingClassIds.filter((x: unknown) => typeof x === 'string')
             : []
-          const m = [...(data.classId ? [String(data.classId)] : []), ...teachingIds]
+          const m = [
+            ...(data.classId ? [String(data.classId)] : []),
+            ...teachingIds.sort((a, b) => classOrderKey(a) - classOrderKey(b)),
+          ]
           setManaged(m)
           const requested = new URLSearchParams(window.location.search).get('classId')
           const target = requested || m[0] || ''

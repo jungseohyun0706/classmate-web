@@ -34,6 +34,14 @@ function baseOf(id: string): string {
   return id.replace(/_g_[A-Za-z0-9]+$/, '')
 }
 
+/** 학년·반 순 정렬 키 (그룹 접미사는 무시) */
+function classOrderKey(id: string): number {
+  const parts = baseOf(id).split('_')
+  const g = parseInt(parts[parts.length - 2], 10)
+  const c = parseInt(parts[parts.length - 1], 10)
+  return (Number.isFinite(g) ? g : 99) * 1000 + (Number.isFinite(c) ? c : 999)
+}
+
 /** classId → '1학년 3반' (수업 그룹이면 '1학년 3반 수업') */
 function classLabel(classId: string): string {
   const isGroup = /_g_[A-Za-z0-9]+$/.test(classId)
@@ -163,6 +171,7 @@ export default function StudentList() {
             console.error('수업 반 자동 전환 실패(무시):', e)
           }
         }
+        t.sort((a, b) => classOrderKey(a) - classOrderKey(b))
         setTeaching(t)
         setActiveId(userData.classId || t[0] || '')
 
@@ -288,7 +297,7 @@ export default function StudentList() {
       await updateDoc(doc(db, 'users', user.uid), {
         teachingClassIds: arrayUnion(gid),
       })
-      setTeaching((prev) => [...prev, gid])
+      setTeaching((prev) => [...prev, gid].sort((a, b) => classOrderKey(a) - classOrderKey(b)))
       setSuggestions((prev) => prev.filter((id) => id !== baseClassId))
       setActiveId(gid)
       toast(`${classLabel(gid)} 반을 만들었어요. QR로 학생들을 초대하세요!`, 'success')

@@ -21,6 +21,7 @@ interface JoinClassInfo {
   grade: string | number
   classNm: string | number
   teacherName?: string
+  isGroup?: boolean
 }
 
 function authErrorMessage(code?: string): string {
@@ -234,7 +235,7 @@ export default function JoinPage() {
   }
 
   const classLabel = classInfo
-    ? `${classInfo.schoolName} ${classInfo.grade}학년 ${classInfo.classNm}반`
+    ? `${classInfo.schoolName} ${classInfo.grade}학년 ${classInfo.classNm}반${classInfo.isGroup ? ' 수업' : ''}`
     : ''
 
   const inputClass =

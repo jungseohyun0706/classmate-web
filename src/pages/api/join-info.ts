@@ -54,6 +54,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         grade: cls.grade ?? '',
         classNm: cls.classNm ?? '',
         teacherName: cls.teacherName ? String(cls.teacherName) : undefined,
+        isGroup: cls.isGroup === true,
       },
     })
   } catch (e) {
