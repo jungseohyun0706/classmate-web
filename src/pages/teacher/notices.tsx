@@ -270,11 +270,11 @@ export default function NoticeList() {
       }
 
       if (!receiptsMap[aid]) {
+        // orderBy('readAt')를 서버 쿼리에 걸면 readAt 필드가 없는 receipt
+        // (확인/동의만 남긴 예전 기록)가 결과에서 통째로 빠져 '미확인'으로 잘못 잡힙니다.
+        // 전부 가져와 클라이언트에서 정렬합니다.
         const rSnap = await getDocs(
-          query(
-            collection(db, 'classes', cid, 'announcements', aid, 'receipts'),
-            orderBy('readAt', 'asc')
-          )
+          collection(db, 'classes', cid, 'announcements', aid, 'receipts')
         )
         const list: Receipt[] = rSnap.docs.map((d) => {
           const r = d.data()
@@ -284,6 +284,12 @@ export default function NoticeList() {
             readAt: (r.readAt as Timestamp) ?? null,
             consent: r.consent === 'agreed' || r.consent === 'declined' ? r.consent : undefined,
           }
+        })
+        // 읽은 시각 오름차순. 시각이 없는 기록(예전 확인 기록)은 뒤로 보냅니다.
+        list.sort((a, b) => {
+          const av = a.readAt ? a.readAt.toMillis() : Number.MAX_SAFE_INTEGER
+          const bv = b.readAt ? b.readAt.toMillis() : Number.MAX_SAFE_INTEGER
+          return av !== bv ? av - bv : a.studentName.localeCompare(b.studentName, 'ko')
         })
         setReceiptsMap((prev) => ({ ...prev, [aid]: list }))
       }
@@ -403,10 +409,10 @@ export default function NoticeList() {
 
                             <div className="pt-4">
                               <h3 className="text-xs font-bold text-gray-500 mb-2">
-                                미확인 {unread.length}명
+                                안 읽음 {unread.length}명
                               </h3>
                               {unread.length === 0 ? (
-                                <p className="text-sm text-emerald-600 font-medium">모든 학생이 확인했어요 🎉</p>
+                                <p className="text-sm text-emerald-600 font-medium">모든 학생이 읽었어요 🎉</p>
                               ) : (
                                 <div className="flex flex-wrap gap-1.5">
                                   {unread.map((s) => (

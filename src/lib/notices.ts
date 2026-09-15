@@ -173,7 +173,12 @@ export async function markRead(
 ): Promise<void> {
   const receiptRef = doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid)
   const existing = await getDoc(receiptRef)
-  if (existing.exists()) return
+
+  // 이미 읽음 시각이 있으면 끝.
+  // 문서는 있는데 readAt이 없는 경우(확인 체크만 남긴 예전 기록)에는 읽음 시각을 채워 넣습니다.
+  // 예전에는 여기서 무조건 return 해버려서, 한 번 확인을 누른 학생은 readAt이 영영 생기지 않았고
+  // readAt으로 조회/정렬하는 교사 화면에서 통째로 빠졌습니다.
+  if (existing.exists() && existing.data()?.readAt) return
 
   await setDoc(receiptRef, { readAt: serverTimestamp(), studentName }, { merge: true })
 
@@ -196,6 +201,9 @@ export async function checkNotice(
   uid: string,
   studentName: string
 ): Promise<void> {
+  // 확인을 눌렀다면 당연히 읽은 것 — readAt이 비어 있으면 먼저 채웁니다.
+  await markRead(classId, aid, uid, studentName).catch(() => {})
+
   const receiptRef = doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid)
   await setDoc(
     receiptRef,
@@ -219,6 +227,9 @@ export async function setConsent(
   studentName: string,
   consent: ConsentValue
 ): Promise<void> {
+  // 동의/미동의를 눌렀다면 읽은 것 — readAt이 비어 있으면 먼저 채웁니다.
+  await markRead(classId, aid, uid, studentName).catch(() => {})
+
   const receiptRef = doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid)
   await setDoc(
     receiptRef,

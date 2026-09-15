@@ -19,6 +19,7 @@ import {
   markRead,
   watchAnnouncements,
   type Announcement,
+  type ConsentValue,
   type Receipt,
 } from '../lib/notices'
 import { CHAT_MAX_LEN, deleteChat, sendChat, watchChat, type ChatMessage } from '../lib/classChat'
@@ -123,7 +124,8 @@ export default function ClassRoom(): JSX.Element {
   // 교사용: 공지 확인 명단 시트
   const [rosterFor, setRosterFor] = useState<Announcement | null>(null)
   const [rosterStudents, setRosterStudents] = useState<{ id: string; name: string; no: number }[] | null>(null)
-  const [rosterChecked, setRosterChecked] = useState<Record<string, Timestamp | null>>({})
+  type RosterReceipt = { readAt: Timestamp | null; consent?: ConsentValue; consentAt: Timestamp | null }
+  const [rosterChecked, setRosterChecked] = useState<Record<string, RosterReceipt>>({})
 
   const feedRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
@@ -272,6 +274,9 @@ export default function ClassRoom(): JSX.Element {
     }
   }, [classId, uid, wakeTick])
 
+  // 공지 id 목록 — 자동 읽음 effect의 의존성으로 씁니다(개수만으로는 변화를 놓칩니다).
+  const noticeIdsKey = useMemo(() => notices.map((n) => n.id).join(','), [notices])
+
   // 학생: 읽음 확인 로드 + 자동 읽음 처리
   useEffect(() => {
     if (!classId || !uid || isTeacher || notices.length === 0) return
@@ -302,8 +307,11 @@ export default function ClassRoom(): JSX.Element {
     return () => {
       cancelled = true
     }
+    // 의존성은 공지 '개수'가 아니라 id 목록이어야 합니다.
+    // watchAnnouncements가 limit(20)이라 개수가 20에 머무르면
+    // 새 공지가 와도 개수가 그대로여서 읽음 처리가 실행되지 않았습니다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, uid, isTeacher, notices.length])
+  }, [classId, uid, isTeacher, noticeIdsKey])
 
   const feed = useMemo<FeedItem[]>(() => {
     const items: FeedItem[] = [
@@ -459,11 +467,17 @@ export default function ClassRoom(): JSX.Element {
       collection(db, 'classes', classId, 'announcements', rosterFor.id, 'receipts'),
       (snap) => {
         if (cancelled) return
-        const map: Record<string, Timestamp | null> = {}
+        // receipt 문서가 있으면 '읽음'입니다.
+        // 예전에는 consent === 'agreed'(확인 버튼)만 셌기 때문에,
+        // 공지를 읽기만 한 학생은 이 명단에 영영 올라오지 않았습니다.
+        const map: Record<string, RosterReceipt> = {}
         snap.forEach((d) => {
           const v = d.data()
-          if (v.consent === 'agreed') {
-            map[d.id] = v.consentAt instanceof Timestamp ? v.consentAt : null
+          const consent = v.consent === 'agreed' || v.consent === 'declined' ? v.consent : undefined
+          map[d.id] = {
+            readAt: v.readAt instanceof Timestamp ? v.readAt : null,
+            ...(consent ? { consent } : {}),
+            consentAt: v.consentAt instanceof Timestamp ? v.consentAt : null,
           }
         })
         setRosterChecked(map)
@@ -666,7 +680,12 @@ export default function ClassRoom(): JSX.Element {
                             className="mt-2 flex w-full items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-left ring-1 ring-emerald-100 transition hover:bg-emerald-100"
                           >
                             <span className="text-[12px] font-bold text-emerald-700">
-                              ✔ 확인 {item.notice.checkCount}명
+                              👀 읽음 {item.notice.readCount}명
+                              {item.notice.requiresConsent && item.notice.checkCount > 0 && (
+                                <span className="ml-1.5 font-semibold text-emerald-600">
+                                  · 동의 {item.notice.checkCount}
+                                </span>
+                              )}
                             </span>
                             <span className="text-[11px] font-semibold text-emerald-600">명단 보기 ›</span>
                           </button>
@@ -851,25 +870,37 @@ export default function ClassRoom(): JSX.Element {
                 <p className="py-8 text-center text-sm text-gray-400">명단을 불러오는 중...</p>
               ) : (
                 (() => {
-                  const checked = rosterStudents.filter((s) => rosterChecked[s.id] !== undefined)
-                  const unchecked = rosterStudents.filter((s) => rosterChecked[s.id] === undefined)
+                  const readList = rosterStudents.filter((s) => rosterChecked[s.id] !== undefined)
+                  const unread = rosterStudents.filter((s) => rosterChecked[s.id] === undefined)
+                  const agreedCount = rosterStudents.filter(
+                    (s) => rosterChecked[s.id]?.consent === 'agreed'
+                  ).length
                   return (
                     <>
                       <div className="mb-4 grid grid-cols-2 gap-2 text-center">
                         <div className="rounded-xl bg-emerald-50 py-2.5">
-                          <p className="text-lg font-extrabold text-emerald-700">{checked.length}</p>
-                          <p className="text-[11px] text-emerald-600">확인 완료</p>
+                          <p className="text-lg font-extrabold text-emerald-700">{readList.length}</p>
+                          <p className="text-[11px] text-emerald-600">읽음</p>
                         </div>
                         <div className="rounded-xl bg-gray-100 py-2.5">
-                          <p className="text-lg font-extrabold text-gray-500">{unchecked.length}</p>
-                          <p className="text-[11px] text-gray-400">미확인</p>
+                          <p className="text-lg font-extrabold text-gray-500">{unread.length}</p>
+                          <p className="text-[11px] text-gray-400">안 읽음</p>
                         </div>
                       </div>
 
+                      {rosterFor.requiresConsent && (
+                        <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-center ring-1 ring-amber-100">
+                          <span className="text-[11px] font-semibold text-amber-700">
+                            동의함 {agreedCount}명 / 읽은 학생 {readList.length}명
+                          </span>
+                        </div>
+                      )}
+
                       <ul className="space-y-1.5">
                         {rosterStudents.map((s) => {
-                          const done = rosterChecked[s.id] !== undefined
-                          const at = rosterChecked[s.id]
+                          const r = rosterChecked[s.id]
+                          const done = r !== undefined
+                          const at = r ? r.readAt ?? r.consentAt : null
                           return (
                             <li
                               key={s.id}
@@ -883,11 +914,11 @@ export default function ClassRoom(): JSX.Element {
                               </span>
                               {done ? (
                                 <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-600">
-                                  ✔ 확인
+                                  {r?.consent === 'agreed' ? '✔ 확인' : r?.consent === 'declined' ? '✖ 미동의' : '👀 읽음'}
                                   {at && <span className="font-normal text-emerald-500/70">{formatTime(at)}</span>}
                                 </span>
                               ) : (
-                                <span className="text-xs text-gray-300">아직</span>
+                                <span className="text-xs text-gray-300">안 읽음</span>
                               )}
                             </li>
                           )
