@@ -598,14 +598,30 @@ export default function ClassRoom(): JSX.Element {
               </span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${bannerOpen ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6"/></svg>
             </button>
-            {bannerOpen && !isTeacher && receipts[latestNotice.id]?.consent !== 'agreed' && (
-              <button
-                disabled={consentBusy === latestNotice.id}
-                onClick={() => void handleCheck(latestNotice)}
-                className="mt-1.5 w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-bold text-white disabled:opacity-50"
-              >
-                ✔ 공지 확인했어요
-              </button>
+            {bannerOpen && !isTeacher && (
+              latestNotice.requiresConsent ? (
+                receipts[latestNotice.id]?.consent === 'agreed' ? (
+                  <span className="mt-1.5 inline-block rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                    ✔ 확인 완료
+                  </span>
+                ) : (
+                  <button
+                    disabled={consentBusy === latestNotice.id}
+                    onClick={() => void handleCheck(latestNotice)}
+                    className="mt-1.5 w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+                  >
+                    ✔ 공지 확인했어요
+                  </button>
+                )
+              ) : (
+                // 동의가 필요 없는 공지는 펼쳐 읽은 것으로 충분합니다.
+                // 예전에는 여기에도 확인 버튼이 떠서, 눌러야만 선생님께 집계됐습니다.
+                receipts[latestNotice.id] && (
+                  <span className="mt-1.5 inline-block rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
+                    👀 읽음
+                  </span>
+                )
+              )
             )}
           </div>
         )}
@@ -693,7 +709,14 @@ export default function ClassRoom(): JSX.Element {
                           </button>
                         ) : (
                           <div className="mt-2">
-                            {receipts[item.notice.id]?.consent === 'agreed' ? (
+                            {!item.notice.requiresConsent ? (
+                              // 동의가 필요 없는 공지는 읽은 것으로 충분합니다.
+                              receipts[item.notice.id] ? (
+                                <span className="inline-block rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
+                                  👀 읽음
+                                </span>
+                              ) : null
+                            ) : receipts[item.notice.id]?.consent === 'agreed' ? (
                               <span className="inline-block rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
                                 ✔ 확인 완료
                               </span>
