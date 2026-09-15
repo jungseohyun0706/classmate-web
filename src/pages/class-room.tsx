@@ -297,7 +297,9 @@ export default function ClassRoom(): JSX.Element {
                   }))
                 }
               })
-              .catch(() => {})
+              // 읽음 기록 실패(권한 등)는 화면을 막지 않지만, 조용히 사라지면
+              // '아직 안 읽음'과 구분되지 않아 원인 추적이 불가능해집니다.
+              .catch((e) => console.warn('[class-room] 읽음 기록 실패', n.id, e))
           }
         }
       } catch (e) {

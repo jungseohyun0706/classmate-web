@@ -110,8 +110,10 @@ export default function StudentNoticeDetail(): JSX.Element {
             if (!cancelled) {
               setReceipt({ readAt: Timestamp.now(), studentName })
             }
-          } catch {
-            // 승인 전 등 권한이 없으면 읽음 확인을 남기지 못함 — 무시
+          } catch (e) {
+            // 승인 전 등 권한이 없으면 읽음 확인을 남기지 못함 — 열람은 계속 가능.
+            // 다만 조용히 사라지면 '안 읽음'과 구분되지 않아 로그는 남깁니다.
+            console.warn('[student/notice] 읽음 기록 실패', aid, e)
           }
         }
       } catch (e) {

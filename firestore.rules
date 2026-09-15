@@ -205,8 +205,11 @@ service cloud.firestore {
 
         // ── receipts/{studentUid}: 읽음 확인 + 동의 여부 ──
         match /receipts/{studentUid} {
-          // 생성/수정: 학생 본인만, 허용된 필드만 기록 가능
+          // 생성/수정: 이 반의 승인된 학생 본인만, 허용된 필드만 기록 가능.
+          // isClassStudent 검사가 없으면 로그인한 누구나 아무 반의 알림장에
+          // 자기 uid로 receipt를 만들 수 있어, 교사 확인 명단이 오염됩니다.
           allow create, update: if me(studentUid)
+            && isClassStudent(classId)
             && request.resource.data.keys()
                  .hasOnly(['readAt', 'studentName', 'consent', 'consentAt']);
 

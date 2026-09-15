@@ -202,7 +202,9 @@ export async function checkNotice(
   studentName: string
 ): Promise<void> {
   // 확인을 눌렀다면 당연히 읽은 것 — readAt이 비어 있으면 먼저 채웁니다.
-  await markRead(classId, aid, uid, studentName).catch(() => {})
+  await markRead(classId, aid, uid, studentName).catch((e) =>
+    console.warn('[notices] 확인 전 읽음 기록 실패', aid, e)
+  )
 
   const receiptRef = doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid)
   await setDoc(
@@ -228,7 +230,9 @@ export async function setConsent(
   consent: ConsentValue
 ): Promise<void> {
   // 동의/미동의를 눌렀다면 읽은 것 — readAt이 비어 있으면 먼저 채웁니다.
-  await markRead(classId, aid, uid, studentName).catch(() => {})
+  await markRead(classId, aid, uid, studentName).catch((e) =>
+    console.warn('[notices] 동의 전 읽음 기록 실패', aid, e)
+  )
 
   const receiptRef = doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid)
   await setDoc(
