@@ -271,7 +271,11 @@ service cloud.firestore {
         // (클라이언트 읽기를 열면 목록 조회로 유효 토큰이 유출될 수 있음)
         allow read: if false;
         // 쓰기: 같은 학교 교사 (담임 + 수업 들어가는 교과 교사의 QR 발급)
-        allow write: if isTeacher() && sameSchool(classDoc(classId).schoolCode);
+        // 만료는 서버가 createdAt + 10분으로 판정하므로 createdAt은 서버 시각만 허용합니다.
+        // (update도 막아야 발급 후 createdAt을 미래로 바꿔 유효기간을 늘리지 못함)
+        allow create, update: if isTeacher() && sameSchool(classDoc(classId).schoolCode)
+          && request.resource.data.createdAt == request.time;
+        allow delete: if isTeacher() && sameSchool(classDoc(classId).schoolCode);
       }
     }
 

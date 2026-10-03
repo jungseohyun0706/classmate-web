@@ -16,6 +16,8 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 
+// 서버(/api/join-info, /api/join)도 같은 값으로 createdAt(서버 시각) + TTL 만료를 판정합니다.
+// 값을 바꾸면 두 API 라우트의 상수도 함께 바꿔 주세요.
 export const JOIN_TOKEN_TTL_MS = 10 * 60 * 1000
 
 export interface JoinClassInfo {
@@ -50,6 +52,7 @@ export async function issueJoinToken(
   const token = randomTokenId()
   const expiresAtMs = Date.now() + JOIN_TOKEN_TTL_MS
   await setDoc(doc(db, 'classes', classId, 'joinTokens', token), {
+    // 만료 판정 기준 — 규칙이 request.time과 같은 값만 허용하므로 반드시 serverTimestamp()
     createdAt: serverTimestamp(),
     expiresAt: Timestamp.fromMillis(expiresAtMs),
   })

@@ -1,6 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { FieldValue, getFirestore } from 'firebase-admin/firestore'
+import { FieldValue, getFirestore, Timestamp } from 'firebase-admin/firestore'
 import { getAdminApp, isAdminConfigured, sendPushToUser, verifyIdToken } from '../../lib/fcm-admin'
+
+// src/lib/join.ts의 JOIN_TOKEN_TTL_MS와 같은 값 (그 파일은 클라이언트 SDK를 불러와 서버에서 import하지 않음)
+const JOIN_TOKEN_TTL_MS = 10 * 60 * 1000
 
 // POST /api/join
 // Header: Authorization: Bearer <Firebase ID token>
@@ -55,8 +58,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .collection('joinTokens')
       .doc(token)
       .get()
+    //    만료는 교사 기기 시계로 계산된 expiresAt이 아니라 서버가 기록한 createdAt 기준으로 판정
+    //    (createdAt이 없는 예전 토큰만 expiresAt으로 판정)
+    const createdAt = tokenSnap.exists ? tokenSnap.get('createdAt') : null
     const expiresAt = tokenSnap.exists ? tokenSnap.get('expiresAt') : null
-    if (!tokenSnap.exists || !expiresAt || expiresAt.toMillis() <= Date.now()) {
+    const expiresAtMs =
+      createdAt instanceof Timestamp
+        ? createdAt.toMillis() + JOIN_TOKEN_TTL_MS
+        : expiresAt instanceof Timestamp
+          ? expiresAt.toMillis()
+          : 0
+    if (!tokenSnap.exists || expiresAtMs <= Date.now()) {
       return res.status(410).json({ error: '입장 코드가 만료되었어요. 선생님께 새 코드를 요청해 주세요.' })
     }
 

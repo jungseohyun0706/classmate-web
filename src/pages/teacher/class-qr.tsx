@@ -9,8 +9,8 @@ import {
   getDoc,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
-  updateDoc,
   where,
 } from 'firebase/firestore'
 import { toDataURL } from 'qrcode'
@@ -180,9 +180,32 @@ export default function ClassQrPage() {
   const approveOne = useCallback(
     async (student: PendingStudent) => {
       if (busyId) return
+      const classId = targetClass?.classId
+      if (!classId) return
       setBusyId(student.id)
       try {
-        await updateDoc(doc(db, 'users', student.id), { status: 'approved' })
+        // 화면의 목록이 늦게 갱신되는 사이 학생이 다른 반 QR로 다시 신청했을 수 있으니,
+        // 지금도 이 반에 대기 중일 때만 승인 (아니면 다른 반 승인 없이 입장돼 버림)
+        const result = await runTransaction(db, async (tx) => {
+          const ref = doc(db, 'users', student.id)
+          const snap = await tx.get(ref)
+          if (!snap.exists()) return 'done' as const
+          const v = snap.data()
+          if (String(v.classId ?? '') !== String(classId)) return 'moved' as const
+          if (v.status !== 'pending') return 'done' as const
+          tx.update(ref, { status: 'approved' })
+          return 'approved' as const
+        })
+        if (result !== 'approved') {
+          toast(
+            result === 'moved'
+              ? `${student.name} 학생이 다른 반으로 신청을 옮겼어요.`
+              : `${student.name} 학생의 신청은 이미 처리되었어요.`,
+            'info'
+          )
+          setPending((list) => list.filter((p) => p.id !== student.id))
+          return
+        }
         setApprovedCount((n) => n + 1)
         toast(`${student.name} 승인 완료`, 'success')
         try {
