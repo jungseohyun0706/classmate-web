@@ -26,6 +26,57 @@ interface UploadReport {
   teachersUnmatched: string[]
 }
 
+type UploadMode = 'merge' | 'replace'
+
+interface DirectKeys {
+  classes: string[]
+  teachers: string[]
+}
+
+// 파서는 반표↔교사표를 서로 역산해 채우므로, 합친 결과만 보면 어느 반·교사가 파일에
+// "직접" 들어 있었는지 알 수 없다. 그래서 시트(반표·교사표 블록이 섞인 시트는 블록) 단위로
+// 따로 파싱해 출처 종류를 본다. 종류는 parseTimetableSheets가 남기는 sources 문구로 구분한다.
+const sourceKind = (source: string | undefined): 'class' | 'teacher' | 'mixed' | null => {
+  if (!source) return null
+  if (source.endsWith(': 전체시간표(반×주간)')) return 'class'
+  if (source.endsWith(': 주간시간표(교사×주간)')) return 'teacher'
+  const m = source.match(/: 블록형\(([a-z,]*)\) \d+개$/)
+  if (!m) return null
+  const kinds = m[1].split(',')
+  const hasClass = kinds.includes('class')
+  const hasTeacher = kinds.includes('teacher')
+  if (hasClass && hasTeacher) return 'mixed'
+  return hasClass ? 'class' : hasTeacher ? 'teacher' : null
+}
+
+const cellText = (v: CellValue): string => (v === null || v === undefined ? '' : String(v).trim())
+
+/** 블록 머리글 행("제목 | 월 화 수 …") — timetableParser의 블록 감지 기준과 같다 */
+const isBlockHeaderRow = (row: CellValue[] | undefined): boolean =>
+  !!row && cellText(row[0]) !== '' && [1, 2, 3].every((i) => (DAYS as readonly string[]).includes(cellText(row[i])))
+
+const findDirectKeys = (sheets: SheetInput[]): DirectKeys => {
+  const classes = new Set<string>()
+  const teachers = new Set<string>()
+  const collect = (input: SheetInput, splitMixed: boolean) => {
+    const r = parseTimetableSheets([input])
+    const kind = sourceKind(r.sources[0])
+    if (kind === 'class') Object.keys(r.classes).forEach((k) => classes.add(k))
+    else if (kind === 'teacher') Object.keys(r.teachers).forEach((k) => teachers.add(k))
+    else if (kind === 'mixed' && splitMixed) {
+      const starts: number[] = []
+      input.grid.forEach((row, i) => {
+        if (isBlockHeaderRow(row)) starts.push(i)
+      })
+      starts.forEach((start, j) =>
+        collect({ name: input.name, grid: input.grid.slice(start, starts[j + 1] ?? input.grid.length) }, false)
+      )
+    }
+  }
+  sheets.forEach((s) => collect(s, true))
+  return { classes: Array.from(classes), teachers: Array.from(teachers) }
+}
+
 export default function UploadTimetablePage() {
   const router = useRouter()
   const { toast, confirm } = useUI()
@@ -36,6 +87,8 @@ export default function UploadTimetablePage() {
   const [parsing, setParsing] = useState(false)
   const [fileNames, setFileNames] = useState<string[]>([])
   const [parsed, setParsed] = useState<ParseResult | null>(null)
+  const [direct, setDirect] = useState<DirectKeys>({ classes: [], teachers: [] })
+  const [mode, setMode] = useState<UploadMode>('merge')
   const [selectedTeacher, setSelectedTeacher] = useState<string>('')
   const [overwriteTeachers, setOverwriteTeachers] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -110,6 +163,7 @@ export default function UploadTimetablePage() {
     setParsing(true)
     setReport(null)
     setParsed(null)
+    setMode('merge')
     setSelectedTeacher('')
     const names = files.map((f) => f.name)
     setFileNames(names)
@@ -147,6 +201,7 @@ export default function UploadTimetablePage() {
         )
         return
       }
+      setDirect(findDirectKeys(sheets))
       setParsed(result)
       // 모바일: 미리보기 섹션이 화면 아래에 생기므로 자동 스크롤
       requestAnimationFrame(() =>
@@ -166,11 +221,20 @@ export default function UploadTimetablePage() {
     if (!parsed || !auth.currentUser) return
     const nClasses = Object.keys(parsed.classes).length
     const nTeachers = Object.keys(parsed.teachers).length
-    const ok = await confirm({
-      title: '학교 시간표 등록',
-      description: `반 ${nClasses}개, 교사 ${nTeachers}명의 시간표를 등록해요. 우리 학교의 반 시간표와 교사 시간표가 이 내용으로 갱신됩니다.`,
-      confirmText: '등록하기',
-    })
+    const ok = await confirm(
+      mode === 'replace'
+        ? {
+            title: '학교 시간표 전체 교체',
+            description: `우리 학교 시간표를 이 파일(반 ${nClasses}개, 교사 ${nTeachers}명) 내용으로 통째로 바꿔요. 파일에 없는 반·교사·교시 시각은 학교 시간표에서 지워져요. 계속할까요?`,
+            confirmText: '전체 교체하기',
+            danger: true,
+          }
+        : {
+            title: '학교 시간표 등록',
+            description: `반 ${nClasses}개, 교사 ${nTeachers}명의 시간표를 등록해요. 파일에 있는 반·교사 시간표만 갱신되고, 파일에 없는 반·교사는 그대로 둬요.`,
+            confirmText: '등록하기',
+          }
+    )
     if (!ok) return
     setUploading(true)
     try {
@@ -181,7 +245,13 @@ export default function UploadTimetablePage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ data: parseResultToUpload(parsed), overwriteTeachers }),
+        body: JSON.stringify({
+          data: parseResultToUpload(parsed),
+          direct,
+          mode,
+          overwriteTeachers,
+          schoolCode: userData?.schoolCode ? String(userData.schoolCode) : undefined,
+        }),
       })
       const json = await resp.json()
       if (!resp.ok) {
@@ -205,6 +275,15 @@ export default function UploadTimetablePage() {
   const teacherNames = useMemo(
     () => (parsed ? Object.keys(parsed.teachers).sort((a, b) => a.localeCompare(b, 'ko')) : []),
     [parsed]
+  )
+  // 파일에 직접 없고 역산으로만 만들어진 반·교사 (병합 시 일부 칸만 바뀜)
+  const derivedClasses = useMemo(
+    () => classLabels.filter((c) => !direct.classes.includes(c)),
+    [classLabels, direct]
+  )
+  const derivedTeacherCount = useMemo(
+    () => teacherNames.filter((t) => !direct.teachers.includes(t)).length,
+    [teacherNames, direct]
   )
 
   if (loading) return <div className="p-10 text-center text-black">로딩 중...</div>
@@ -270,7 +349,7 @@ export default function UploadTimetablePage() {
                 onClick={() => setShowUploadUi(true)}
                 className="mt-3 w-full py-2.5 text-center text-xs text-gray-400 hover:text-gray-600"
               >
-                시간표가 바뀌었나요? 새 파일로 교체하기 ▾
+                시간표가 바뀌었나요? 새 파일 올리기 ▾
               </button>
             )}
           </div>
@@ -412,6 +491,70 @@ export default function UploadTimetablePage() {
               ))}
             </div>
 
+            <fieldset className="mb-4">
+              <legend className="text-xs font-bold text-gray-500 uppercase mb-2">등록 방식</legend>
+              <div className="space-y-2">
+                <label
+                  className={`flex items-start gap-2 rounded-lg border p-3 text-sm cursor-pointer transition ${
+                    mode === 'merge' ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="upload-mode"
+                    checked={mode === 'merge'}
+                    onChange={() => setMode('merge')}
+                    className="mt-0.5"
+                  />
+                  <span className="text-gray-700 break-keep">
+                    <b className="text-gray-900">파일에 있는 반·교사만 갱신</b> (기본)
+                    <br />
+                    <span className="text-xs text-gray-500">
+                      파일에 없는 반·교사·교시 시각은 지금 등록된 그대로 둬요. 일부 반·교사만 담긴 파일도 안전하게 올릴 수 있어요.
+                    </span>
+                  </span>
+                </label>
+                <label
+                  className={`flex items-start gap-2 rounded-lg border p-3 text-sm cursor-pointer transition ${
+                    mode === 'replace' ? 'border-red-400 bg-red-50' : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="upload-mode"
+                    checked={mode === 'replace'}
+                    onChange={() => setMode('replace')}
+                    className="mt-0.5"
+                  />
+                  <span className="text-gray-700 break-keep">
+                    <b className="text-gray-900">새 파일로 교체</b>
+                    <br />
+                    <span className="text-xs text-gray-500">
+                      학교 시간표를 이 파일 내용으로 통째로 바꿔요. 파일에 없는 반·교사·교시 시각은 지워져요.
+                      (학기가 바뀌어 학교 전체 시간표 파일을 새로 올릴 때)
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+
+            {mode === 'merge' && (derivedClasses.length > 0 || derivedTeacherCount > 0) && (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4 text-xs text-gray-600 leading-relaxed break-keep">
+                {derivedClasses.length > 0 && (
+                  <div>
+                    · 반 시간표가 파일에 직접 없는 반 {derivedClasses.length}개({derivedClasses.slice(0, 5).join(', ')}
+                    {derivedClasses.length > 5 ? ' 등' : ''})는 이 파일에 나온 선생님 수업 칸만 바뀌고 나머지 칸은 그대로예요.
+                  </div>
+                )}
+                {derivedTeacherCount > 0 && (
+                  <div>
+                    · 교사 시간표가 파일에 직접 없는 선생님 {derivedTeacherCount}명은 이 파일에 나온 반의 수업 칸만 바뀌고
+                    나머지 칸은 그대로예요.
+                  </div>
+                )}
+              </div>
+            )}
+
             <label className="flex items-center gap-2 text-sm text-gray-700 mb-4">
               <input
                 type="checkbox"
@@ -433,7 +576,7 @@ export default function UploadTimetablePage() {
               disabled={uploading}
               className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 transition disabled:opacity-50"
             >
-              {uploading ? '등록 중...' : '🏫 학교 시간표 등록하기'}
+              {uploading ? '등록 중...' : mode === 'replace' ? '🏫 학교 시간표 전체 교체하기' : '🏫 학교 시간표 등록하기'}
             </button>
           </div>
         )}
@@ -459,7 +602,7 @@ export default function UploadTimetablePage() {
               </li>
               {report.teachersSkippedExisting.length > 0 && (
                 <li className="text-gray-500">
-                  ⏭️ 이미 입력돼 있어 건너뜀: {report.teachersSkippedExisting.join(', ')}
+                  ⏭️ 선생님이 직접 입력한 시간표가 있어 건너뜀: {report.teachersSkippedExisting.join(', ')}
                 </li>
               )}
               {report.teachersAmbiguous.length > 0 && (
