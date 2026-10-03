@@ -16,6 +16,8 @@ import {
 import { toDataURL } from 'qrcode'
 import { issueJoinToken, JOIN_TOKEN_TTL_MS } from '../../lib/join'
 import { useUI } from '../../components/ui/feedback'
+import InvitePanel from '../../components/timetable/InvitePanel'
+import { findCourseForLegacyGroup } from '../../lib/timetable/teacherClient'
 
 interface PendingStudent {
   id: string
@@ -83,6 +85,8 @@ export default function ClassQrPage() {
   )
   const [busyId, setBusyId] = useState<string | null>(null)
   const [approvedCount, setApprovedCount] = useState(0)
+  // 예전 수업 그룹이면 연결된 수업(course.legacyGroupId) — undefined: 확인 중, null: 없음(또는 확인 실패)
+  const [linkedCourse, setLinkedCourse] = useState<{ courseId: string; title: string } | null | undefined>(undefined)
   const pendingRef = useRef<HTMLDivElement>(null)
   const prevPendingCount = useRef(0)
 
@@ -165,6 +169,28 @@ export default function ClassQrPage() {
     })
     return () => unsub()
   }, [router, toast, issue])
+
+  // 수업 그룹(예전 방식): 연결된 수업이 있으면 그 수업 상세로 안내
+  useEffect(() => {
+    const classId = targetClass?.classId
+    const schoolCode = targetClass?.schoolCode
+    if (!classId || !schoolCode || !targetClass?.isGroup) {
+      setLinkedCourse(undefined)
+      return
+    }
+    let cancelled = false
+    findCourseForLegacyGroup(schoolCode, classId)
+      .then((c) => {
+        if (!cancelled) setLinkedCourse(c)
+      })
+      .catch((e) => {
+        console.error('연결된 수업 확인 실패', (e as { code?: string })?.code)
+        if (!cancelled) setLinkedCourse(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [targetClass?.classId, targetClass?.schoolCode, targetClass?.isGroup])
 
   // 1초 카운트다운 틱
   useEffect(() => {
@@ -375,7 +401,9 @@ export default function ClassQrPage() {
         <div className="flex justify-between items-center mb-6 text-black">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">학급 QR 입장코드</h1>
-            <p className="text-sm text-gray-600">학생들을 우리 반에 초대해요.</p>
+            <p className="text-sm text-gray-600 break-keep">
+              {targetClass?.isGroup ? '예전 수업 그룹 입장 QR이에요.' : '학생들을 우리 반에 초대해요. 오래 쓰는 초대 코드를 권장해요.'}
+            </p>
           </div>
           <button
             onClick={() => router.push('/dashboard')}
@@ -385,6 +413,45 @@ export default function ClassQrPage() {
           </button>
         </div>
 
+        {/* 오래 쓰는 학급 초대 코드(권장) — 담임 반만. 수업 그룹은 수업 관리의 수업 초대로 안내 */}
+        {targetClass && !targetClass.isGroup && targetClass.isClassTeacher && (
+          <div className="mb-6">
+            <h2 className="text-lg font-bold text-gray-900">오래 쓰는 초대 코드(권장)</h2>
+            <p className="mb-3 text-sm text-gray-600 break-keep">
+              한 번 만들면 만료일까지 반 학생 모두가 같은 코드·QR·링크로 들어올 수 있어요. 앱을 설치하거나 로그인한 뒤에도 이어서 참여할 수 있어요.
+            </p>
+            <InvitePanel
+              type="homeroom"
+              targetId={targetClass.classId}
+              targetLabel={`${targetClass.grade}학년 ${targetClass.classNm}반`}
+              schoolName={targetClass.schoolName}
+              teacherNames={userData?.displayName || userData?.name ? [String(userData.displayName || userData.name)] : []}
+            />
+          </div>
+        )}
+        {targetClass?.isGroup && (
+          <div role="note" className="mb-6 rounded-xl border-2 border-amber-300 bg-amber-50 p-4 text-amber-900">
+            <p className="font-bold break-keep">이 그룹은 예전 방식입니다 — 수업 관리에서 수업 초대를 쓰세요</p>
+            <p className="mt-1 text-sm break-keep">
+              수업 초대는 학생의 원래 소속 학급을 그대로 두고 이 수업만 시간표에 추가해요. 아래 10분 QR은 예전처럼 계속 쓸 수 있어요.
+            </p>
+            {linkedCourse === undefined ? (
+              <p className="mt-2 text-sm text-amber-800">연결된 수업 확인 중...</p>
+            ) : (
+              <button
+                type="button"
+                onClick={() =>
+                  router.push(linkedCourse ? `/teacher/courses/${encodeURIComponent(linkedCourse.courseId)}` : '/teacher/courses')
+                }
+                className="mt-3 w-full min-h-[44px] rounded-xl bg-amber-600 px-4 text-sm font-bold text-white hover:bg-amber-700 break-keep"
+              >
+                {linkedCourse ? `연결된 수업 '${linkedCourse.title}'에서 수업 초대 만들기 →` : '수업 관리로 가기 →'}
+              </button>
+            )}
+          </div>
+        )}
+
+        <h2 className="mb-2 text-lg font-bold text-gray-900">10분 입장 QR{targetClass && !targetClass.isGroup && targetClass.isClassTeacher ? '(예전 방식)' : ''}</h2>
         <div className="bg-white shadow-lg rounded-xl border border-gray-100 overflow-hidden">
           <div className="p-6 sm:p-8 flex flex-col items-center text-center">
             <h2 className="text-xl sm:text-2xl font-extrabold text-gray-900 break-keep">
@@ -514,7 +581,8 @@ export default function ClassQrPage() {
                     {s.studentId && <span className="ml-2 text-sm text-gray-400">{s.studentId}번</span>}
                     {s.moveFromClassId && (
                       <p className="text-xs text-gray-500">
-                        반 이동 신청 · 현재 {classLabelOf(s.moveFromClassId)}
+                        반 이동 신청 · 현재{' '}
+                        {/_g_[A-Za-z0-9]+$/.test(s.moveFromClassId) ? '소속 학급 미설정' : classLabelOf(s.moveFromClassId)}
                       </p>
                     )}
                   </div>

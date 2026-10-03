@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { auth, db } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -52,6 +53,13 @@ function classLabel(classId: string): string {
   if (parts.length < 3) return classId
   const base = `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
   return isGroup ? `${base} 수업` : base
+}
+
+/** 학생 소속 표시: 수업 그룹이 소속처럼 저장된 학생은 학년·반을 추정하지 않고 '소속 학급 미설정' */
+function homeroomText(classId: string | undefined | null): string {
+  if (!classId) return '소속 학급 미설정'
+  if (/_g_[A-Za-z0-9]+$/.test(classId)) return '소속 학급 미설정'
+  return classLabel(classId)
 }
 
 /** 마스터 시간표의 교사 그리드에서 수업 반 classId 목록 추출 */
@@ -468,7 +476,7 @@ export default function StudentList() {
       student.moveFromClassId
         ? {
             title: '반 이동 신청을 거절할까요?',
-            description: `${student.name} 학생은 지금 반(${classLabel(student.moveFromClassId)})에 그대로 남아요.`,
+            description: `${student.name} 학생은 지금 소속(${homeroomText(student.moveFromClassId)})에 그대로 남아요.`,
             confirmText: '거절하기',
             cancelText: '취소',
             danger: true,
@@ -629,8 +637,14 @@ export default function StudentList() {
         {/* 엑셀 시간표 기반 수업 반 제안 */}
         {suggestions.length > 0 && (
           <div className="mb-4 rounded-xl border border-cyan-200 bg-cyan-50 p-4">
-            <p className="text-xs font-bold text-cyan-800 mb-2">
+            <p className="text-xs font-bold text-cyan-800 mb-1">
               📥 엑셀 시간표에서 찾은 선생님의 수업 반 — 눌러서 추가하세요
+            </p>
+            <p className="text-xs text-cyan-800 mb-2 break-keep">
+              예전 방식(수업 그룹)이에요.{' '}
+              <Link href="/teacher/courses" className="font-bold underline">
+                새 방식: 수업 관리에서 수업 만들기
+              </Link>
             </p>
             <div className="flex flex-wrap gap-1.5">
               {suggestions.map((id) => (
@@ -663,7 +677,10 @@ export default function StudentList() {
             {!isMyClassActive && (
               <div className="flex items-center justify-between rounded-xl bg-white border border-gray-200 px-4 py-3">
                 <p className="text-xs text-gray-500 break-keep">
-                  내 수업 반이에요. 어느 반 학생이든 QR로 초대할 수 있어요 (담임 반과 별개).
+                  내 수업 반이에요. 어느 반 학생이든 QR로 초대할 수 있어요 (담임 반과 별개).{' '}
+                  <Link href="/teacher/courses" className="font-bold text-blue-700 underline">
+                    새 방식: 수업 관리에서 수업 초대
+                  </Link>
                 </p>
                 <button
                   onClick={() => void removeTeaching(activeId)}
@@ -696,7 +713,7 @@ export default function StudentList() {
                               <div className="text-sm font-medium text-gray-900 truncate">{student.name}</div>
                               <div className="text-xs text-gray-500">
                                 {student.moveFromClassId
-                                  ? `반 이동 신청 · 현재 ${classLabel(student.moveFromClassId)}`
+                                  ? `반 이동 신청 · 현재 ${homeroomText(student.moveFromClassId)}`
                                   : '승인 대기 중이에요'}
                               </div>
                             </div>
@@ -756,10 +773,24 @@ export default function StudentList() {
                         </span>
                         <div className="min-w-0 flex items-center gap-2">
                           <div className="text-sm font-medium text-gray-900 truncate">{student.name}</div>
-                          {student.homeClassId && (
-                            <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500">
-                              본반 {classLabel(student.homeClassId)}
-                            </span>
+                          {student.homeClassId ? (
+                            /_g_[A-Za-z0-9]+$/.test(student.homeClassId) ? (
+                              <span className="shrink-0 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                소속 학급 미설정
+                              </span>
+                            ) : (
+                              <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+                                본반 {classLabel(student.homeClassId)}
+                              </span>
+                            )
+                          ) : (
+                            // 수업 그룹 탭에서 그룹이 소속처럼 저장된 학생(예전 방식) — 학년·반을 추정하지 않음
+                            !isMyClassActive &&
+                            /_g_[A-Za-z0-9]+$/.test(activeId) && (
+                              <span className="shrink-0 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                소속 학급 미설정
+                              </span>
+                            )
                           )}
                         </div>
                         {student.homeClassId && student.homeClassId !== activeId && classTeacherOf[activeId] && (
@@ -782,7 +813,18 @@ export default function StudentList() {
 
         {/* 수업 반 직접 추가 */}
         <div className="mt-6 rounded-xl bg-white border border-gray-200 p-4">
-          <p className="text-xs font-bold text-gray-500 mb-2">수업 반 직접 추가</p>
+          <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+            <p className="text-xs text-blue-900 break-keep">
+              학생 시간표에 수업을 넣으려면 새 방식을 쓰세요. 수업 초대는 학생의 원래 소속 학급을 그대로 두고 이 수업만 추가해요.
+            </p>
+            <Link
+              href="/teacher/courses"
+              className="mt-1 inline-flex items-center min-h-[44px] text-sm font-bold text-blue-700 underline"
+            >
+              새 방식: 수업 관리에서 수업 만들기 →
+            </Link>
+          </div>
+          <p className="text-xs font-bold text-gray-500 mb-2">수업 반(예전 방식 그룹) 직접 추가</p>
           <div className="flex items-center gap-2">
             <input
               type="number"
