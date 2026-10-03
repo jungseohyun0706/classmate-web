@@ -1,4 +1,4 @@
-import { useEffect, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import { onAuthStateChanged } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import {
@@ -29,6 +29,11 @@ function todayKst(): string {
   return `${d.getUTCFullYear()}${m}${day}`
 }
 
+/** 기기에 남기는 투표 기록 키 — 계정·학교·날짜별로 따로 둡니다(공용 기기·다른 학교 잠금 방지). */
+function voteStorageKey(uid: string, schoolCode: string, day: string): string {
+  return `classmate_meal_vote_${uid}_${schoolCode}_${day}`
+}
+
 function avgEmoji(avg: number): string {
   const idx = Math.min(5, Math.max(1, Math.round(avg))) - 1
   return EMOJIS[idx]
@@ -36,48 +41,48 @@ function avgEmoji(avg: number): string {
 
 /**
  * 급식 별점 위젯 — 1~5점 이모지 버튼 + 우리 학교 평균.
- * 계정당 1표(votes/{uid} + localStorage)로 중복 참여를 막습니다.
+ * 계정당 1표(votes/{uid})로 중복 참여를 막습니다. localStorage 기록은 서버 확인 전 잠깐 보여주는 용도이고,
+ * 실제 투표 여부는 서버의 votes/{uid}를 기준으로 합니다.
  * 방문자는 투표 시 익명 로그인으로 참여할 수 있습니다.
  */
 export default function MealRating({ schoolCode, ymd, compact = false }: MealRatingProps): JSX.Element {
   const { toast } = useUI()
   const day = ymd ?? todayKst()
-  const storageKey = `classmate_meal_vote_${day}`
 
   const [summary, setSummary] = useState<RatingSummary | null>(null)
   const [myRating, setMyRating] = useState<number | null>(null)
   const [busy, setBusy] = useState<boolean>(false)
+  // 투표가 끝나면 그 전에 시작된 조회 결과(투표 전 상태)가 잠금을 풀지 않도록 세대를 올립니다.
+  const loadSeqRef = useRef<number>(0)
 
-  // localStorage에 남긴 오늘의 투표 기록 확인 (기기 기준 중복 방지)
-  useEffect(() => {
-    try {
-      const saved = Number(window.localStorage.getItem(storageKey))
-      if (Number.isInteger(saved) && saved >= 1 && saved <= 5) {
-        setMyRating(saved)
-      }
-    } catch {
-      // localStorage 접근 불가(시크릿 모드 등)는 무시합니다.
-    }
-  }, [storageKey])
-
-  // 집계 + 내 투표(votes/{uid}) 확인 — 로그인 상태가 바뀌면 다시 시도합니다.
+  // 집계 + 내 투표(votes/{uid}) 확인 — 학교·날짜·로그인 계정이 바뀌면 처음부터 다시 확인합니다.
   useEffect(() => {
     let cancelled = false
     const unsub = onAuthStateChanged(auth, (u) => {
-      void (async () => {
+      const seq = ++loadSeqRef.current
+      setSummary(null)
+      setMyRating(null)
+      // 서버 확인 전까지는 이 기기에 남긴 같은 계정·학교·날짜 기록으로 잠가 둡니다.
+      if (u) {
         try {
-          const [agg, mine] = await Promise.all([
-            getRating(schoolCode, day),
-            u ? getMyVote(schoolCode, day) : Promise.resolve<number | null>(null),
-          ])
-          if (cancelled) return
-          setSummary(agg)
-          if (mine !== null) {
-            setMyRating(mine)
+          const saved = Number(window.localStorage.getItem(voteStorageKey(u.uid, schoolCode, day)))
+          if (Number.isInteger(saved) && saved >= 1 && saved <= 5) {
+            setMyRating(saved)
           }
         } catch {
-          // 로그인 전에는 집계를 읽을 수 없을 수 있어요 — 조용히 넘어갑니다.
+          // localStorage 접근 불가(시크릿 모드 등)는 무시합니다.
         }
+      }
+      void (async () => {
+        // 로그인 전에는 집계를 읽을 수 없을 수 있어요 — 실패한 쪽은 조용히 넘어갑니다.
+        const [agg, mine] = await Promise.all([
+          getRating(schoolCode, day).catch(() => undefined),
+          u ? getMyVote(schoolCode, day).catch(() => undefined) : Promise.resolve<number | null>(null),
+        ])
+        if (cancelled || seq !== loadSeqRef.current) return
+        if (agg !== undefined) setSummary(agg)
+        // 서버 결과가 기준 — 투표 기록이 없으면(null) 기기 기록이 있어도 잠금을 풉니다.
+        if (mine !== undefined) setMyRating(mine)
       })()
     })
     return () => {
@@ -89,11 +94,13 @@ export default function MealRating({ schoolCode, ymd, compact = false }: MealRat
   const handleVote = async (rating: number): Promise<void> => {
     if (busy || myRating !== null) return
     setBusy(true)
+    let uid = ''
     try {
-      await ensureSignedIn()
+      uid = await ensureSignedIn()
       await rateMeal(schoolCode, day, rating)
+      loadSeqRef.current++
       try {
-        window.localStorage.setItem(storageKey, String(rating))
+        window.localStorage.setItem(voteStorageKey(uid, schoolCode, day), String(rating))
       } catch {
         // localStorage 실패는 무시 — votes/{uid}가 중복을 막아 줍니다.
       }
@@ -105,11 +112,12 @@ export default function MealRating({ schoolCode, ymd, compact = false }: MealRat
     } catch (e) {
       const msg = e instanceof Error ? e.message : ''
       if (msg === '이미 참여했어요') {
+        loadSeqRef.current++
         const mine = await getMyVote(schoolCode, day).catch(() => null)
         if (mine !== null) {
           setMyRating(mine)
           try {
-            window.localStorage.setItem(storageKey, String(mine))
+            window.localStorage.setItem(voteStorageKey(uid, schoolCode, day), String(mine))
           } catch {
             // 무시
           }

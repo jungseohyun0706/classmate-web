@@ -50,6 +50,8 @@ export interface BuildChecklistParams {
   classId: string
   schoolCode: string
   uid: string
+  /** 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd() */
+  ymd?: string
 }
 
 // getUTCDay() 인덱스(0=일) → Firestore 시간표 문서의 요일 키
@@ -104,11 +106,12 @@ export function formatBagDate(ymd: string): string {
  * 1) 학급 시간표(classes/{classId}/info/timetable)의 해당 요일 과목
  * 2) 시간표 변경(classes/{classId}/overrides/{ymd})을 덮어쓴 뒤
  *    SUBJECT_SUPPLIES로 과목 → 준비물 변환 (중복 제거)
- * 3) 최근 48시간 내 알림장(announcements)의 supplies[] 칩 추가 (contract 4)
+ * 3) 최근 48시간(주말·연휴가 끼면 직전 등교일 0시부터) 알림장(announcements)의
+ *    supplies[] 칩 추가 (contract 4)
  */
 export async function buildChecklist(params: BuildChecklistParams): Promise<ChecklistItem[]> {
   const { classId } = params
-  const ymd = nextSchoolDayYmd()
+  const ymd = params.ymd ?? nextSchoolDayYmd()
   const dayKey = DAY_KEYS[parseYmd(ymd).getUTCDay()]
 
   // 교시 → 과목 (시간표 + 변경 오버레이)
@@ -163,9 +166,11 @@ export async function buildChecklist(params: BuildChecklistParams): Promise<Chec
     }
   }
 
-  // 최근 48시간 내 알림장의 준비물 칩
+  // 최근 알림장의 준비물 칩 — 기본은 48시간이지만, 주말을 사이에 두면(일요일 밤 → 월요일)
+  // 금요일에 올린 '월요일 준비물'이 빠지지 않도록 직전 등교일 0시(KST)까지 넓힙니다.
   try {
-    const since = Timestamp.fromMillis(Date.now() - 48 * 60 * 60 * 1000)
+    const prevDayStartMs = parseYmd(prevSchoolDayYmd(ymd)).getTime() - 9 * 60 * 60 * 1000
+    const since = Timestamp.fromMillis(Math.min(Date.now() - 48 * 60 * 60 * 1000, prevDayStartMs))
     const snap = await getDocs(
       query(collection(db, 'classes', classId, 'announcements'), where('createdAt', '>=', since))
     )
@@ -217,8 +222,9 @@ export async function saveCheck(
  * 최근 bagChecks 30건을 읽어, 현재 대상 등교일부터 주말을 건너뛰며
  * 거꾸로 걸으면서 done === true인 날을 셉니다.
  * 아직 안 싼 현재 대상일은 스트릭을 끊지 않고 건너뜁니다.
+ * @param targetYmd 현재 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd()
  */
-export async function getStreak(uid: string): Promise<number> {
+export async function getStreak(uid: string, targetYmd?: string): Promise<number> {
   const snap = await getDocs(
     query(collection(db, 'users', uid, 'bagChecks'), orderBy(documentId(), 'desc'), limit(30))
   )
@@ -228,7 +234,7 @@ export async function getStreak(uid: string): Promise<number> {
   }
   if (doneByYmd.size === 0) return 0
 
-  let cursor = nextSchoolDayYmd()
+  let cursor = targetYmd ?? nextSchoolDayYmd()
   let streak = 0
   for (let i = 0; i < 40; i++) {
     if (doneByYmd.get(cursor) === true) {

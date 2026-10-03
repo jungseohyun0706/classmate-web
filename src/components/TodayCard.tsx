@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type JSX } from 'react'
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { doc, getDoc } from 'firebase/firestore'
+import { pickMainMeal } from '../lib/meals'
 
 export interface TodayCardProps {
   schoolCode: string
@@ -7,6 +8,8 @@ export interface TodayCardProps {
   grade: string | number
   classNm: string | number
   classId: string
+  /** 오늘 급식 조회가 끝나면 급식 유무를 알려 줍니다(급식 없는 날 별점 숨김용). */
+  onMealLoaded?: (hasMeal: boolean) => void
 }
 
 interface PeriodItem {
@@ -19,6 +22,8 @@ interface PeriodItem {
 interface MealInfo {
   menu: string[]
   calorie: string
+  /** 중식이 없어 다른 끼니를 보여줄 때의 끼니명(조식/석식) */
+  otherMealName?: string
 }
 
 interface EventInfo {
@@ -51,6 +56,13 @@ function ymdOf(d: Date): string {
   const m = String(d.getUTCMonth() + 1).padStart(2, '0')
   const day = String(d.getUTCDate()).padStart(2, '0')
   return `${y}${m}${day}`
+}
+
+/** YYYYMMDD → 그날 0시(UTC 기준 Date) — getUTC* 계열로만 읽습니다. */
+function parseYmd(ymd: string): Date {
+  return new Date(
+    Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8)))
+  )
 }
 
 function toMinutes(hm: string): number {
@@ -86,6 +98,7 @@ export default function TodayCard({
   grade,
   classNm,
   classId,
+  onMealLoaded,
 }: TodayCardProps): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true)
   const [periods, setPeriods] = useState<PeriodItem[]>([])
@@ -95,24 +108,43 @@ export default function TodayCard({
     const n = kstNow()
     return n.getUTCHours() * 60 + n.getUTCMinutes()
   })
+  // 오늘(KST) — 화면을 띄워 둔 채 날짜가 바뀌면 이 값이 바뀌어 오늘 데이터를 다시 불러옵니다.
+  const [todayYmd, setTodayYmd] = useState<string>(() => ymdOf(kstNow()))
 
-  // 1분마다 현재 교시 하이라이트 갱신
+  // 렌더마다 새 함수가 와도 다시 불러오지 않도록 최신 콜백만 ref로 들고 있습니다.
+  const onMealLoadedRef = useRef(onMealLoaded)
   useEffect(() => {
-    const t = setInterval(() => {
+    onMealLoadedRef.current = onMealLoaded
+  })
+
+  // 1분마다 현재 교시 하이라이트·날짜 갱신 (백그라운드에서 돌아올 때도 바로 확인)
+  useEffect(() => {
+    const tick = (): void => {
       const n = kstNow()
       setNowMin(n.getUTCHours() * 60 + n.getUTCMinutes())
-    }, 60000)
-    return () => clearInterval(t)
+      setTodayYmd(ymdOf(n))
+    }
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') tick()
+    }
+    const t = setInterval(tick, 60000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   useEffect(() => {
     let cancelled = false
+    setLoading(true)
+    onMealLoadedRef.current?.(false)
 
     const load = async (): Promise<void> => {
-      const now = kstNow()
-      const today = ymdOf(now)
-      const weekLater = ymdOf(new Date(now.getTime() + 7 * 86400000))
-      const dayIdx = now.getUTCDay()
+      const today = todayYmd
+      const base = parseYmd(today)
+      const weekLater = ymdOf(new Date(base.getTime() + 7 * 86400000))
+      const dayIdx = base.getUTCDay()
 
       const fetchJson = async (url: string): Promise<Record<string, unknown> | null> => {
         try {
@@ -200,24 +232,34 @@ export default function TodayCard({
         }
       }
 
-      // --- 오늘 급식 ---
+      // --- 오늘 급식 (조식/석식이 함께 오면 중식 우선) ---
       const mealsArr =
-        (mealData?.meals as Array<{ date?: string; menu?: unknown; calorie?: string }> | undefined) ?? []
-      const todayMeal = mealsArr.filter((m) => m.date === today)[0] ?? mealsArr[0] ?? null
+        (mealData?.meals as
+          | Array<{ date?: string; menu?: unknown; calorie?: string; mealCode?: string; mealType?: string }>
+          | undefined) ?? []
+      const todays = mealsArr.filter((m) => m.date === today)
+      const todayMeal = pickMainMeal(todays.length > 0 ? todays : mealsArr)
       const mealInfo: MealInfo | null =
         todayMeal && Array.isArray(todayMeal.menu) && todayMeal.menu.length > 0
           ? {
               menu: todayMeal.menu.map((x) => String(x)),
               calorie: String(todayMeal.calorie ?? ''),
+              otherMealName:
+                todayMeal.mealCode && String(todayMeal.mealCode) !== '2' && todayMeal.mealType
+                  ? String(todayMeal.mealType)
+                  : undefined,
             }
           : null
 
       // --- 다가오는 학사일정 (오늘~+7일 중 가장 가까운 1건) ---
+      // NEIS는 토요일마다 '토요휴업일'을 내려줘 실제 행사를 가리므로 제외합니다.
       const eventsArr =
         (calData?.events as Array<{ date?: string; name?: string }> | undefined) ?? []
       const upcoming =
         eventsArr
-          .filter((e): e is { date: string; name: string } => Boolean(e.date && e.name && e.date >= today))
+          .filter((e): e is { date: string; name: string } =>
+            Boolean(e.date && e.name && e.date >= today && e.name !== '토요휴업일')
+          )
           .sort((a, b) => (a.date < b.date ? -1 : 1))[0] ?? null
 
       if (cancelled) return
@@ -225,13 +267,14 @@ export default function TodayCard({
       setMeal(mealInfo)
       setNextEvent(upcoming)
       setLoading(false)
+      onMealLoadedRef.current?.(mealInfo !== null)
     }
 
     void load()
     return () => {
       cancelled = true
     }
-  }, [schoolCode, grade, classNm, classId])
+  }, [schoolCode, grade, classNm, classId, todayYmd])
 
   const currentPeriod = useMemo<number>(() => {
     for (let i = 0; i < PERIOD_TIMES.length; i++) {
@@ -243,7 +286,8 @@ export default function TodayCard({
 
   const hasOverride = useMemo<boolean>(() => periods.some((p) => p.changed === true), [periods])
 
-  const header = kstNow()
+  // 헤더 날짜도 불러온 데이터와 같은 날(todayYmd) 기준으로 표시합니다.
+  const header = parseYmd(todayYmd)
   const dateLabel = `${header.getUTCMonth() + 1}월 ${header.getUTCDate()}일 ${WEEKDAY_LABELS[header.getUTCDay()]}`
 
   return (
@@ -390,6 +434,9 @@ export default function TodayCard({
               <path d="M15 3c1.7 0 3 2 3 5s-1.3 5-3 5" />
             </svg>
             오늘 급식
+            {!loading && meal?.otherMealName && (
+              <span className="text-xs font-medium text-gray-400">· {meal.otherMealName}</span>
+            )}
           </h3>
           {loading ? (
             <SkeletonLines rows={4} />

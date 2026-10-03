@@ -13,16 +13,20 @@ export interface BagChecklistProps {
   classId: string
   schoolCode: string
   uid: string
+  /** 승인 상태 — 승인되면 (승인 전엔 읽을 수 없던) 알림장 준비물을 다시 불러옵니다. */
+  status?: string
 }
 
 /**
  * '내일 가방 싸기' 카드 — 다음 등교일 준비물 체크리스트.
  * 시간표 과목 + 최근 알림장 준비물을 합쳐 보여주고,
  * 체크 상태는 users/{uid}/bagChecks/{ymd}에 저장합니다.
+ * 대상일은 마운트 시점에 정해지므로, 날짜가 바뀌면 부모가 key로 다시 마운트합니다.
  */
-export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistProps): JSX.Element {
+export default function BagChecklist({ classId, schoolCode, uid, status }: BagChecklistProps): JSX.Element {
   const [ymd] = useState<string>(() => nextSchoolDayYmd())
   const [loading, setLoading] = useState<boolean>(true)
+  const [loadError, setLoadError] = useState<boolean>(false)
   const [items, setItems] = useState<ChecklistItem[]>([])
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [streak, setStreak] = useState<number>(0)
@@ -31,10 +35,14 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
     let cancelled = false
     ;(async () => {
       try {
+        // 저장된 체크·스트릭 조회가 실패해도(오프라인 등) 준비물 목록은 보여줍니다.
         const [list, saved, s] = await Promise.all([
-          buildChecklist({ classId, schoolCode, uid }),
-          loadCheck(uid, ymd),
-          getStreak(uid),
+          buildChecklist({ classId, schoolCode, uid, ymd }),
+          loadCheck(uid, ymd).catch((e: unknown) => {
+            console.error(e)
+            return null
+          }),
+          getStreak(uid, ymd).catch(() => 0),
         ])
         if (cancelled) return
         setItems(list)
@@ -44,8 +52,10 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
         }
         setChecked(init)
         setStreak(s)
+        setLoadError(false)
       } catch (e) {
         console.error(e)
+        if (!cancelled) setLoadError(true)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -53,7 +63,7 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
     return () => {
       cancelled = true
     }
-  }, [classId, schoolCode, uid, ymd])
+  }, [classId, schoolCode, uid, ymd, status])
 
   const checkedCount = useMemo<number>(
     () => items.filter((i) => checked[i.name] === true).length,
@@ -75,7 +85,7 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
       .then(() => {
         if (nowDone) {
           // 방금 완료 도장을 찍었으면 스트릭을 새로 계산
-          getStreak(uid).then(setStreak).catch(() => {})
+          getStreak(uid, ymd).then(setStreak).catch(() => {})
         }
       })
       .catch((e) => console.error(e))
@@ -129,6 +139,10 @@ export default function BagChecklist({ classId, schoolCode, uid }: BagChecklistP
           <div className="h-11 rounded-lg bg-gray-100" />
           <div className="h-11 rounded-lg bg-gray-100" />
         </div>
+      ) : loadError && items.length === 0 ? (
+        <p className="px-4 py-8 text-center text-sm text-gray-500 break-keep">
+          준비물을 불러오지 못했어요. 잠시 후 다시 열어 주세요.
+        </p>
       ) : items.length === 0 ? (
         /* 준비물 없음 */
         <p className="px-4 py-8 text-center text-sm text-gray-500 break-keep">

@@ -5,7 +5,13 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth } from '../lib/firebase'
 import MealRating from '../components/MealRating'
-import { ensureSignedIn, getMonthlyTop, getRating, type MonthlyTopEntry } from '../lib/meals'
+import {
+  ensureSignedIn,
+  getMonthlyTop,
+  getRating,
+  pickMainMeal,
+  type MonthlyTopEntry,
+} from '../lib/meals'
 
 const SCHOOL_STORAGE_KEY = 'classmate_meal_school'
 const WEEKDAY_LABELS = ['월', '화', '수', '목', '금'] as const
@@ -27,6 +33,10 @@ interface ApiMeal {
   date: string
   menu: string[]
   calorie: string
+  /** '1' 조식 / '2' 중식 / '3' 석식 — 예전 응답(캐시)에는 없을 수 있음 */
+  mealCode?: string
+  /** 끼니명(조식/중식/석식) */
+  mealType?: string
 }
 
 interface WeekBar {
@@ -172,7 +182,8 @@ export default function MealsPage(): JSX.Element {
         )
         const data = (await res.json()) as { meals?: ApiMeal[] }
         if (!cancelled) {
-          setTodayMeal(data.meals?.[0] ?? null)
+          // 조식/석식이 함께 오면 중식을 오늘 급식으로 보여줍니다.
+          setTodayMeal(pickMainMeal(data.meals ?? []))
         }
       } catch {
         if (!cancelled) setTodayMeal(null)
@@ -225,9 +236,15 @@ export default function MealsPage(): JSX.Element {
             )
             const data = (await res.json()) as { meals?: ApiMeal[] }
             if (!cancelled) {
-              const map: Record<string, string[]> = {}
+              // 날짜별 대표 식사(중식 우선, 없으면 그날 첫 끼니)의 메뉴
+              const byDate: Record<string, ApiMeal[]> = {}
               for (const meal of data.meals ?? []) {
-                map[meal.date] = meal.menu
+                ;(byDate[meal.date] ??= []).push(meal)
+              }
+              const map: Record<string, string[]> = {}
+              for (const date of Object.keys(byDate)) {
+                const main = pickMainMeal(byDate[date])
+                if (main) map[date] = main.menu
               }
               setTopMenus(map)
             }
@@ -398,6 +415,9 @@ export default function MealsPage(): JSX.Element {
                     <h2 className="text-sm font-semibold text-gray-700">오늘 급식</h2>
                     <span className="text-xs text-gray-400">
                       {formatYmd(today)}
+                      {todayMeal?.mealCode && String(todayMeal.mealCode) !== '2' && todayMeal.mealType
+                        ? ` · ${todayMeal.mealType}`
+                        : ''}
                       {todayMeal?.calorie ? ` · ${todayMeal.calorie}` : ''}
                     </span>
                   </div>
@@ -426,12 +446,16 @@ export default function MealsPage(): JSX.Element {
                     </p>
                   )}
 
-                  <div className="mt-4 border-t border-gray-100 pt-4">
-                    <p className="mb-2.5 text-sm font-semibold text-gray-700 break-keep">
-                      오늘 급식, 어땠나요?
-                    </p>
-                    <MealRating schoolCode={school.code} ymd={today} />
-                  </div>
+                  {/* 급식이 없는 날(주말·방학 등)에는 별점을 받지 않습니다. */}
+                  {mealLoaded && todayMeal && todayMeal.menu.length > 0 && (
+                    <div className="mt-4 border-t border-gray-100 pt-4">
+                      <p className="mb-2.5 text-sm font-semibold text-gray-700 break-keep">
+                        오늘 급식, 어땠나요?
+                      </p>
+                      {/* 학교·날짜가 바뀌면 이전 투표 잠금이 남지 않도록 새로 마운트합니다. */}
+                      <MealRating key={`${school.code}_${today}`} schoolCode={school.code} ymd={today} />
+                    </div>
+                  )}
                 </section>
 
                 {/* 이번 주 평균 */}

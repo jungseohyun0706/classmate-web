@@ -113,6 +113,24 @@ export default function StudentToday(): JSX.Element {
   const [notices, setNotices] = useState<Announcement[]>([])
   const [receipts, setReceipts] = useState<Record<string, Receipt>>({})
   const [ddays, setDdays] = useState<DdayEvent[]>([])
+  // 오늘(KST) — 화면을 띄워 둔 채 날짜가 바뀌면 D-day·가방·급식 별점을 새 날짜로 다시 불러옵니다.
+  const [todayYmd, setTodayYmd] = useState<string>(() => ymdOf(kstNow()))
+  // 오늘 급식이 있는지(TodayCard가 알려 줌) — 급식 없는 날에는 별점을 받지 않습니다.
+  const [hasMealToday, setHasMealToday] = useState<boolean>(false)
+
+  // 1분마다, 그리고 백그라운드에서 돌아올 때 날짜가 바뀌었는지 확인 (같은 날이면 상태 변화 없음)
+  useEffect(() => {
+    const check = (): void => setTodayYmd(ymdOf(kstNow()))
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') check()
+    }
+    const t = setInterval(check, 60000)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [])
 
   // 로그인 + 학생 역할 가드
   // 내 계정 문서를 실시간 구독 — 선생님이 승인하는 순간 새로고침 없이 반영됩니다.
@@ -187,17 +205,30 @@ export default function StudentToday(): JSX.Element {
     let cancelled = false
     ;(async () => {
       try {
-        const now = kstNow()
-        const today = ymdOf(now)
-        const end = ymdOf(new Date(now.getTime() + 30 * 86400000))
+        const today = todayYmd
+        const start = Date.UTC(
+          Number(today.slice(0, 4)),
+          Number(today.slice(4, 6)) - 1,
+          Number(today.slice(6, 8))
+        )
+        const end = ymdOf(new Date(start + 30 * 86400000))
         const res = await fetch(
           `/api/calendar?schoolCode=${encodeURIComponent(String(schoolCode))}&from=${today}&to=${end}`
         )
         if (!res.ok) return
         const data = (await res.json()) as { events?: Array<{ date?: string; name?: string }> }
+        // 매주 나오는 '토요휴업일'은 빼고, 방학처럼 여러 날 이어지는 일정은 첫날만 남깁니다.
+        const seenNames = new Set<string>()
         const events = (data.events ?? [])
-          .filter((e): e is { date: string; name: string } => Boolean(e.date && e.name && e.date >= today))
+          .filter((e): e is { date: string; name: string } =>
+            Boolean(e.date && e.name && e.date >= today && e.name !== '토요휴업일')
+          )
           .sort((a, b) => (a.date < b.date ? -1 : 1))
+          .filter((e) => {
+            if (seenNames.has(e.name)) return false
+            seenNames.add(e.name)
+            return true
+          })
           .slice(0, 3)
           .map((e) => ({ date: e.date, name: e.name, dday: daysBetweenYmd(today, e.date) }))
         if (!cancelled) setDdays(events)
@@ -208,7 +239,7 @@ export default function StudentToday(): JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [userData?.schoolCode])
+  }, [userData?.schoolCode, todayYmd])
 
   const handleLogout = async (): Promise<void> => {
     await signOut(auth)
@@ -240,7 +271,9 @@ export default function StudentToday(): JSX.Element {
     )
   }
 
-  const hasClass = Boolean(userData.classId && userData.schoolCode)
+  // 거절된 학생은 classId가 남아 있어도 반 소속으로 보여주지 않습니다.
+  const rejected = userData.status === 'rejected'
+  const hasClass = Boolean(userData.classId && userData.schoolCode) && !rejected
   const studentName = userData.name || userData.displayName || '학생'
 
   return (
@@ -300,7 +333,30 @@ export default function StudentToday(): JSX.Element {
           </div>
         )}
 
-        {!hasClass ? (
+        {rejected ? (
+          /* 입장 거절 — 톡방과 같은 안내 */
+          <div className="rounded-xl border border-gray-100 bg-white p-8 text-center shadow-lg">
+            <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-50 text-rose-500">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-7 w-7"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v5M12 16h.01" />
+              </svg>
+            </span>
+            <h2 className="mt-4 text-lg font-bold text-gray-900 break-keep">입장 신청이 승인되지 않았어요</h2>
+            <p className="mt-2 text-sm leading-relaxed text-gray-500 break-keep">
+              선생님께 확인한 뒤 반 QR을 다시 찍어 신청해 주세요.
+            </p>
+          </div>
+        ) : !hasClass ? (
           /* 반 미가입 — QR 안내 */
           <div className="rounded-xl border border-gray-100 bg-white p-8 text-center shadow-lg">
             <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
@@ -335,19 +391,24 @@ export default function StudentToday(): JSX.Element {
               grade={userData.grade ?? ''}
               classNm={userData.classNm ?? ''}
               classId={String(userData.classId)}
+              onMealLoaded={setHasMealToday}
             />
 
-            {/* 내일 가방 싸기 체크리스트 */}
+            {/* 내일 가방 싸기 체크리스트 — 날짜가 바뀌면 대상 등교일을 다시 정하도록 리마운트 */}
             {uid && (
               <BagChecklist
+                key={todayYmd}
                 classId={String(userData.classId)}
                 schoolCode={String(userData.schoolCode)}
                 uid={uid}
+                status={userData.status}
               />
             )}
 
-            {/* 오늘 급식 별점 (한 줄) */}
-            <MealRating schoolCode={String(userData.schoolCode)} compact />
+            {/* 오늘 급식 별점 (한 줄) — 급식이 있는 날만 */}
+            {hasMealToday && (
+              <MealRating schoolCode={String(userData.schoolCode)} ymd={todayYmd} compact />
+            )}
 
             {/* 최신 알림장 */}
             <section className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">

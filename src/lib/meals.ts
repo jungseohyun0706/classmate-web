@@ -42,6 +42,14 @@ function ratingDocId(schoolCode: string, ymd: string): string {
   return `${schoolCode}_${ymd}`
 }
 
+/**
+ * /api/meals 항목 중 하루의 대표 식사를 고릅니다 — 중식(mealCode '2') 우선, 없으면 첫 항목.
+ * mealCode가 없는 예전 응답(캐시)이면 첫 항목을 씁니다.
+ */
+export function pickMainMeal<T extends { mealCode?: unknown }>(meals: readonly T[]): T | null {
+  return meals.find((m) => String(m.mealCode ?? '') === '2') ?? meals[0] ?? null
+}
+
 function toSummary(data: Record<string, unknown>): RatingSummary {
   const sum = typeof data.sum === 'number' ? data.sum : 0
   const total = typeof data.total === 'number' ? data.total : 0

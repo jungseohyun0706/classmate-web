@@ -52,6 +52,9 @@ export default function CalendarPage(): JSX.Element {
   })
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [monthLoading, setMonthLoading] = useState<boolean>(false)
+  const [monthError, setMonthError] = useState<boolean>(false)
+  // '다시 시도'를 누를 때마다 올려서 같은 달을 다시 요청합니다.
+  const [retry, setRetry] = useState<number>(0)
   // 월별 결과 캐시 — 같은 달을 다시 열면 재요청하지 않습니다.
   const cacheRef = useRef<Map<string, CalendarEvent[]>>(new Map())
 
@@ -87,10 +90,14 @@ export default function CalendarPage(): JSX.Element {
     const cached = cacheRef.current.get(key)
     if (cached) {
       setEvents(cached)
+      setMonthError(false)
+      // 다른 달을 불러오던 중에 돌아온 경우, 취소된 그 요청은 로딩을 끄지 않으므로 여기서 끕니다.
+      setMonthLoading(false)
       return
     }
     let cancelled = false
     setMonthLoading(true)
+    setMonthError(false)
     ;(async () => {
       try {
         const mm = String(ym.m).padStart(2, '0')
@@ -100,18 +107,21 @@ export default function CalendarPage(): JSX.Element {
         const res = await fetch(
           `/api/calendar?schoolCode=${encodeURIComponent(String(schoolCode))}&from=${from}&to=${to}`
         )
-        const data = res.ok
-          ? ((await res.json()) as { events?: Array<{ date?: string; name?: string }> })
-          : { events: [] }
+        if (!res.ok) throw new Error(`calendar ${res.status}`)
+        const data = (await res.json()) as { events?: Array<{ date?: string; name?: string }> }
         const list = (data.events ?? [])
           .filter((e): e is CalendarEvent => Boolean(e.date && e.name))
           .sort((a, b) => (a.date < b.date ? -1 : 1))
+        // 성공한 결과만 캐시합니다 — 실패를 캐시하면 다시 와도 '일정 없음'으로 굳어 버립니다.
         if (!cancelled) {
           cacheRef.current.set(key, list)
           setEvents(list)
         }
       } catch {
-        if (!cancelled) setEvents([])
+        if (!cancelled) {
+          setEvents([])
+          setMonthError(true)
+        }
       } finally {
         if (!cancelled) setMonthLoading(false)
       }
@@ -119,7 +129,7 @@ export default function CalendarPage(): JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [userData?.schoolCode, ym])
+  }, [userData?.schoolCode, ym, retry])
 
   const moveMonth = (delta: number): void => {
     setYm((prev) => {
@@ -263,6 +273,17 @@ export default function CalendarPage(): JSX.Element {
             {monthLoading ? (
               <div className="flex items-center justify-center rounded-xl border border-gray-100 bg-white py-16 shadow-lg">
                 <div className={`h-8 w-8 animate-spin rounded-full border-b-2 ${c.spinner}`} />
+              </div>
+            ) : monthError ? (
+              <div className="rounded-xl border border-gray-100 bg-white p-10 text-center shadow-lg">
+                <p className="text-sm text-gray-500 break-keep">학사일정을 불러오지 못했어요</p>
+                <button
+                  type="button"
+                  onClick={() => setRetry((n) => n + 1)}
+                  className="mt-4 rounded-xl bg-gray-100 px-5 py-2.5 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-200"
+                >
+                  다시 시도
+                </button>
               </div>
             ) : grouped.length === 0 ? (
               <div className="rounded-xl border border-gray-100 bg-white p-10 text-center shadow-lg">
