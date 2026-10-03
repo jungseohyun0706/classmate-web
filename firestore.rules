@@ -100,8 +100,24 @@ service cloud.firestore {
       // ── users/{uid}/notifications/{nid}: 알림함 ──────────
       match /notifications/{nid} {
         // 생성: 알림 주인과 같은 학교의 로그인 사용자 누구나 (교체/SOS/공지 알림 전달용)
+        //       앱이 쓰는 형식{title, body, url, createdAt, read:false}만 허용하고,
+        //       url은 앱 내부 상대 경로만 받습니다. (검사가 없으면 알림을 위조하거나
+        //       javascript:·외부 링크를 심어 알림함에서 누르게 만들 수 있었습니다.)
         allow create: if signedIn()
-          && myDoc().schoolCode == userDoc(uid).schoolCode;
+          && myDoc().schoolCode == userDoc(uid).schoolCode
+          && request.resource.data.keys().hasOnly(['title', 'body', 'url', 'createdAt', 'read'])
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 100
+          && request.resource.data.body is string
+          && request.resource.data.body.size() <= 500
+          && (!('url' in request.resource.data)
+              || request.resource.data.url == null
+              || (request.resource.data.url is string
+                  && request.resource.data.url.size() <= 300
+                  && request.resource.data.url.matches('^/([^/\\\\][^\\\\]*)?$')))
+          && request.resource.data.read == false
+          && request.resource.data.createdAt == request.time;
 
         // 읽기/삭제: 알림 주인만
         allow read, delete: if me(uid);
@@ -125,22 +141,34 @@ service cloud.firestore {
       // 읽기: 같은 학교의 로그인 사용자 (학생 가입 흐름에서 학급 정보 확인 포함)
       allow read: if signedIn() && sameSchool(resource.data.schoolCode);
 
-      // 생성: 교사가 자기 자신을 teacherId로 지정할 때만
+      // 생성: 교사가 자기 자신을 teacherId로 지정할 때만.
+      //       학교가 정해진 교사는 자기 학교의 반만 만들 수 있습니다(타학교 반 선점 방지).
       allow create: if isTeacher()
-        && request.resource.data.teacherId == request.auth.uid;
+        && request.resource.data.teacherId == request.auth.uid
+        && (myDoc().get('schoolCode', null) == null
+            || request.resource.data.get('schoolCode', null) == myDoc().schoolCode);
 
       // 수정: 담임 교사만. teacherId는 유지하거나(일반 수정)
       //       null로 비울 수만 있습니다(반 변경 시 담임 자리 해제).
       allow update: if signedIn()
         && resource.data.teacherId == request.auth.uid
         && (request.resource.data.teacherId == request.auth.uid
-            || request.resource.data.teacherId == null);
+            || request.resource.data.teacherId == null)
+        && (!('schoolCode' in resource.data)
+            || request.resource.data.get('schoolCode', null) == resource.data.schoolCode);
 
       // 수정(인수): 아직 담임이 없는 반(teacherId 없음/null)은
       //             교사가 자신을 담임으로 지정하며 넘겨받을 수 있습니다.
+      //             같은 학교 교사만 인수할 수 있습니다. (학교 검사가 없으면 다른 학교 교사가
+      //             담임 없는 반을 가로채 그 반 학생 정보·톡방을 열람할 수 있었습니다.)
+      //             schoolCode가 없는 예전 반은 classId 첫 토막(학교 코드)으로 판정합니다.
       allow update: if isTeacher()
         && request.resource.data.teacherId == request.auth.uid
-        && (!('teacherId' in resource.data) || resource.data.teacherId == null);
+        && (!('teacherId' in resource.data) || resource.data.teacherId == null)
+        && (myDoc().get('schoolCode', null) == null
+            || myDoc().schoolCode == resource.data.get('schoolCode', classId.split('_')[0]))
+        && (!('schoolCode' in resource.data)
+            || request.resource.data.get('schoolCode', null) == resource.data.schoolCode);
 
       // 삭제: 담임 교사만
       allow delete: if signedIn() && resource.data.teacherId == request.auth.uid;
@@ -218,7 +246,15 @@ service cloud.firestore {
           allow create, update: if me(studentUid)
             && isClassStudent(classId)
             && request.resource.data.keys()
-                 .hasOnly(['readAt', 'studentName', 'consent', 'consentAt']);
+                 .hasOnly(['readAt', 'studentName', 'consent', 'consentAt'])
+            // 값 타입까지 확인 — 이상한 값이 들어가면 교사 화면이 깨지거나 이름이 위조됩니다.
+            && request.resource.data.studentName is string
+            && request.resource.data.studentName.size() <= 50
+            && (!('readAt' in request.resource.data) || request.resource.data.readAt is timestamp)
+            && (!('consent' in request.resource.data)
+                || request.resource.data.consent in ['agreed', 'declined'])
+            && (!('consentAt' in request.resource.data)
+                || request.resource.data.consentAt is timestamp);
 
           // 읽기: 같은 학교 교사(담임+수업 교사·확인 명단용)와 학생 본인
           allow read: if me(studentUid)
@@ -302,7 +338,35 @@ service cloud.firestore {
     // 익명 로그인 포함, 로그인만 하면 읽기/집계 카운터 갱신 가능
     match /meal_ratings/{docId} {
       allow read: if signedIn();
-      allow create, update: if signedIn();
+
+      // 집계 문서는 같은 트랜잭션에서 내 투표(votes/{uid})를 처음 남길 때만,
+      // 그 투표 점수만큼만 늘릴 수 있습니다. (예전 규칙은 로그인만 하면 익명 계정도
+      // 집계를 임의 값으로 덮어써 별점과 TOP5를 조작할 수 있었습니다.)
+      function myVote() {
+        return /databases/$(database)/documents/meal_ratings/$(docId)/votes/$(request.auth.uid);
+      }
+      function newVoteRating() {
+        return getAfter(myVote()).data.rating;
+      }
+
+      allow create: if signedIn()
+        && !exists(myVote()) && existsAfter(myVote())
+        && request.resource.data.keys().hasOnly(['schoolCode', 'date', 'sum', 'total', 'counts'])
+        && docId == request.resource.data.schoolCode + '_' + request.resource.data.date
+        && request.resource.data.total == 1
+        && request.resource.data.sum == newVoteRating()
+        && request.resource.data.counts.keys().hasOnly([string(newVoteRating())])
+        && request.resource.data.counts[string(newVoteRating())] == 1;
+
+      allow update: if signedIn()
+        && !exists(myVote()) && existsAfter(myVote())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sum', 'total', 'counts'])
+        && request.resource.data.total == resource.data.get('total', 0) + 1
+        && request.resource.data.sum == resource.data.get('sum', 0) + newVoteRating()
+        && request.resource.data.counts.diff(resource.data.get('counts', {})).affectedKeys()
+             .hasOnly([string(newVoteRating())])
+        && request.resource.data.counts[string(newVoteRating())]
+             == resource.data.get('counts', {}).get(string(newVoteRating()), 0) + 1;
 
       // ── votes/{uid}: 계정당 1표 투표 기록 ────────────────
       match /votes/{uid} {
