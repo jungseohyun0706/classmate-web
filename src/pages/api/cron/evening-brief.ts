@@ -10,7 +10,7 @@ import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm
 // Vercel Cron(0 12 * * 0-4 UTC = KST 일~목 21:00)이 Authorization: Bearer CRON_SECRET
 // 헤더와 함께 호출합니다. 시크릿이 로그·브라우저 기록에 남지 않도록 쿼리스트링(?key=)은 받지 않습니다.
 // 수동 실행: curl -H "Authorization: Bearer $CRON_SECRET" https://<도메인>/api/cron/evening-brief
-// 각 학급의 내일 시간표(변경 오버라이드 반영)를 '내일 가방' 푸시로
+// 각 학급의 내일 시간표(변경 오버라이드 반영)를 '내일 가방' 푸시로 (학생에게는 '학급 시간표 기준'으로 표시 — 개인 시간표 아님)
 // 담임 선생님과 승인된 학생들에게 보냅니다.
 // 학사일정(NEIS)에서 내일이 휴업일·공휴일·방학인 학교(학년)는 건너뜁니다.
 
@@ -229,10 +229,18 @@ export default async function handler(
         body += ` (변경: ${overrideNotes.join(', ')})`
       }
 
+      // 학생에게는 학급 시간표를 '내 시간표'처럼 보내지 않음: 선택 과목·수업반이 학생마다 다를 수 있어
+      // '학급 시간표 기준'임을 밝히고, 내 수업(개인 시간표)은 앱에서 보게 함
+      let studentBody = `학급 시간표 기준: ${filled.slice(0, 4).join(' · ')}`
+      if (overrideNotes.length > 0) {
+        studentBody += ` (학급 변경: ${overrideNotes.join(', ')})`
+      }
+      studentBody += ' · 내 수업은 앱에서 확인하세요'
+
       // 3) 받는 사람: 담임 + 승인된 학생(푸시 토큰 보유자)
-      const targets: { uid: string; url: string }[] = []
+      const targets: { uid: string; url: string; body: string }[] = []
       if (teacherId) {
-        targets.push({ uid: teacherId, url: '/dashboard' })
+        targets.push({ uid: teacherId, url: '/dashboard', body })
       }
       const studentsSnap = await db
         .collection('users')
@@ -243,7 +251,7 @@ export default async function handler(
       for (const sDoc of studentsSnap.docs) {
         const tokens = sDoc.get('fcmTokens')
         if (Array.isArray(tokens) && tokens.length > 0) {
-          targets.push({ uid: sDoc.id, url: '/student/today' })
+          targets.push({ uid: sDoc.id, url: `/student/timetable?date=${tomorrow.ymd}`, body: studentBody })
         }
       }
 
@@ -251,7 +259,7 @@ export default async function handler(
       await runPool(targets, PUSH_CONCURRENCY, async (target) => {
         const result = await sendPushToUser(target.uid, {
           title: '내일 가방',
-          body,
+          body: target.body,
           url: target.url,
         })
         if (result.sent) {
