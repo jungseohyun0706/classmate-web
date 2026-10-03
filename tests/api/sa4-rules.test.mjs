@@ -134,7 +134,7 @@ async function main() {
     mine.ok ? `${mine.v.size}건` : why(mine)
   )
   const mineActive = await attempt(fsc.getDocsFromServer(fsc.query(enrCol, fsc.where('uid', '==', 'stuA'), fsc.where('status', '==', 'active'))))
-  check('T39', "학생 A: uid+status 쿼리 허용(인덱스 enrollments uid·status)", mineActive.ok && mineActive.v.size === 1, why(mineActive))
+  check('T39', "학생 A: uid+status 쿼리 허용(규칙만 확인 — 등호 조건만이라 복합 인덱스 불필요)", mineActive.ok && mineActive.v.size === 1, why(mineActive))
   const roster = await attempt(fsc.getDocsFromServer(fsc.query(enrCol, fsc.where('courseId', '==', courseId))))
   check('T39', '학생 A: 수업별 수강생 명단 쿼리 거부(타인 수강 조회 차단)', denied(roster), why(roster))
   const allEnr = await attempt(fsc.getDocsFromServer(enrCol))

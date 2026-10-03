@@ -206,13 +206,14 @@ interface MyTimetablePayload {
 
 ## 9. 인덱스 (`firestore.indexes.json`, 복합만)
 
-| 컬렉션 | 필드 |
-|---|---|
-| enrollments | (uid, status), (courseId, status) |
-| courses | (commonForHomerooms CONTAINS, status), (termId, catalogVisible), (termId, catalogVisible, status) |
-| series | (courseId, validFrom) |
-| overrides | (courseId, status) |
-| changeSets | (affectedCourseIds CONTAINS, createdAt DESC) — 수업별 변경 이력(꼭 필요) |
-| users | (classId, role, status) |
+| 컬렉션 | 필드 | 쓰는 쿼리 |
+|---|---|---|
+| classes | (schoolCode, grade, classNm) — 꼭 필요 | `/teacher/view-timetables` 학급 목록(schoolCode 등호 + grade·classNm 정렬). 이 파일보다 먼저 있던 쿼리라 운영에는 콘솔에서 만든 같은 인덱스가 있을 것 — 파일에 적어 두어 배포 때 삭제 후보로 뜨지 않게 함 |
+| changeSets | (affectedCourseIds CONTAINS, createdAt DESC) — 꼭 필요 | `/api/schedule-changes` list(courseId): 수업별 변경 이력 |
+| enrollments | (courseId, status) | `studentUidsForCourses`(courseId in + status) |
+| courses | (termId, catalogVisible) | `/api/courses` 공개 수업 목록(catalog) |
+| users | (classId, role, status) | 학급 학생 찾기(`studentUidsForCourses`, `chat-push`, `evening-brief`) |
 
-단일 필드 조건·정렬(`importBatches.createdAt`, `teacherUids` CONTAINS, `invitations.targetId`, `courses.legacyGroupId` 등)은 자동 인덱스로 충분합니다. 에뮬레이터는 복합 인덱스를 강제하지 않으므로 충분성은 스테이징/운영 프로젝트에서 확인해야 합니다. 배포 시 콘솔에만 있는 기존 인덱스를 지울지 묻는데 `--force`를 쓰지 말고 `firebase firestore:indexes`로 먼저 비교합니다(배포는 별도 승인).
+'꼭 필요'가 아닌 셋은 등호 조건만이라 자동 단일 필드 인덱스 병합으로도 돌지만, 쿼리가 실제로 쓰므로 성능용으로 둡니다. 쓰는 쿼리가 없는 복합 인덱스는 두지 않습니다 — enrollments(uid, status), courses(commonForHomerooms CONTAINS, status)·(termId, catalogVisible, status), series(courseId, validFrom), overrides(courseId, status)는 쓰는 쿼리가 없어 뺐습니다(쓰기마다 인덱스 항목만 늘어남). `src/`·`scripts/`에 컬렉션 그룹 쿼리가 없으므로 COLLECTION_GROUP 범위 인덱스나 `fieldOverrides`도 필요 없습니다. 내 승인 대기 목록(`approverUids` CONTAINS + `status` 등호, 정렬은 메모리)도 등호 조건만이라 복합 인덱스가 필요 없습니다. 쿼리에 범위 조건이나 다른 필드 정렬을 붙이면 이 표와 파일을 함께 고칩니다.
+
+단일 필드 조건·정렬(`importBatches.createdAt`, `teacherUids` CONTAINS, `invitations.targetId`, `courses.legacyGroupId` 등)은 자동 인덱스로 충분합니다. 에뮬레이터는 복합 인덱스를 강제하지 않으므로 충분성은 스테이징/운영 프로젝트에서 확인해야 합니다. 배포 시 콘솔에만 있는 기존 인덱스를 지울지 묻는데 `--force`를 쓰지 말고 `firebase firestore:indexes --project classmate-mvp-9f855`로 먼저 비교합니다. 운영에만 있는 인덱스가 아직 쓰이면 파일에 옮기고, 삭제 질문에는 No로 답합니다. 위에서 뺀 다섯 개가 이미 운영에 배포돼 있었다면 비교로 확인한 뒤에만 지웁니다(배포는 별도 승인).

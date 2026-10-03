@@ -1,11 +1,12 @@
 {
   "indexes": [
     {
-      "collectionGroup": "enrollments",
+      "collectionGroup": "classes",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "uid", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
+        { "fieldPath": "schoolCode", "order": "ASCENDING" },
+        { "fieldPath": "grade", "order": "ASCENDING" },
+        { "fieldPath": "classNm", "order": "ASCENDING" }
       ]
     },
     {
@@ -13,14 +14,6 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "courseId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "courses",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "commonForHomerooms", "arrayConfig": "CONTAINS" },
         { "fieldPath": "status", "order": "ASCENDING" }
       ]
     },
@@ -30,31 +23,6 @@
       "fields": [
         { "fieldPath": "termId", "order": "ASCENDING" },
         { "fieldPath": "catalogVisible", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "courses",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "termId", "order": "ASCENDING" },
-        { "fieldPath": "catalogVisible", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "series",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "courseId", "order": "ASCENDING" },
-        { "fieldPath": "validFrom", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "overrides",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "courseId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
       ]
     },
     {

@@ -656,8 +656,13 @@ async function reject(ctx: Ctx, body: Body, res: NextApiResponse) {
 
 async function list(ctx: Ctx, body: Body, res: NextApiResponse) {
   if (body.awaitingMe === true) {
-    // 내 승인을 기다리는 요청(배열 포함 조건 하나만 — 상태·정렬은 메모리에서)
-    const snap = await csCol(ctx).where('approverUids', 'array-contains', ctx.u.uid).limit(200).get()
+    // 내 승인을 기다리는 요청 — 상태는 쿼리에서 거름(처리된 묶음도 approverUids에 남아 limit 안을 채우면 대기 요청이 잘림).
+    // 배열 포함 + 등호 하나라 복합 색인 불필요, 정렬은 메모리에서
+    const snap = await csCol(ctx)
+      .where('approverUids', 'array-contains', ctx.u.uid)
+      .where('status', '==', 'pending-approval')
+      .limit(200)
+      .get()
     const rows = snap.docs
       .filter((d) => d.get('status') === 'pending-approval')
       .map((d) => summary(d.id, d.data()))

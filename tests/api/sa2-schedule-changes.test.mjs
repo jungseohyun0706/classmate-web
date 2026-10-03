@@ -457,6 +457,34 @@ async function main() {
   check('T17', '교환 묶음의 각 변경에 묶음 키(changeSetKeys) 기록 — 클라이언트 묶음 완전성 확인용',
     JSON.stringify(ov.changeSetKeys) === JSON.stringify([`engB|sr_engB_tue3@${D2}`, `sciA|sr_sciA_tue4@${D2}`]), JSON.stringify(ov.changeSetKeys))
 
+  // ───── 내 승인 대기 목록: 처리된 묶음이 200개 넘게 쌓여도 새 대기 요청이 빠지지 않음(운영 점검) ─────
+  // 발행·거절된 묶음도 approverUids에 남음 — 문서 id 순으로 앞서는 처리된 묶음 210개 + 그 뒤 id의 대기 요청 1개.
+  // 상태를 limit(200) 뒤 메모리에서 거르면 대기 요청이 잘려 승인할 곳이 없어짐. 다른 시나리오와 섞이지 않게 맨 끝에서 시드
+  const BULK = 210
+  const pendingId = 'cs_zz-awaiting-0001'
+  const csDoc = (status, approved, createdAt) => ({
+    scope: 'date', status, items: [], overrideIds: [], seriesChanges: { retired: [], created: [] }, reason: '쌓인 요청',
+    createdBy: 'tz', createdByName: '박수학', revision: null, basedOnRevision: 0, affectedCourseIds: [], affectedDates: [], affectedStudentCount: 0,
+    conflicts: [], conflictsAcknowledged: false, changes: [], orphans: [], approvals: { ty: approved }, approverUids: ['ty'], createdAt,
+  })
+  const bulkIds = Array.from({ length: BULK }, (_, i) => `cs_aa-bulk-${String(i).padStart(4, '0')}`)
+  for (let i = 0; i < BULK; i += 100) {
+    const wb = db.batch()
+    bulkIds.slice(i, i + 100).forEach((id, k) => {
+      const done = (i + k) % 2 === 0
+      wb.set(db.doc(`schools/S1/changeSets/${id}`), { mutationId: id.slice(3), ...csDoc(done ? 'published' : 'rejected', done, Timestamp.fromMillis(Date.now() - (BULK - i - k) * 60000)) })
+    })
+    await wb.commit()
+  }
+  await db.doc(`schools/S1/changeSets/${pendingId}`).set({ mutationId: pendingId.slice(3), ...csDoc('pending-approval', false, Timestamp.now()) })
+  const oldWay = await db.collection('schools/S1/changeSets').where('approverUids', 'array-contains', 'ty').limit(200).get()
+  check('T40', `재현 조건: 처리된 묶음 ${BULK}개가 앞서 배열 포함 + limit(200)만으로는 대기 요청이 잘림`, oldWay.size === 200 && !oldWay.docs.some((d) => d.id === pendingId), `${oldWay.size}건`)
+  r = await sc('ty@e2e.kr', { action: 'list', awaitingMe: true })
+  const waiting = r.j.changeSets || []
+  check('T40', 'list awaitingMe: 처리된 묶음이 200개 넘게 쌓여도 새 대기 요청이 목록에 나옴(처리된 묶음은 없음)',
+    r.status === 200 && waiting.some((x) => x.changeSetId === pendingId) && waiting.every((x) => x.status === 'pending-approval'),
+    `${r.status} ${waiting.length}건 ${JSON.stringify(waiting.map((x) => x.changeSetId)).slice(0, 200)}`)
+
   for (const s of Object.values(sessions)) await s.close()
 }
 
