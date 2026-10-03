@@ -4,7 +4,7 @@ import { auth } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
-import { nextOccurrenceYmdKst } from '../../lib/swaps'
+import { nextOccurrenceYmdKst, notifySwapRequested } from '../../lib/swaps'
 import { storedTeacherGridToMySchedule, normalizeName } from '../../lib/timetableConvert'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
@@ -190,10 +190,8 @@ export default function MySchedulePage() {
     }
   }
 
-  // 교환 요청 보내기 (MVP: 알림 띄우기)
+  // 1:1 교환 요청 보내기 (direct_requests 문서 생성 + 받는 선생님에게 알림/푸시)
   const requestSwap = async (teacher: any) => {
-    // 실제로는 여기서 'requests' 컬렉션에 문서를 만들고 상대방에게 알림을 쏴야 함.
-    // 지금은 UI 흐름만 구현.
     const ok = await confirm({
       title: '교환 요청 보내기',
       description: `${teacher.name} 선생님께 교환 요청을 보낼까요?`,
@@ -202,6 +200,7 @@ export default function MySchedulePage() {
     if (!ok) return
     try {
         const { db } = await import('../../lib/firebase')
+        const date = nextOccurrenceYmdKst(selectedCell.day) // 다음 해당 요일 (KST, YYYYMMDD)
         await addDoc(collection(db, 'school_swaps', userData.schoolCode, 'direct_requests'), {
             fromId: auth.currentUser?.uid,
             fromName: userData.displayName,
@@ -215,9 +214,18 @@ export default function MySchedulePage() {
             dayLabel: selectedCell.dayLabel,
             period: selectedCell.period,
             subject: selectedCell.subject,
-            date: nextOccurrenceYmdKst(selectedCell.day), // 다음 해당 요일 (KST, YYYYMMDD)
+            date,
             status: 'pending',
             createdAt: serverTimestamp()
+        })
+        // 알림 실패는 요청 자체에 영향 없음 (내부에서 오류를 삼킴)
+        await notifySwapRequested(teacher.id, {
+            requesterName: userData.displayName,
+            date,
+            day: selectedCell.day,
+            dayLabel: selectedCell.dayLabel,
+            period: selectedCell.period,
+            subject: selectedCell.subject,
         })
         toast(`요청을 보냈어요! ${teacher.name} 선생님이 수락하면 알려드릴게요.`, 'success')
         setSelectedCell(null)

@@ -8,6 +8,7 @@ import {
   doc,
   getDocs,
   limit,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -16,6 +17,8 @@ import {
   type Timestamp,
 } from 'firebase/firestore'
 import { auth, db } from './firebase'
+import { todayKstYmd } from './sos'
+import { classLabelToParts } from './timetableConvert'
 
 export type SwapStatus = 'pending' | 'accepted' | 'declined' | 'cancelled'
 
@@ -57,8 +60,6 @@ export type SwapRequest = DirectSwapRequest | PublicSwapRequest
 export interface SwapActor {
   uid: string
   name: string
-  /** 수락자 반 문서 ID — 있으면 수락 시 해당 반에도 override 를 기록 */
-  classId?: string | null
 }
 
 export const DAY_LABELS_KO: Record<string, string> = {
@@ -98,6 +99,11 @@ export function nextOccurrenceYmdKst(day: string): string {
 export function formatYmd(ymd?: string): string {
   if (!ymd || !/^\d{8}$/.test(ymd)) return ''
   return `${parseInt(ymd.slice(4, 6), 10)}월 ${parseInt(ymd.slice(6, 8), 10)}일`
+}
+
+/** 수업 날짜(YYYYMMDD)가 오늘(KST)보다 이전인지 — 날짜가 없는 레거시 문서는 false */
+export function isPastSwapDate(date: unknown): boolean {
+  return typeof date === 'string' && /^\d{8}$/.test(date) && date < todayKstYmd()
 }
 
 /** 카드에 표시할 날짜 라벨 — 날짜가 있으면 '8월 26일 (화)', 없으면 '화요일' */
@@ -211,9 +217,11 @@ export async function listSent(uid: string, schoolCode: string): Promise<SwapReq
   return sortByCreatedDesc(Array.from(map.values()))
 }
 
-/** 학교 게시판 공개 요청 전체 (최신순) */
+/** 학교 게시판 공개 요청 최근 100건 (최신순) */
 export async function listPublic(schoolCode: string): Promise<PublicSwapRequest[]> {
-  const snap = await getDocs(query(publicCol(schoolCode), limit(100)))
+  // orderBy 없이 limit 만 걸면 문서 ID 순 임의 100건이 와서 새 요청이 빠질 수 있음.
+  // 단일 필드 정렬이라 복합 색인이 필요 없고, 모든 작성 경로가 createdAt 을 기록합니다.
+  const snap = await getDocs(query(publicCol(schoolCode), orderBy('createdAt', 'desc'), limit(100)))
   const items: PublicSwapRequest[] = []
   snap.forEach((d) => items.push(normalizePublic(schoolCode, d.id, d.data())))
   return sortByCreatedDesc(items)
@@ -255,6 +263,18 @@ function sendPushSafe(toUid: string, title: string, body: string, url: string) {
   }
 }
 
+/** 1:1 교환 요청을 받은 선생님에게 인앱 알림 + 푸시 */
+export async function notifySwapRequested(
+  toUid: string,
+  req: Pick<SwapRequestBase, 'requesterName' | 'date' | 'day' | 'dayLabel' | 'period' | 'subject'>
+) {
+  const title = '교환 요청 📮'
+  const body = `${req.requesterName} 선생님이 ${formatSwapDate(req)} ${req.period}교시(${req.subject}) 교환을 요청했어요.`
+  const url = '/teacher/swaps'
+  await addInboxNotification(toUid, title, body, url)
+  sendPushSafe(toUid, title, body, url)
+}
+
 // ---------------------------------------------------------------------------
 // 시간표 override (계약 4)
 // ---------------------------------------------------------------------------
@@ -273,14 +293,21 @@ async function writeOverride(classId: string, date: string, period: number, subj
 
 /** 수락 확정 후 공통 처리: override 기록 + 요청자 알림 + 푸시 */
 async function afterAccept(req: SwapRequest, actor: SwapActor) {
-  // 날짜가 없는 레거시 문서는 override 를 건너뜁니다.
-  if (req.date) {
-    if (req.requesterClassId) {
-      await writeOverride(req.requesterClassId, req.date, req.period, req.subject, `${actor.name} 선생님 교환 수업`)
-    }
-    if (actor.classId) {
-      await writeOverride(actor.classId, req.date, req.period, req.subject, `${req.requesterName} 선생님과 교환`)
-    }
+  // 교환 칸은 요청 교사 개인 시간표 칸('1-5 국어')이라, 실제 수업 반은 앞의 학반 라벨로만 알 수 있음.
+  // 라벨이 없는 칸(직접 입력)이나 날짜 없는 레거시 문서는 반을 특정할 수 없어 override 를 건너뜁니다.
+  // (담임 반에 쓰면 그 반 학생 시간표가 엉뚱한 과목으로 바뀜)
+  const [label = '', ...rest] = req.subject.trim().split(/\s+/)
+  const parts = classLabelToParts(label)
+  if (req.date && parts) {
+    const subjectName = rest.join(' ')
+    const subject = subjectName ? `${subjectName}(${actor.name} 선생님)` : `${actor.name} 선생님 수업`
+    await writeOverride(
+      `${req.schoolCode}_${parts.grade}_${parts.classNm}`,
+      req.date,
+      req.period,
+      subject,
+      `${req.requesterName} 선생님과 교환`
+    )
   }
 
   const title = '교환 수락됨 🙌'
@@ -304,6 +331,7 @@ export async function acceptDirectRequest(req: DirectSwapRequest, actor: SwapAct
     const snap = await tx.get(ref)
     if (!snap.exists()) throw new Error('요청을 찾을 수 없어요.')
     if (normalizeStatus(snap.data().status) !== 'pending') throw new Error('이미 처리된 요청이에요.')
+    if (isPastSwapDate(snap.data().date)) throw new Error('날짜가 지난 요청이에요.')
     tx.update(ref, {
       status: 'accepted',
       acceptedAt: serverTimestamp(),
@@ -360,6 +388,7 @@ export async function acceptPublicRequest(req: PublicSwapRequest, actor: SwapAct
     const snap = await tx.get(ref)
     if (!snap.exists()) throw new Error('요청을 찾을 수 없어요.')
     if (normalizeStatus(snap.data().status) !== 'pending') throw new Error('이미 다른 선생님이 수락했어요.')
+    if (isPastSwapDate(snap.data().date)) throw new Error('날짜가 지난 요청이에요.')
     tx.update(ref, {
       status: 'accepted',
       acceptedAt: serverTimestamp(),

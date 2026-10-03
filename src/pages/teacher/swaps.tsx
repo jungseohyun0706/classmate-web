@@ -11,6 +11,7 @@ import {
   cancelRequest,
   declineDirectRequest,
   formatSwapDate,
+  isPastSwapDate,
   listPublic,
   listReceived,
   listSent,
@@ -33,6 +34,22 @@ const STATUS_CHIP: Record<SwapStatus, { label: string; cls: string }> = {
   accepted: { label: '수락됨', cls: 'bg-green-100 text-green-700' },
   declined: { label: '거절됨', cls: 'bg-red-100 text-red-600' },
   cancelled: { label: '취소됨', cls: 'bg-gray-100 text-gray-500' },
+}
+
+// 수업 날짜가 지난 대기중 요청 — 수락은 막고 거절/취소로 정리만 할 수 있게 함
+const EXPIRED_CHIP = { label: '지난 요청', cls: 'bg-gray-100 text-gray-500' }
+
+const isExpired = (req: SwapRequest) => req.status === 'pending' && isPastSwapDate(req.date)
+
+// 알림 문서는 같은 학교 사용자 누구나 만들 수 있으므로 같은 출처의 앱 내부 경로만 따라감.
+// '/'로 시작해도 '//evil', '/\evil', 탭·줄바꿈이 섞인 주소는 외부로 해석될 수 있어 출처까지 확인
+function isAppPath(url: unknown): url is string {
+  if (typeof url !== 'string' || !url.startsWith('/') || url.startsWith('//') || url.startsWith('/\\')) return false
+  try {
+    return new URL(url, window.location.origin).origin === window.location.origin
+  } catch {
+    return false
+  }
 }
 
 interface InboxNotification {
@@ -117,7 +134,6 @@ export default function SwapsInboxPage() {
   const actor = () => ({
     uid: uid as string,
     name: userData?.displayName || '선생님',
-    classId: userData?.classId || null,
   })
 
   const handleAccept = async (req: DirectSwapRequest) => {
@@ -202,13 +218,13 @@ export default function SwapsInboxPage() {
         console.error(e)
       }
     }
-    if (n.url) {
+    if (isAppPath(n.url)) {
       router.push(n.url)
     }
   }
 
-  const StatusChip = ({ status }: { status: SwapStatus }) => {
-    const chip = STATUS_CHIP[status] ?? STATUS_CHIP.pending
+  const StatusChip = ({ status, expired }: { status: SwapStatus; expired?: boolean }) => {
+    const chip = expired ? EXPIRED_CHIP : STATUS_CHIP[status] ?? STATUS_CHIP.pending
     return (
       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${chip.cls}`}>
         {chip.label}
@@ -257,7 +273,7 @@ export default function SwapsInboxPage() {
     )
   }
 
-  const pendingReceived = received.filter((r) => r.status === 'pending').length
+  const pendingReceived = received.filter((r) => r.status === 'pending' && !isExpired(r)).length
 
   return (
     <div className="min-h-screen bg-gray-50 py-6 sm:py-10 px-4 sm:px-6 lg:px-8">
@@ -318,17 +334,19 @@ export default function SwapsInboxPage() {
                     </div>
                     <RequestMeta req={req} />
                   </div>
-                  <StatusChip status={req.status} />
+                  <StatusChip status={req.status} expired={isExpired(req)} />
                 </div>
                 {req.status === 'pending' && (
                   <div className="mt-3 flex gap-2">
-                    <button
-                      onClick={() => handleAccept(req)}
-                      disabled={processingId === req.id}
-                      className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
-                    >
-                      수락
-                    </button>
+                    {!isExpired(req) && (
+                      <button
+                        onClick={() => handleAccept(req)}
+                        disabled={processingId === req.id}
+                        className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+                      >
+                        수락
+                      </button>
+                    )}
                     <button
                       onClick={() => handleDecline(req)}
                       disabled={processingId === req.id}
@@ -363,7 +381,7 @@ export default function SwapsInboxPage() {
                       <p className="mt-1 text-xs text-green-600 font-medium">{req.accepterName} 선생님이 수락했어요.</p>
                     )}
                   </div>
-                  <StatusChip status={req.status} />
+                  <StatusChip status={req.status} expired={isExpired(req)} />
                 </div>
                 {req.status === 'pending' && (
                   <div className="mt-3">
@@ -409,9 +427,9 @@ export default function SwapsInboxPage() {
                       <RequestMeta req={req} />
                       {req.note && <p className="mt-1 text-sm text-gray-500 break-keep">💬 {req.note}</p>}
                     </div>
-                    <StatusChip status={req.status} />
+                    <StatusChip status={req.status} expired={isExpired(req)} />
                   </div>
-                  {req.status === 'pending' && !mine && (
+                  {req.status === 'pending' && !mine && !isExpired(req) && (
                     <div className="mt-3">
                       <button
                         onClick={() => handleAcceptPublic(req)}
