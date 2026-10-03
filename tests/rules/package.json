@@ -1,0 +1,7 @@
+{
+  "name": "classmate-rules-tests",
+  "private": true,
+  "type": "module",
+  "main": "rules.test.mjs",
+  "description": "Firestore 보안 규칙 테스트 — 로컬 에뮬레이터 전용(저장소 루트 node_modules의 firebase·firebase-admin 사용). 실행: FIRESTORE_EMULATOR_HOST=127.0.0.1:포트 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:포트 node --test tests/rules/"
+}

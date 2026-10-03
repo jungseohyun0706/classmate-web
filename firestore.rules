@@ -60,6 +60,58 @@ service cloud.firestore {
             || (('extraClassIds' in myDoc()) && classId in myDoc().extraClassIds));
     }
 
+    // 권한 필드: 교사·학생 모두 users 문서에 스스로 만들거나 바꿀 수 없는 키 (부여는 서버만)
+    // (학교 관리자 권한을 클라이언트가 자기 문서에 써서 얻는 경로 차단 — 서버도 이 값을 클라이언트 입력으로 받지 않음)
+    function privilegedUserKeys() {
+      return ['isSchoolAdmin', 'schoolAdmin', 'isAdmin', 'admin', 'roles', 'permissions', 'claims', 'adminSchoolCodes'];
+    }
+
+    // 맵 d의 키 k가 없거나 null인지
+    function absent(d, k) {
+      return !(k in d) || d[k] == null;
+    }
+
+    // 개인 일정(users/{uid}/personalEntries) 형식 검증
+    // {title 1~40자, kind 'weekly'|'once', weekday 1~7(weekly 필수), date YYYYMMDD(once 필수), period 0~10,
+    //  start/end 'HH:MM'(둘 다 있으면 start < end), roomName ≤30자, memo ≤200자, linkedCourseId, createdAt, updatedAt}
+    // 이 밖의 키(source, synced, pendingSync 등 화면 계산 값)는 받지 않습니다 — 공식 수업처럼 보이게 꾸미는 경로 차단.
+    function personalEntryOk(d) {
+      return d.keys().hasOnly(['title', 'kind', 'weekday', 'date', 'period', 'start', 'end',
+               'roomName', 'memo', 'linkedCourseId', 'createdAt', 'updatedAt'])
+        && d.title is string
+        && d.title.trim().size() > 0
+        && d.title.size() <= 40
+        && d.kind in ['weekly', 'once']
+        && (absent(d, 'weekday') || (d.weekday is int && d.weekday >= 1 && d.weekday <= 7))
+        && (absent(d, 'date')
+            || (d.date is string && d.date.matches('^[0-9]{4}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])$')))
+        && (d.kind != 'weekly' || !absent(d, 'weekday'))
+        && (d.kind != 'once' || !absent(d, 'date'))
+        && (absent(d, 'period') || (d.period is int && d.period >= 0 && d.period <= 10))
+        && (absent(d, 'start') || (d.start is string && d.start.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')))
+        && (absent(d, 'end') || (d.end is string && d.end.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')))
+        && (absent(d, 'start') || absent(d, 'end') || d.start < d.end)
+        && (absent(d, 'roomName') || (d.roomName is string && d.roomName.size() <= 30))
+        && (absent(d, 'memo') || (d.memo is string && d.memo.size() <= 200))
+        && (absent(d, 'linkedCourseId') || d.linkedCourseId is string);
+    }
+
+    // 요청자 학교의 수강 문서 경로 (결정적 id: {courseId}__{uid})
+    function myEnrollmentPath(courseId) {
+      return /databases/$(database)/documents/schools/$(myDoc().schoolCode)/enrollments/$(courseId + '__' + request.auth.uid);
+    }
+
+    // 개인 일정의 공식 수업 연결: 없거나(null) 요청자 본인의 active 수강이 있는 수업만
+    // (과목명만으로 임의 연결하거나, 듣지 않는·승인 대기·끝난 수업에 연결해 자동 변경을 받는 것처럼 보이게 하는 경로 차단)
+    function linkedCourseOk(d) {
+      return absent(d, 'linkedCourseId')
+        || (d.linkedCourseId is string
+            && d.linkedCourseId.matches('^[A-Za-z0-9_-]{1,120}$')
+            && exists(myEnrollmentPath(d.linkedCourseId))
+            && get(myEnrollmentPath(d.linkedCourseId)).data.get('uid', '') == request.auth.uid
+            && get(myEnrollmentPath(d.linkedCourseId)).data.get('status', '') == 'active');
+    }
+
     // ── users/{uid}: 사용자 프로필 ──────────────────────────
     match /users/{uid} {
       // 생성: 클라이언트는 만들 수 없습니다 — 서버(API)만 생성합니다.
@@ -78,12 +130,19 @@ service cloud.firestore {
       //            (반 이동 신청은 /api/join, 승인·거절은 새 반 담임이 /api/class-membership으로).
       //            schoolCode는 클라이언트가 처음 정하거나 바꿀 수 없습니다(타학교 명단 열람 방지).
       //            교사는 /api/set-school(NEIS 확인 + 같은 학교 교사 알림), 학생은 /api/join이 서버에서 정합니다.
+      //            학생 번호(studentId)도 서버만 씁니다(/api/join·초대 수락·반 이동 승인) — 명단 가져오기 연결이
+      //            '같은 반 승인 학생 중 번호가 같은 1명'을 후보로 쓰므로, 학생이 번호를 바꾸면 다른 학생의 수업
+      //            연결을 가로채거나(번호 없는 학생 자리) 막을(같은 번호 둘 → 모호) 수 있었습니다.
+      //            joinSeq(입장·이동·그룹 참여 신청 일련번호 — 교사 알림 중복 방지 id)도 서버만 올립니다.
+      //            권한 필드(isSchoolAdmin 등, privilegedUserKeys)는 교사·학생 모두 만들거나 바꿀 수 없습니다.
       //            (fcmTokens, mySchedule, displayName 등은 자유롭게 수정 가능)
       allow update: if me(uid)
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(resource.data.role == 'student'
-               ? ['role', 'status', 'classId', 'extraClassIds', 'pendingClassId', 'pendingStudentId', 'pendingAt']
+               ? ['role', 'status', 'classId', 'extraClassIds', 'pendingClassId', 'pendingStudentId', 'pendingAt',
+                  'studentId', 'joinSeq']
                : ['role'])
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(privilegedUserKeys())
         && request.resource.data.get('schoolCode', null) == resource.data.get('schoolCode', null);
 
       // 수정(교사): 승인/거절만 — 그 학생이 신청한 반(classId)의 담임(수업 그룹이면 소유 교사)이
@@ -106,7 +165,10 @@ service cloud.firestore {
         //       앱이 쓰는 형식{title, body, url, createdAt, read:false}만 허용하고,
         //       url은 앱 내부 상대 경로만 받습니다. (검사가 없으면 알림을 위조하거나
         //       javascript:·외부 링크를 심어 알림함에서 누르게 만들 수 있었습니다.)
+        //       문서 id는 addDoc 자동 id(20자 영숫자)만 — 서버가 중복 방지용으로 쓰는 고정 id
+        //       (sched_…, schedreq_…, join_… 등 '_' 포함)를 클라이언트가 먼저 만들어 서버 알림을 막지 못하게.
         allow create: if signedIn()
+          && nid.matches('^[A-Za-z0-9]{20}$')
           && myDoc().schoolCode == userDoc(uid).schoolCode
           && request.resource.data.keys().hasOnly(['title', 'body', 'url', 'createdAt', 'read'])
           && request.resource.data.title is string
@@ -136,6 +198,30 @@ service cloud.firestore {
       match /bagChecks/{ymd} {
         // 읽기/쓰기: 본인만
         allow read, write: if me(uid);
+      }
+
+      // ── users/{uid}/personalEntries/{entryId}: 개인 일정(직접 입력) ──
+      // 본인만 읽고 씁니다(담임·교사도 읽을 수 없음). 공식 수업(schools/{s}/…)과 쓰기 경로가 분리되어 있어
+      // 개인 일정을 고쳐도 공식 시간표·다른 학생에게 영향이 없습니다. 형식은 personalEntryOk.
+      // 작성 시각은 서버 시각: 만들 때 createdAt(updatedAt을 함께 넣으면 그것도), 고칠 때 updatedAt. createdAt은 고칠 수 없음.
+      // linkedCourseId는 값을 새로 넣거나 바꿀 때만 본인 active 수강을 확인합니다 — 이미 연결된 일정은 수강이 끝난 뒤에도
+      // 메모를 고치거나 연결을 풀(null) 수 있습니다(연결이 끝난 일정은 화면 계산에서 개인 일정으로 돌아감).
+      // 개수 제한은 규칙으로 할 수 없어 앱에서 제한합니다.
+      match /personalEntries/{entryId} {
+        allow read, delete: if me(uid);
+
+        allow create: if me(uid)
+          && personalEntryOk(request.resource.data)
+          && linkedCourseOk(request.resource.data)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.get('updatedAt', request.time) == request.time;
+
+        allow update: if me(uid)
+          && personalEntryOk(request.resource.data)
+          && (request.resource.data.get('linkedCourseId', null) == resource.data.get('linkedCourseId', null)
+              || linkedCourseOk(request.resource.data))
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['createdAt'])
+          && request.resource.data.updatedAt == request.time;
       }
     }
 
@@ -488,6 +574,89 @@ service cloud.firestore {
     match /school_timetables/{schoolCode} {
       allow read: if isTeacher() && sameSchool(schoolCode);
       allow write: if false;
+    }
+
+    // ── schools/{schoolCode}: 학교 · 개인 시간표 공식 자료 ─────────────
+    // 수업반(courses)·반복 차시(series)·차시 변경(overrides)·수강(enrollments)·학기(terms)·교실(rooms)·
+    // 변경 묶음(changeSets)·감사 기록(audit)·가져오기 배치(importBatches/rows)·수강 명단(rosterEntries)은
+    // 서버(API, firebase-admin)만 씁니다 — 클라이언트 쓰기는 담당 교사라도 모두 거부합니다
+    // (권한·충돌·버전·감사 기록을 서버 트랜잭션이 함께 처리하므로).
+    // 학생의 공식 시간표는 /api/timetable/me가 본인 수강 범위만 돌려줍니다. 학생이 학교 전체 시간표나
+    // 다른 학생 수강을 직접 읽는 경로는 없고, 학생에게 열린 것은 학교 문서와 본인 수강 문서뿐입니다.
+    // 다른 학교 사용자는 교사라도 읽을 수 없습니다. 여기 없는 하위 경로(rosterBatches 등)는 기본 거부(서버만).
+    match /schools/{schoolCode} {
+      function schoolTeacher() {
+        return isTeacher() && sameSchool(schoolCode);
+      }
+
+      // 학교 문서 {name, kind, officeCode, timezone, scheduleRevision, updatedAt}
+      // 읽기: 같은 학교 로그인 사용자 — 학생 화면이 scheduleRevision을 구독해 바뀌면 시간표를 다시 받습니다.
+      allow read: if sameSchool(schoolCode);
+      allow write: if false;
+
+      // 수강 {courseId, uid, status, from, to, source, …}
+      // 읽기: 본인 문서(where('uid', '==', 내 uid) 쿼리 포함) 또는 같은 학교 교사.
+      //       필터 없는 목록·수업별 목록은 남의 수강이 섞이므로 학생에게 거부됩니다.
+      match /enrollments/{enrollmentId} {
+        allow read: if (signedIn() && resource.data.uid == request.auth.uid) || schoolTeacher();
+        allow write: if false;
+      }
+
+      // 공식 시간표 자료: 같은 학교 교사만 읽기, 쓰기는 서버만
+      match /courses/{courseId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+      match /series/{seriesId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+      match /overrides/{overrideId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+      match /terms/{termId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+      match /rooms/{roomId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+
+      // 운영 기록: 같은 학교 교사만 읽기, 쓰기는 서버만 (감사 기록에는 토큰·개인정보를 넣지 않음)
+      match /changeSets/{changeSetId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+      match /audit/{auditId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+      match /importBatches/{batchId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+
+        match /rows/{rowId} {
+          allow read: if schoolTeacher();
+          allow write: if false;
+        }
+      }
+      match /rosterEntries/{entryId} {
+        allow read: if schoolTeacher();
+        allow write: if false;
+      }
+    }
+
+    // ── invitations/{code}: 학급·수업 초대 (+ uses/{uid} 사용 기록) ──
+    // 서버(/api/invitations)만 읽고 씁니다. 공개 미리보기도 API가 최소 정보만 돌려줍니다.
+    // (클라이언트 읽기를 열면 목록 조회로 유효한 초대 코드가, 사용 기록으로 참여 학생이 새어 나갈 수 있음)
+    match /invitations/{code} {
+      allow read, write: if false;
+
+      match /{sub=**} {
+        allow read, write: if false;
+      }
     }
 
     // ── meal_ratings/{docId}: 급식 별점 (다음 단계 기능 대비) ──
