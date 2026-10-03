@@ -8,7 +8,7 @@
  * - 오프라인에서도 쓰기가 로컬에 먼저 반영되고(hasPendingWrites → pendingSync '저장 대기'), 서버 반영은 committed 프로미스로 알립니다.
  * - 규칙과 같은 입력 검증을 클라이언트에서도 합니다(제목 1~40자, 메모 ≤200, 교실 ≤30, 교시 0~10, 시각 HH:MM, 끝>시작).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   collection,
   deleteDoc,
@@ -323,20 +323,81 @@ export interface PersonalEntriesState {
 const EMPTY_ENTRIES: PersonalEntriesState = { entries: [], loaded: false, error: null, hasPendingWrites: false }
 const PERSONAL_READY_TIMEOUT_MS = 3000
 
-/** 화면용: 본인 개인 일정 구독 훅(계정이 바뀌면 이전 계정 결과는 쓰지 않음) */
+/**
+ * 구독 오류 뒤 다시 구독하기 — Firestore 구독은 오류가 나면 끝나므로(권한 오류: 새 규칙 배포 전후, 세션 만료 등)
+ * 화면 복귀·포커스·온라인 복구 때만 다시 시작합니다. 간격은 5초부터 두 배씩(최대 5분), 서버 결과를 받기 전까지 최대 8번.
+ */
+export const PERSONAL_RESUBSCRIBE = { maxAttempts: 8, minGapMs: 5_000, maxGapMs: 5 * 60_000 } as const
+
+export interface PersonalResubscribeState {
+  /** 마지막 서버 결과 뒤 다시 구독한 횟수(서버 결과를 받으면 0) */
+  attempts: number
+  /** 마지막으로 구독을 시작한 시각(ms) */
+  startedAt: number
+}
+
+/** 지금 다시 구독해도 되는지(순수 함수) — 포커스·visibilitychange가 한꺼번에 와도 한 번만, 계속 막혀도 몇 번만 */
+export function canResubscribePersonal(r: PersonalResubscribeState, now: number): boolean {
+  if (r.attempts >= PERSONAL_RESUBSCRIBE.maxAttempts) return false
+  const gap = Math.min(PERSONAL_RESUBSCRIBE.minGapMs * 2 ** r.attempts, PERSONAL_RESUBSCRIBE.maxGapMs)
+  return now - r.startedAt >= gap
+}
+
+/**
+ * 화면 복귀(visibilitychange → visible)·포커스·온라인 복구 때 canResubscribePersonal이면 resubscribe() — r을 직접 갱신.
+ * 반환값: 이벤트 해제 함수
+ */
+export function watchPersonalResubscribe(r: PersonalResubscribeState, resubscribe: () => void): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
+  const wake = () => {
+    if (document.visibilityState === 'hidden') return
+    const now = Date.now()
+    if (!canResubscribePersonal(r, now)) return
+    r.attempts++
+    r.startedAt = now
+    resubscribe()
+  }
+  window.addEventListener('focus', wake)
+  document.addEventListener('visibilitychange', wake)
+  window.addEventListener('online', wake)
+  return () => {
+    window.removeEventListener('focus', wake)
+    document.removeEventListener('visibilitychange', wake)
+    window.removeEventListener('online', wake)
+  }
+}
+
+/**
+ * 화면용: 본인 개인 일정 구독 훅(계정이 바뀌면 이전 계정 결과는 쓰지 않음).
+ * 구독 오류면 오류를 보여 주다가 화면 복귀·포커스 때 다시 구독(watchPersonalResubscribe) — 새로 고치지 않아도 풀림.
+ */
 export function usePersonalEntries(uid: string | null): PersonalEntriesState {
   const [state, setState] = useState<{ uid: string | null; value: PersonalEntriesState }>({ uid: null, value: EMPTY_ENTRIES })
+  const [attempt, setAttempt] = useState(0)
+  const retryRef = useRef<PersonalResubscribeState & { uid: string | null }>({ uid: null, attempts: 0, startedAt: 0 })
   useEffect(() => {
     if (!uid) return
+    const retry = retryRef.current
+    if (retry.uid !== uid) {
+      retry.uid = uid
+      retry.attempts = 0
+    }
+    retry.startedAt = Date.now()
     let got = false
-    // 오프라인 첫 연결 등으로 첫 결과가 늦으면 빈 목록으로 먼저 진행(나중 결과가 오면 바뀜) — 시간표가 스켈레톤에 묶이지 않게
+    // 오프라인 첫 연결 등으로 첫 결과가 늦으면 빈 목록으로 먼저 진행(나중 결과가 오면 바뀜) — 시간표가 스켈레톤에 묶이지 않게.
+    // 다시 구독할 때는 이미 보여 주던 결과(오류 포함)를 새 결과가 올 때까지 그대로 둠
     const timer = setTimeout(() => {
-      if (!got) setState({ uid, value: { entries: [], loaded: true, error: null, hasPendingWrites: false } })
+      if (got) return
+      setState((prev) =>
+        prev.uid === uid && prev.value.loaded ? prev : { uid, value: { entries: [], loaded: true, error: null, hasPendingWrites: false } }
+      )
     }, PERSONAL_READY_TIMEOUT_MS)
     const unsub = subscribePersonalEntries(
       uid,
       (entries, meta) => {
         got = true
+        // 캐시 결과만으로는 횟수를 되돌리지 않음(캐시 → 서버 거부가 반복돼도 시도 횟수가 쌓이게)
+        if (!meta.fromCache) retry.attempts = 0
         setState({ uid, value: { entries, loaded: true, error: null, hasPendingWrites: meta.hasPendingWrites } })
       },
       (e) => {
@@ -351,6 +412,13 @@ export function usePersonalEntries(uid: string | null): PersonalEntriesState {
       clearTimeout(timer)
       unsub()
     }
-  }, [uid])
+  }, [uid, attempt])
+
+  const failed = !!uid && state.uid === uid && !!state.value.error
+  useEffect(() => {
+    if (!uid || !failed) return
+    return watchPersonalResubscribe(retryRef.current, () => setAttempt((a) => a + 1))
+  }, [uid, failed])
+
   return uid && state.uid === uid ? state.value : EMPTY_ENTRIES
 }

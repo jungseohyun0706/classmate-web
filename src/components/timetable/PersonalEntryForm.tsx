@@ -20,6 +20,7 @@ import {
   type WriteOutcome,
 } from '../../lib/timetable/personalEntries'
 import type { Course, PeriodTime, PersonalEntry, Weekday, Ymd } from '../../lib/timetable/types'
+import { auth } from '../../lib/firebase'
 import { useUI } from '../ui/feedback'
 import { lessonTitle, shortDateKo } from './LessonCard'
 
@@ -214,13 +215,28 @@ export function waitForCommit(committed: Promise<void>, onLateFailure?: (code: s
   })
 }
 
-/** 쓰기 오류 문구(Firestore 오류 code 기준) */
-export function personalWriteErrorText(code: string, linking = false): string {
+/**
+ * 이 기기의 로그인이 풀렸거나(다른 탭에서 로그아웃·세션 만료) 다른 계정으로 바뀌었는지.
+ * 이때 쓰면 규칙(본인만)에 막혀 permission-denied가 오므로 다시 로그인을 안내합니다. 알 수 없으면 false
+ */
+function sessionLost(uid?: string | null): boolean {
+  if (!auth) return false
+  const u = auth.currentUser
+  return !u || (!!uid && u.uid !== uid)
+}
+
+/**
+ * 쓰기 오류 문구(Firestore 오류 code 기준). uid를 주면 다른 계정으로 바뀐 경우도 로그인 문제로 봅니다.
+ * permission-denied는 로그인이 풀렸을 때만 다시 로그인을 안내 — 로그인 상태에서 막히면(입력은 화면에서 이미 검증)
+ * 새 규칙 배포 전후처럼 잠깐 저장할 수 없는 경우라 중립 문구로 안내합니다.
+ */
+export function personalWriteErrorText(code: string, linking = false, uid?: string | null): string {
   switch (code) {
     case 'permission-denied':
+      if (sessionLost(uid)) return '로그인이 풀렸거나 다른 계정으로 바뀌었어요. 다시 로그인해 주세요.'
       return linking
         ? '참여 중인(승인된) 공식 수업에만 연결할 수 있어요. 내 수업 목록을 새로 고친 뒤 다시 골라 주세요.'
-        : '저장할 권한이 없어요. 입력 내용을 확인하거나 다시 로그인해 주세요.'
+        : '지금은 저장할 수 없어요. 잠시 후 다시 시도해 주세요.'
     case 'unauthenticated':
       return '로그인이 필요해요. 다시 로그인해 주세요.'
     case 'unavailable':
@@ -569,7 +585,7 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
         : createPersonalEntry(uid, draft, opts)
     } catch (err) {
       setSaving(false)
-      setFormError(personalWriteErrorText(errCode(err), linking))
+      setFormError(personalWriteErrorText(errCode(err), linking, uid))
       return
     }
     if (!out.ok) {
@@ -585,11 +601,11 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
     }
     const entryId = out.entryId
     const res = await waitForCommit(out.committed, (code) => {
-      toast(`저장 대기였던 일정을 저장하지 못했어요 — ${personalWriteErrorText(code, linking)}`, 'error')
+      toast(`저장 대기였던 일정을 저장하지 못했어요 — ${personalWriteErrorText(code, linking, uid)}`, 'error')
     })
     if (res.kind === 'failed') {
       setSaving(false)
-      setFormError(personalWriteErrorText(res.code, linking))
+      setFormError(personalWriteErrorText(res.code, linking, uid))
       return
     }
     setSaving(false)
