@@ -267,7 +267,9 @@ export default function NoticeList() {
             name: String(m.name || '이름 없음'),
             studentId: Number(m.studentId ?? 0),
           }))
-        list.sort((a, b) => a.studentId - b.studentId)
+        // 번호 없는 학생(0/null)은 맨 앞이 아니라 뒤로 보냅니다.
+        const no = (v: number) => (v > 0 ? v : Number.MAX_SAFE_INTEGER)
+        list.sort((a, b) => no(a.studentId) - no(b.studentId) || a.name.localeCompare(b.name, 'ko'))
         setStudents(list)
         setRosterFailed(false)
       }
