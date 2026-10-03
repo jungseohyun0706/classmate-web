@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { onAuthStateChanged } from 'firebase/auth'
 import { auth, db } from '../../lib/firebase'
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 import { storedClassGridToInfoTimetable } from '../../lib/timetableConvert'
 
@@ -35,6 +35,16 @@ export default function RegisterClass() {
   // 이미 담임인 반 (반 변경 모드 안내용)
   const [currentClassLabel, setCurrentClassLabel] = useState('')
 
+  // 학교(schoolCode)는 한 번 정해지면 바꿀 수 없음(보안 규칙). 다른 학교를 고르면 쓰기 전에 막고 안내
+  const schoolLocked = (me: any, school: School) => {
+    if (!me?.schoolCode || String(me.schoolCode) === school.code) return false
+    toast(
+      `학교는 바꿀 수 없어요. ${me.schoolName || '이미 등록된 학교'}의 반만 등록할 수 있어요. (학교를 옮기셨다면 관리자에게 문의해 주세요)`,
+      'error'
+    )
+    return true
+  }
+
   // 담임이 아닌(교과 전담 등) 선생님: 반 없이 학교 소속만 등록
   const handleSchoolOnly = async () => {
     if (!selectedSchool) return
@@ -52,6 +62,7 @@ export default function RegisterClass() {
         router.replace('/student/today')
         return
       }
+      if (schoolLocked(meSnap.exists() ? meSnap.data() : null, selectedSchool)) return
       await setDoc(
         doc(db, 'users', user.uid),
         {
@@ -85,6 +96,20 @@ export default function RegisterClass() {
         }
         if (d.classId && d.schoolName) {
           setCurrentClassLabel(`${d.schoolName} ${d.grade}학년 ${d.classNm}반`)
+        }
+        // 이미 학교를 등록한 선생님(학교만 등록 → 담임 반 추가 등)은 학교를 바꿀 수 없으니 바로 학년·반 입력으로
+        if (d.schoolCode && d.schoolName && d.officeCode) {
+          setSelectedSchool(
+            (cur) =>
+              cur ?? {
+                code: String(d.schoolCode),
+                officeCode: String(d.officeCode),
+                name: String(d.schoolName),
+                address: '',
+                kind: '',
+              }
+          )
+          setStep(1)
         }
       } catch (e) {
         console.error(e)
@@ -136,7 +161,14 @@ export default function RegisterClass() {
         router.replace('/student/today')
         return
       }
-      const prevClassId = meSnap.exists() ? String(meSnap.data().classId || '') : ''
+      // 아래 쓰기가 권한 오류로 막히는 원인을 미리 걸러, 실패 문구가 실제 원인과 맞게 함
+      if (!meSnap.exists() || meSnap.data().role !== 'teacher') {
+        toast('가입이 아직 끝나지 않은 계정이에요. 다시 로그인해 교사 인증 코드를 입력해 주세요.', 'error')
+        return
+      }
+      const me = meSnap.data()
+      if (schoolLocked(me, selectedSchool)) return
+      const prevClassId = String(me.classId || '')
 
       // 고유 반 ID 생성 (학교코드_학년_반)
       // 이렇게 하면 중복 생성을 방지하거나 쉽게 찾을 수 있음
@@ -145,9 +177,13 @@ export default function RegisterClass() {
       const classNum = parseInt(classNm, 10)
       const classId = `${selectedSchool.code}_${gradeNum}_${classNum}`
 
+      // 1~2.5를 한 batch로: 어느 하나라도 규칙에 막히면 전부 취소되어,
+      // 반 문서만 내 것으로 점유된 채 남는 일이 없게 함
+      const batch = writeBatch(db)
+
       // 1. Classes 컬렉션에 반 정보 저장
       // setDoc을 쓰면 이미 있으면 덮어쓰기(업데이트) 됨
-      await setDoc(doc(db, 'classes', classId), {
+      batch.set(doc(db, 'classes', classId), {
         classId: classId,
         schoolCode: selectedSchool.code,
         officeCode: selectedSchool.officeCode,
@@ -155,12 +191,13 @@ export default function RegisterClass() {
         grade: gradeNum,
         classNm: classNum,
         teacherId: user.uid,
-        teacherName: user.displayName || '담임 선생님',
+        // Auth displayName은 이메일 가입이면 비어 있음 → users 문서의 이름을 먼저
+        teacherName: me.displayName || me.name || me.masterName || user.displayName || '담임 선생님',
         createdAt: serverTimestamp()
       }, { merge: true })
 
-      // 2. 선생님 계정(Users)에 내 반 정보 연결 (없으면 생성)
-      await setDoc(doc(db, 'users', user.uid), {
+      // 2. 선생님 계정(Users)에 내 반 정보 연결
+      batch.set(doc(db, 'users', user.uid), {
         classId: classId,
         schoolCode: selectedSchool.code,
         officeCode: selectedSchool.officeCode,
@@ -171,17 +208,23 @@ export default function RegisterClass() {
       }, { merge: true })
 
       // 2.5. 반을 바꾼 경우: 이전 반의 담임 자리를 비워 다른 선생님이 맡을 수 있게 함
+      // (이전 반이 아직 내 담임 반일 때만 — 아니면 해제 쓰기가 거부되어 batch 전체가 실패함)
       if (prevClassId && prevClassId !== classId) {
         try {
-          await setDoc(
-            doc(db, 'classes', prevClassId),
-            { teacherId: null, teacherName: '담임 미정' },
-            { merge: true }
-          )
+          const prevSnap = await getDoc(doc(db, 'classes', prevClassId))
+          if (prevSnap.exists() && prevSnap.data().teacherId === user.uid) {
+            batch.set(
+              doc(db, 'classes', prevClassId),
+              { teacherId: null, teacherName: '담임 미정' },
+              { merge: true }
+            )
+          }
         } catch (releaseErr) {
-          console.error('이전 반 담임 해제 실패:', releaseErr)
+          console.error('이전 반 확인 실패(해제 생략):', releaseErr)
         }
       }
+
+      await batch.commit()
 
       // 3. 학교 시간표 엑셀(마스터)이 이미 업로드돼 있으면 우리 반 시간표를 자동으로 채움
       try {
@@ -206,6 +249,7 @@ export default function RegisterClass() {
 
     } catch (e: any) {
       console.error(e)
+      // 계정·학교 문제는 위에서 걸렀으니, 남은 권한 오류는 반 문서의 담임이 다른 선생님인 경우
       if (String(e?.code || e?.message || '').includes('permission')) {
         toast('이미 다른 선생님이 담임으로 등록된 반이에요. 학년·반을 다시 확인해 주세요.', 'error')
       } else {

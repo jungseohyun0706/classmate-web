@@ -10,10 +10,11 @@ import { getAdminApp, isAdminConfigured, verifyIdToken } from '../../lib/fcm-adm
 // - 같은 학교 교사: 전체 명단(승인 대기 포함) + 인원수
 // - 이 반의 승인된 학생: 인원수만
 
-// 출석번호 등 숫자 필드가 '12번' 같은 값이어도 JSON에 NaN(null)이 새지 않게 정규화
-function toFiniteNumber(v: unknown): number {
-  const n = Number(v ?? 0)
-  return Number.isFinite(n) ? n : 0
+// 출석번호는 가입 때 선택 항목이라 없는 학생이 많음. 없거나 숫자가 아니면 0이 아니라 null('번호 없음')로
+// 내려줘야 화면에서 0번으로 표시·맨 앞 정렬되지 않음
+function toStudentNo(v: unknown): number | null {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
+  return Number.isFinite(n) && n > 0 ? n : null
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -78,7 +79,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     type Member = {
       id: string
       name: string
-      studentId: number
+      studentId: number | null
       status: 'pending' | 'approved'
       homeClassId?: string
     }
@@ -95,7 +96,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       members.push({
         id: d.id,
         name: String(v.name || v.displayName || '이름 없음'),
-        studentId: toFiniteNumber(v.studentId),
+        studentId: toStudentNo(v.studentId),
         status,
       })
     })
@@ -106,7 +107,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       members.push({
         id: d.id,
         name: String(v.name || v.displayName || '이름 없음'),
-        studentId: toFiniteNumber(v.studentId),
+        studentId: toStudentNo(v.studentId),
         status: 'approved',
         homeClassId: typeof v.classId === 'string' ? v.classId : undefined,
       })

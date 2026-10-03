@@ -9,6 +9,7 @@ import {
   collection,
   doc,
   getDoc,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -23,7 +24,7 @@ import { normalizeName } from '../../lib/timetableConvert'
 type Student = {
   id: string
   name: string
-  studentId: number // 출석번호
+  studentId: number | null // 출석번호 (없으면 null)
   status: 'pending' | 'approved' | 'rejected'
   /** 추가 참여 학생의 본반 classId (본반 학생이면 undefined) */
   homeClassId?: string
@@ -90,6 +91,7 @@ export default function StudentList() {
   const [rosters, setRosters] = useState<Record<string, Student[]>>({})
   const [rosterLoading, setRosterLoading] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [rosterReload, setRosterReload] = useState(0)
 
   // 직접 추가 입력
   const [addGrade, setAddGrade] = useState('')
@@ -225,7 +227,7 @@ export default function StudentList() {
         const list: Student[] = (Array.isArray(data.members) ? data.members : []).map((m: any) => ({
           id: String(m.id),
           name: String(m.name || '이름 없음'),
-          studentId: Number(m.studentId ?? 0),
+          studentId: typeof m.studentId === 'number' && m.studentId > 0 ? m.studentId : null,
           status: m.status === 'approved' ? 'approved' : 'pending',
           homeClassId: typeof m.homeClassId === 'string' ? m.homeClassId : undefined,
         }))
@@ -249,7 +251,41 @@ export default function StudentList() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId])
+  }, [activeId, rosterReload])
+
+  // 캐시된 명단이 실제와 달라졌을 때: 그 탭 캐시를 버리고 다시 불러옴
+  const refreshRoster = (tabId: string) => {
+    setRosters((cur) => {
+      const next = { ...cur }
+      delete next[tabId]
+      return next
+    })
+    setRosterReload((n) => n + 1)
+  }
+
+  // 명단은 탭마다 한 번만 불러오므로 그사이 학생이 다른 반 QR로 다시 신청했을 수 있음.
+  // 지금도 이 반에 대기 중일 때만 승인/거절 (아니면 다른 반 담임 모르게 처리돼 버림)
+  const decidePending = (studentId: string, classId: string, status: 'approved' | 'rejected') =>
+    runTransaction(db, async (tx) => {
+      const ref = doc(db, 'users', studentId)
+      const snap = await tx.get(ref)
+      if (!snap.exists()) return 'done' as const
+      const v = snap.data()
+      if (String(v.classId ?? '') !== classId) return 'moved' as const
+      if (v.status !== 'pending') return 'done' as const
+      tx.update(ref, { status })
+      return 'ok' as const
+    })
+
+  const notifyStale = (student: Student, result: 'moved' | 'done', tabId: string) => {
+    toast(
+      result === 'moved'
+        ? `${student.name} 학생이 다른 반으로 신청을 옮겼어요.`
+        : `${student.name} 학생의 신청은 이미 처리되었어요.`,
+      'info'
+    )
+    refreshRoster(tabId)
+  }
 
   // 엑셀 이름 직접 선택 → 계정에 영구 연결(masterName) + 제안 갱신
   const pickMasterName = async (name: string) => {
@@ -356,7 +392,11 @@ export default function StudentList() {
       [tabId]: prev.map((s) => (s.id === student.id ? { ...s, status: 'approved' as const } : s)),
     }))
     try {
-      await updateDoc(doc(db, 'users', student.id), { status: 'approved' })
+      const result = await decidePending(student.id, tabId, 'approved')
+      if (result !== 'ok') {
+        notifyStale(student, result, tabId)
+        return
+      }
       toast('승인했어요', 'success')
       try {
         const title = '우리 반 입장 완료 🎉'
@@ -404,7 +444,11 @@ export default function StudentList() {
     const prev = rosters[tabId] || []
     setRosters((cur) => ({ ...cur, [tabId]: prev.filter((s) => s.id !== student.id) }))
     try {
-      await updateDoc(doc(db, 'users', student.id), { status: 'rejected' })
+      const result = await decidePending(student.id, tabId, 'rejected')
+      if (result !== 'ok') {
+        notifyStale(student, result, tabId)
+        return
+      }
       toast('거절했어요', 'success')
     } catch (e) {
       console.error(e)
@@ -568,7 +612,7 @@ export default function StudentList() {
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                           <div className="flex items-center min-w-0">
                             <span className="h-9 w-9 shrink-0 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-sm mr-3">
-                              {student.studentId}
+                              {student.studentId ?? '-'}
                             </span>
                             <div className="min-w-0">
                               <div className="text-sm font-medium text-gray-900 truncate">{student.name}</div>
@@ -626,7 +670,7 @@ export default function StudentList() {
                     {approvedStudents.map((student) => (
                       <li key={student.id} className="px-4 py-4 sm:px-6 flex items-center hover:bg-gray-50">
                         <span className="h-9 w-9 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-sm mr-3">
-                          {student.studentId}
+                          {student.studentId ?? '-'}
                         </span>
                         <div className="min-w-0 flex items-center gap-2">
                           <div className="text-sm font-medium text-gray-900 truncate">{student.name}</div>

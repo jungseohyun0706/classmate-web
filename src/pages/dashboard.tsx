@@ -16,6 +16,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [pendingSwaps, setPendingSwaps] = useState(0)
   const [hasMasterTimetable, setHasMasterTimetable] = useState(false)
+  const [incomplete, setIncomplete] = useState(false)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -31,6 +32,10 @@ export default function Dashboard() {
           const data = snap.data()
           if (data?.role === 'student') {
             router.replace('/student/today')
+            return
+          }
+          if (data?.role !== 'teacher') {
+            setIncomplete(true)
             return
           }
           setUserData(data)
@@ -55,6 +60,9 @@ export default function Dashboard() {
               console.error(e)
             }
           }
+        } else {
+          // users 문서 없음 = 교사 코드 등록이나 학생 입장 신청이 끝나지 않은 계정 → 교사 화면 대신 안내
+          setIncomplete(true)
         }
       } catch (e) {
         console.error(e)
@@ -71,6 +79,47 @@ export default function Dashboard() {
   }
 
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>
+
+  if (incomplete) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-10 text-black">
+        <div className="max-w-md w-full bg-white shadow-xl rounded-2xl border border-gray-100 p-6 sm:p-8">
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900 text-center break-keep">가입이 아직 끝나지 않았어요</h1>
+          <p className="mt-2 text-sm text-gray-600 text-center break-keep">
+            계정은 만들어졌지만 선생님 인증이나 반 입장 신청이 마무리되지 않았어요.
+          </p>
+          <div className="mt-6 space-y-3">
+            <div className="rounded-xl bg-blue-50 border border-blue-100 p-4">
+              <p className="text-sm font-bold text-blue-900">🧑‍🏫 선생님이라면</p>
+              <p className="mt-1 text-xs text-blue-800 break-keep">
+                다시 로그인하면 교사 인증 코드를 입력하는 단계로 이어져요.
+              </p>
+              <button
+                onClick={handleLogout}
+                className="mt-3 w-full min-h-[44px] rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition"
+              >
+                다시 로그인해서 코드 입력하기
+              </button>
+            </div>
+            <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4">
+              <p className="text-sm font-bold text-emerald-900">🎒 학생이라면</p>
+              <p className="mt-1 text-xs text-emerald-800 break-keep">
+                선생님이 보여 주는 반 입장 QR을 다시 찍으면 이 계정으로 입장 신청을 이어서 할 수 있어요.
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 text-center">
+            <button
+              onClick={handleLogout}
+              className="min-h-[44px] px-3 text-sm text-gray-500 underline hover:text-gray-700"
+            >
+              로그아웃
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const hasClass = userData?.classId && userData?.schoolName
   const hasSchool = !!userData?.schoolCode
@@ -114,8 +163,8 @@ export default function Dashboard() {
       desc: '반마다 공지·대화가 한곳에 — 실시간 채팅.',
       icon: <svg className="h-8 w-8 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" /></svg>,
       bgColor: 'bg-rose-100',
-      path: '/class-room',
-      needClass: true
+      // 담임 반이 없어도 수업 반 톡방이 있을 수 있음 — 반이 하나도 없으면 톡방 화면이 직접 안내함
+      path: '/class-room'
     },
     {
       id: 'class-timetable',
@@ -214,6 +263,15 @@ export default function Dashboard() {
           <p className="mt-2 text-base sm:text-lg text-gray-600 break-keep">
             {hasClass ? '오늘도 학생들과 즐거운 하루 보내세요.' : '먼저 담당하실 학급을 등록해주세요.'}
           </p>
+          {/* 학교만 등록한 선생님이 나중에 담임 반을 등록하는 입구 (학교가 없으면 학생 관리 카드가 등록 화면으로 안내) */}
+          {!hasClass && hasSchool && (
+            <button
+              onClick={() => router.push('/teacher/register-class')}
+              className="mt-3 inline-flex items-center min-h-[44px] px-4 rounded-xl bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition"
+            >
+              🏠 담임 반 등록하기
+            </button>
+          )}
         </div>
 
         {hasClass && userData?.schoolCode && (
@@ -239,7 +297,8 @@ export default function Dashboard() {
                   return
                 }
                 if (card.needClass && !hasClass) {
-                  toast('먼저 반을 등록해야 해요.', 'info')
+                  toast('먼저 담임 반을 등록해야 해요.', 'info')
+                  router.push('/teacher/register-class')
                   return
                 }
                 router.push(card.path)
