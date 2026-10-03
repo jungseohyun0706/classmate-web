@@ -25,6 +25,7 @@ export default function RegisterClass() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<School[]>([])
   const [searching, setSearching] = useState(false)
+  const [searchFailed, setSearchFailed] = useState(false)
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null)
 
   // Class Info State
@@ -124,10 +125,17 @@ export default function RegisterClass() {
     if (!query.trim()) return
     setSearching(true)
     setResults([])
+    setSearchFailed(false)
     
     try {
       // API 파라미터를 query -> q로 수정하여 schools.ts와 맞춤
       const res = await fetch(`/api/schools?q=${encodeURIComponent(query)}`)
+      // NEIS 장애는 오류 상태로 오므로 '검색 결과 없음'과 구분해서 알림
+      if (!res.ok) {
+        setSearchFailed(true)
+        toast('학교 검색에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+        return
+      }
       const data = await res.json()
       if (Array.isArray(data)) {
         setResults(data)
@@ -135,7 +143,8 @@ export default function RegisterClass() {
         setResults(data.schools)
       }
     } catch (err) {
-      toast('학교 검색 중 오류가 발생했어요', 'error')
+      setSearchFailed(true)
+      toast('학교 검색에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSearching(false)
     }
@@ -326,7 +335,7 @@ export default function RegisterClass() {
                 ))}
                 {results.length === 0 && query && !searching && (
                   <div className="text-center text-gray-500 py-4">
-                    검색 결과가 없습니다.
+                    {searchFailed ? '학교 검색에 실패했어요. 잠시 후 다시 시도해 주세요.' : '검색 결과가 없습니다.'}
                   </div>
                 )}
               </div>

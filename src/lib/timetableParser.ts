@@ -227,6 +227,8 @@ const findWideLayout = (grid: CellValue[][]): WideLayout | null => {
     for (let c = 1; c < Math.max(row.length, periodRow.length); c++) {
       const dayText = asText(row[c]);
       if (DAY_SET.has(dayText)) currentDay = (DAYS as readonly string[]).indexOf(dayText);
+      // '토' 등 월~금이 아닌 헤더면 그 아래 열은 버림 (빈 칸은 병합 셀이라 직전 요일 유지)
+      else if (dayText) currentDay = -1;
       const p = parseInt(asText(periodRow[c]), 10);
       if (currentDay >= 0 && Number.isFinite(p) && p >= 1 && p <= 15) {
         columns.push({ col: c, day: currentDay, period: p });

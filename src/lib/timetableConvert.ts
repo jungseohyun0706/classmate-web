@@ -81,7 +81,8 @@ export const storedClassGridToInfoTimetable = (
 
 // ── 업로드 페이로드 검증 (서버에서 신뢰 경계로 사용) ─────────────
 
-const NAME_RE = /^[가-힣a-zA-Z0-9·\s]{1,20}$/
+// 파서(looksLikeTeacherName)가 받아들이는 원어민 교사 이름의 . ' - 도 허용 (예: Mary-Jane, O'Neil, J. Smith)
+const NAME_RE = /^[가-힣a-zA-Z0-9·\s.'-]{1,20}$/
 const CLASS_LABEL_RE = /^\d{1,2}-\d{1,2}$/
 const MAX_CLASSES = 150
 const MAX_TEACHERS = 300

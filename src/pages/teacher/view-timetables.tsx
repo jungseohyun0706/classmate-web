@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -18,6 +18,8 @@ export default function ViewTimetables() {
   const [timetable, setTimetable] = useState<any>(null)
   const [schoolName, setSchoolName] = useState('')
   const [gradeFilter, setGradeFilter] = useState<number | 'all'>('all')
+  // 반을 빠르게 바꿀 때 늦게 도착한 이전 반 응답이 화면을 덮어쓰지 않도록 마지막으로 고른 반을 기억
+  const latestClassId = useRef<string | null>(null)
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -68,13 +70,23 @@ export default function ViewTimetables() {
   }, [router, toast])
 
   const loadTimetable = async (classId: string) => {
+    latestClassId.current = classId
     try {
       const { db } = await import('../../lib/firebase')
-      
-      // 1. 새로운 방식: classes/{classId} 문서의 timetable 필드 확인 (앱 연동 방식)
+
+      // 1. 원본: classes/{classId}/info/timetable (학급 시간표 관리·엑셀 업로드가 저장하고 학생 화면도 읽는 곳)
+      const snap = await getDoc(doc(db, 'classes', classId, 'info', 'timetable'))
+      if (latestClassId.current !== classId) return
+      if (snap.exists()) {
+        setTimetable(snap.data())
+        return
+      }
+
+      // 2. 구형 방식: classes/{classId} 문서의 timetable 필드 (모바일 앱 시절 데이터, 원본이 없을 때만)
       const classSnap = await getDoc(doc(db, 'classes', classId))
-      if (classSnap.exists() && classSnap.data().timetable) {
-        const rawItems = classSnap.data().timetable;
+      if (latestClassId.current !== classId) return
+      const rawItems = classSnap.exists() ? classSnap.data().timetable : null
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
         // TimetableItem[] 형식을 요일별 객체로 변환
         const formatted: any = { mon: [], tue: [], wed: [], thu: [], fri: [] };
         const dayMap: any = { '월': 'mon', '화': 'tue', '수': 'wed', '목': 'thu', '금': 'fri' };
@@ -90,13 +102,6 @@ export default function ViewTimetables() {
           }
         });
         setTimetable(formatted);
-        return;
-      }
-
-      // 2. 기존 방식: classes/{classId}/info/timetable 문서 확인
-      const snap = await getDoc(doc(db, 'classes', classId, 'info', 'timetable'))
-      if (snap.exists()) {
-        setTimetable(snap.data())
       } else {
         setTimetable(null) // 시간표 없음
       }
@@ -189,7 +194,10 @@ export default function ViewTimetables() {
               <div className="bg-white shadow rounded-xl overflow-hidden border border-gray-200 animate-fade-in">
                 {/* 모바일 전용: 목록으로 돌아가기 */}
                 <button
-                  onClick={() => setSelectedClass(null)}
+                  onClick={() => {
+                    latestClassId.current = null
+                    setSelectedClass(null)
+                  }}
                   className="md:hidden w-full flex items-center gap-2 px-4 py-3 text-sm font-bold text-blue-600 bg-blue-50 border-b border-blue-100"
                 >
                   ← 다른 반 보기
@@ -216,7 +224,7 @@ export default function ViewTimetables() {
                             <td className="px-1.5 sm:px-4 py-3 text-center text-xs sm:text-sm font-bold text-gray-700 bg-gray-50 whitespace-nowrap">{period}</td>
                             {DAYS.map((day) => (
                               <td key={`${day}-${period}`} className="px-1 sm:p-3 py-3 text-center text-xs sm:text-sm text-gray-900 border-l border-gray-100 break-keep">
-                                {timetable[day][pIdx] || '-'}
+                                {timetable[day]?.[pIdx] || '-'}
                               </td>
                             ))}
                           </tr>

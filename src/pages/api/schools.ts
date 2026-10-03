@@ -1,7 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-
-// NEIS Open API URL
-const NEIS_API_URL = 'https://open.neis.go.kr/hub/schoolInfo'
+import { fetchNeisResult } from '../../lib/neis'
 
 export default async function handler(
   req: NextApiRequest,
@@ -15,25 +13,22 @@ export default async function handler(
   }
 
   try {
-    // NEIS API 호출 (KEY를 넣으면 더 좋음)
-    const apiUrl = `${NEIS_API_URL}?Type=json&pIndex=1&pSize=100&SCHUL_NM=${encodeURIComponent(q)}`
-    
-    const response = await fetch(apiUrl)
-    const data = await response.json()
+    // 공용 헬퍼를 거쳐야 NEIS_SERVICE_KEY가 붙음 (키가 없으면 NEIS가 최대 5건만 돌려줌)
+    const { ok, rows } = await fetchNeisResult('schoolInfo', { SCHUL_NM: q })
 
-    // NEIS 응답 데이터 구조 처리
-    if (data.schoolInfo && data.schoolInfo[1] && data.schoolInfo[1].row) {
-      const schools = data.schoolInfo[1].row.map((school: any) => ({
-        code: school.SD_SCHUL_CODE,
-        officeCode: school.ATPT_OFCDC_SC_CODE,
-        name: school.SCHUL_NM,
-        address: school.ORG_RDNMA,
-        kind: school.SCHUL_KND_SC_NM
-      }))
-      return res.status(200).json({ schools })
+    // NEIS 장애·오류는 '검색 결과 없음'(200 + 빈 배열)과 구분되도록 502로 응답
+    if (!ok) {
+      return res.status(502).json({ error: '학교 정보를 가져오는데 실패했습니다.' })
     }
 
-    return res.status(200).json({ schools: [] })
+    const schools = rows.map((school) => ({
+      code: school.SD_SCHUL_CODE,
+      officeCode: school.ATPT_OFCDC_SC_CODE,
+      name: school.SCHUL_NM,
+      address: school.ORG_RDNMA,
+      kind: school.SCHUL_KND_SC_NM
+    }))
+    return res.status(200).json({ schools })
 
   } catch (error) {
     console.error('NEIS API Error:', error)
