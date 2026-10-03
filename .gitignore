@@ -37,3 +37,9 @@ serviceAccountKey.json
 *.tsbuildinfo
 next-env.d.ts
 .env*
+
+# 테스트 전용 (로컬 실행 산출물)
+/tests/e2e/node_modules
+/tests/e2e/out-*
+/.test-dist
+/tests/fixtures/neis-mock.runtime.json
