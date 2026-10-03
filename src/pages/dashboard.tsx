@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../lib/firebase'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
@@ -6,9 +6,15 @@ import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firesto
 import TodayCard from '../components/TodayCard'
 import { useUI } from '../components/ui/feedback'
 import { useInstallPrompt } from '../components/ui/install'
+import InviteCodeInput from '../components/InviteCodeInput'
+import { usePendingInviteResume } from '../lib/pendingInvite'
 import { todayKstYmd } from '../lib/sos'
 
 export default function Dashboard() {
+  // 로그인 직후 저장된 초대가 있으면 /i/CODE로 이어감(PWA start_url이 /dashboard라 설치·재접속 후에도 여기로 옴)
+  const resumingInvite = usePendingInviteResume()
+  const resumingRef = useRef(false)
+  resumingRef.current = resumingInvite
   const router = useRouter()
   const { toast } = useUI()
   const { canInstall, promptInstall, isIOS, isStandalone, showInstallGuide } = useInstallPrompt()
@@ -32,7 +38,8 @@ export default function Dashboard() {
         if (snap.exists()) {
           const data = snap.data()
           if (data?.role === 'student') {
-            router.replace('/student/today')
+            // 초대 화면으로 이어가는 중이면 학생 홈으로 덮어쓰지 않음
+            if (!resumingRef.current) router.replace('/student/today')
             return
           }
           if (data?.role !== 'teacher') {
@@ -81,6 +88,15 @@ export default function Dashboard() {
     router.replace('/auth/login')
   }
 
+  if (resumingInvite) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-gray-50 text-gray-600">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <p className="text-sm">받은 초대를 이어서 여는 중...</p>
+      </div>
+    )
+  }
+
   if (loading) return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div></div>
 
   if (incomplete) {
@@ -107,8 +123,11 @@ export default function Dashboard() {
             <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4">
               <p className="text-sm font-bold text-emerald-900">🎒 학생이라면</p>
               <p className="mt-1 text-xs text-emerald-800 break-keep">
-                선생님이 보여 주는 반 입장 QR을 다시 찍으면 이 계정으로 입장 신청을 이어서 할 수 있어요.
+                선생님께 받은 초대 코드(XXXX-XXXX)를 입력하거나, 초대 링크·QR을 다시 열면 이 계정으로 이어서 참여할 수 있어요.
               </p>
+              <div className="mt-3">
+                <InviteCodeInput compact />
+              </div>
             </div>
           </div>
           <div className="mt-4 text-center">
@@ -161,6 +180,24 @@ export default function Dashboard() {
       path: hasSchool ? '/teacher/students' : '/teacher/register-class'
     },
     {
+      id: 'courses',
+      title: '수업 관리',
+      desc: '수업 만들기·수업 초대·수강생 승인·반 공통 수업.',
+      icon: <svg className="h-8 w-8 text-violet-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>,
+      bgColor: 'bg-violet-100',
+      path: '/teacher/courses',
+      needSchool: true
+    },
+    {
+      id: 'schedule-changes',
+      title: '시간표 변경',
+      desc: '이 날짜만 / 지정일부터 — 수강생에게만 반영.',
+      icon: <svg className="h-8 w-8 text-pink-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h4m-4 4h3M5 21h6M5 21a2 2 0 01-2-2V7a2 2 0 012-2h14a2 2 0 012 2v4m-3.5 2.5l2 2L14 21h-2v-2l5.5-5.5z" /></svg>,
+      bgColor: 'bg-pink-100',
+      path: '/teacher/schedule-changes',
+      needSchool: true
+    },
+    {
       id: 'class-room',
       title: '학급별 톡방',
       desc: '반마다 공지·대화가 한곳에 — 실시간 채팅.',
@@ -187,6 +224,24 @@ export default function Dashboard() {
       icon: <svg className="h-8 w-8 text-cyan-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>,
       bgColor: 'bg-cyan-100',
       path: '/teacher/upload-timetable',
+      needSchool: true
+    },
+    {
+      id: 'timetable-import',
+      title: '시간표 가져오기',
+      desc: '교실별·교사별·전체 시간표 엑셀을 수업으로 연결.',
+      icon: <svg className="h-8 w-8 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M3 14h18M10 3v18M5 3h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z" /></svg>,
+      bgColor: 'bg-emerald-100',
+      path: '/teacher/timetable-import',
+      needSchool: true
+    },
+    {
+      id: 'roster-import',
+      title: '수강 명단 가져오기',
+      desc: '학생별 수강 명단으로 수업에 학생을 연결.',
+      icon: <svg className="h-8 w-8 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" /></svg>,
+      bgColor: 'bg-amber-100',
+      path: '/teacher/roster-import',
       needSchool: true
     },
     {

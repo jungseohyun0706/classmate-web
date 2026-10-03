@@ -2,6 +2,7 @@
 import React from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
+import InviteCodeInput from '../components/InviteCodeInput';
 
 const LandingPage = () => {
   const appName = 'Classmate';
@@ -51,13 +52,23 @@ const LandingPage = () => {
               복잡한 학급 관리는 선생님용 앱으로, 즐거운 학교 생활은 학생용 앱으로 시작해보세요.
             </p>
 
-            <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
-              <button className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg hover:bg-gray-800 transition-all">
-                Google Play 출시 예정
-              </button>
-              <button className="px-8 py-4 bg-white text-gray-900 border-2 border-gray-100 rounded-2xl font-bold text-lg hover:border-gray-200 transition-all">
-                iOS 앱스토어 준비 중
-              </button>
+            {/* 설치·참여: 실제로 동작하는 경로만(웹앱 설치 안내, 초대 코드). 스토어 주소가 확인되기 전에는 스토어 버튼을 두지 않습니다. */}
+            <div className="flex flex-col gap-4 max-w-md">
+              <Link
+                href="/install"
+                className="flex items-center justify-center gap-3 min-h-[44px] px-6 py-4 bg-gray-900 text-white rounded-2xl font-bold text-lg hover:bg-gray-800 transition-all"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/icons/icon-192.png" alt="" width={28} height={28} className="h-7 w-7 rounded-lg" />
+                앱 설치 안내
+              </Link>
+              <div className="rounded-2xl border-2 border-gray-100 p-4">
+                <p className="text-base font-bold text-gray-900">초대 코드 입력</p>
+                <p className="mt-0.5 mb-3 text-sm text-gray-500 break-keep">
+                  학생은 선생님께 받은 초대 코드(XXXX-XXXX)로 학급·수업에 참여해요.
+                </p>
+                <InviteCodeInput compact />
+              </div>
             </div>
           </div>
 

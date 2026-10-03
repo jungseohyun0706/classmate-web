@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
 import {
@@ -10,6 +11,18 @@ import {
   type User,
 } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
+import InviteCodeInput from '../../components/InviteCodeInput'
+import {
+  clearPendingInvite,
+  formatInviteCode,
+  invitePath,
+  isInvitePath,
+  normalizeInviteCode,
+  readPendingInvite,
+  safeNextPath,
+} from '../../lib/pendingInvite'
+import { missingProfileStep } from '../../lib/authRouting'
+import { useHydrated } from '../../lib/useHydrated'
 
 const GoogleIcon = () => (
   <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
@@ -23,6 +36,7 @@ const GoogleIcon = () => (
 const ROLE_CHECK_FAILED = '계정 정보를 확인하지 못했어요. 네트워크를 확인하고 다시 시도해 주세요.'
 
 export default function LoginPage() {
+  const hydrated = useHydrated()
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -32,12 +46,49 @@ export default function LoginPage() {
   const [info, setInfo] = useState<string | null>(null)
 
   // 구글로 처음 들어온 사용자 → 교사 인증 코드 단계
-  const [mode, setMode] = useState<'login' | 'code'>('login')
+  // choose = 계정은 있지만 프로필이 없는 계정(가입 미완료): 학생(초대 코드) / 선생님(교사 인증) 갈래
+  const [mode, setMode] = useState<'login' | 'code' | 'choose'>('login')
   const [pendingUser, setPendingUser] = useState<User | null>(null)
   const [signupCode, setSignupCode] = useState('')
   const [codeLoading, setCodeLoading] = useState(false)
   // 이메일 인증 전 교사는 로그아웃시키므로, 인증 메일 재전송에 쓸 User를 따로 보관해요.
   const [unverifiedUser, setUnverifiedUser] = useState<User | null>(null)
+
+  // 로그인 뒤 돌아갈 곳: ?next=(같은 사이트 상대 경로만 — 임의 리디렉션 방지) → 보관 중인 초대(/i/코드) → 역할별 기본 화면
+  // (프로필 없는 계정은 보관된 초대로 자동 이동하지 않음 — routeMissing)
+  const nextParam = safeNextPath(router.query.next)
+  const safeNext = nextParam && !nextParam.startsWith('/auth/') ? nextParam : null
+  const nextQuery = safeNext ? `?next=${encodeURIComponent(safeNext)}` : ''
+  const [pendingCode, setPendingCode] = useState<string | null>(null)
+  useEffect(() => {
+    setPendingCode(readPendingInvite())
+  }, [])
+
+  const nextIsInvite = !!safeNext && isInvitePath(safeNext)
+  /** 로그인 완료 뒤 이동: ?next → 보관 중인 초대 → 기본 화면 */
+  const afterLogin = (fallback: string): string => {
+    if (safeNext) return safeNext
+    const code = readPendingInvite()
+    return code ? invitePath(code) : fallback
+  }
+  /**
+   * 프로필이 없는 계정: ?next가 초대(초대 화면에서 '로그인하고 참여')면 그 초대로, 아니면 학생/선생님 갈래 화면.
+   * 보관된 초대만으로는 자동 이동하지 않음 — 이 브라우저에 남은 초대 때문에 구글로 처음 로그인한 선생님이
+   * 교사 인증 단계로 갈 수 없고 초대를 수락하면 학생 프로필이 생기던 문제. 보관된 초대는 갈래 화면의 학생 쪽 버튼으로 이어감.
+   */
+  const routeMissing = (user: User) => {
+    const step = missingProfileStep(nextIsInvite ? safeNext : null, readPendingInvite())
+    if (step.kind === 'invite') {
+      router.replace(step.path)
+      return
+    }
+    setPendingCode(step.resumeCode)
+    setPendingUser(user)
+    setMode('choose')
+  }
+  // 화면 위 안내용: 이 로그인이 어떤 초대로 이어지는지(?next가 초대면 그 코드, ?next가 없으면 보관 중인 초대)
+  const bannerCode = nextIsInvite ? (safeNext!.startsWith('/i/') ? normalizeInviteCode(safeNext) : null) : !safeNext ? pendingCode : null
+  const showInviteBanner = nextIsInvite || !!bannerCode
 
   /**
    * 로그인 성공 후 공통 처리: users 문서의 role에 따라 이동
@@ -69,11 +120,11 @@ export default function LoginPage() {
       const cred = await signInWithPopup(auth, provider)
       const role = await routeByRole(cred.user)
       if (role === 'student') {
-        router.replace('/student/today')
+        router.replace(afterLogin('/student/today'))
         return
       }
       if (role === 'teacher') {
-        router.replace('/dashboard')
+        router.replace(afterLogin('/dashboard'))
         return
       }
       // 읽기 실패를 '처음 온 사용자'로 착각해 코드 단계로 보내지 않아요.
@@ -84,9 +135,8 @@ export default function LoginPage() {
         setError(ROLE_CHECK_FAILED)
         return
       }
-      // 처음 온 사용자 → 교사 인증 코드 입력 단계
-      setPendingUser(cred.user)
-      setMode('code')
+      // 처음 온 사용자(프로필 없음) → ?next가 초대면 그 초대로, 아니면 학생/선생님 갈래
+      routeMissing(cred.user)
     } catch (e: any) {
       console.error(e)
       const code = e?.code || ''
@@ -125,6 +175,10 @@ export default function LoginPage() {
         setError(data?.error || '등록 처리 중 오류가 발생했어요.')
         return
       }
+      // 교사 계정은 학생 초대를 수락할 수 없으므로 이 브라우저에 보관된 초대를 지움
+      // (지우지 않으면 대시보드·다음 로그인이 새 선생님을 학생 초대 화면으로 다시 보냄)
+      clearPendingInvite()
+      setPendingCode(null)
       // 이메일(비밀번호) 계정은 인증 메일을 확인해야 대시보드에 들어갈 수 있어요.
       const isPasswordUser = pendingUser.providerData.some((p) => p.providerId === 'password')
       if (isPasswordUser && !pendingUser.emailVerified) {
@@ -188,7 +242,7 @@ export default function LoginPage() {
       // 학생: 이메일 인증 없이 바로 오늘 페이지로 이동해요.
       // (승인 대기 중이어도 /student/today 에서 대기 상태를 안내합니다)
       if (role === 'student') {
-        router.replace('/student/today')
+        router.replace(afterLogin('/student/today'))
         return
       }
 
@@ -200,10 +254,10 @@ export default function LoginPage() {
         return
       }
 
-      // 교사 등록(complete-signup)이 끝나지 않은 계정 → 구글과 같이 코드 단계에서 이어서 등록
+      // 프로필이 없는 계정(교사 등록이나 학생 초대 수락 전) → ?next가 초대면 그 초대로 이어가고,
+      // 아니면 바로 교사 코드 단계로 보내지 않고 학생(초대 코드) / 선생님(교사 인증) 중 고르게 함
       if (role === 'missing') {
-        setPendingUser(user)
-        setMode('code')
+        routeMissing(user)
         return
       }
 
@@ -219,7 +273,7 @@ export default function LoginPage() {
         return
       }
 
-      router.replace('/dashboard')
+      router.replace(afterLogin('/dashboard'))
     } catch (e: any) {
       console.error(e)
       const msg = (e && e.message) || String(e)
@@ -281,10 +335,91 @@ export default function LoginPage() {
         </p>
       </div>
 
+      {showInviteBanner && mode === 'login' && (
+        <div className="mt-6 w-full max-w-lg mx-auto rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+          <p className="text-sm font-bold text-emerald-900 break-keep">
+            {/* 보관된 초대만 있을 때는 프로필 없는 계정을 자동으로 보내지 않으므로(갈래 화면에서 고름) 학생 기준으로 안내 */}
+            {nextIsInvite ? '로그인하면 받은 초대로 돌아가서 이어서 참여해요' : '받은 초대가 있어요 — 학생은 로그인하면 이어서 참여해요'}
+            {bannerCode ? (
+              <>
+                {' '}
+                <span className="font-mono tracking-widest whitespace-nowrap">({formatInviteCode(bannerCode)})</span>
+              </>
+            ) : null}
+          </p>
+          <p className="mt-1 text-sm text-emerald-800 break-keep">
+            계정이 없다면{' '}
+            <Link href={`/auth/register${nextQuery}`} className="font-bold underline">
+              처음이에요 (가입)
+            </Link>
+            를 눌러 주세요.
+          </p>
+        </div>
+      )}
+
       <div className="mt-8 w-full max-w-lg mx-auto">
         <div className="bg-white py-10 px-6 shadow-xl rounded-2xl sm:px-12 border border-gray-100">
-          {mode === 'code' ? (
-            <form className="space-y-6" onSubmit={onSubmitCode}>
+          {mode === 'choose' ? (
+            <div className="space-y-5">
+              {errorBox}
+              <div className="text-center">
+                <p className="text-lg font-bold text-gray-900">가입이 아직 끝나지 않았어요</p>
+                <p className="mt-2 text-sm text-gray-600 break-all">
+                  {pendingUser?.email || '이'} 계정은 아직 학생이나 선생님으로 등록되지 않았어요.
+                </p>
+              </div>
+              <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4">
+                <p className="text-sm font-bold text-emerald-900">
+                  <span aria-hidden="true">🎒 </span>
+                  {pendingCode ? '학생이면 받은 초대로 이어서 참여하세요' : '학생이면 초대 코드를 입력하세요'}
+                </p>
+                {pendingCode ? (
+                  <>
+                    <p className="mt-1 mb-3 text-xs text-emerald-800 break-keep">
+                      이 브라우저에서 열었던 초대예요. 참여하면 이 계정이 학생으로 등록돼요.
+                    </p>
+                    <Link
+                      href={invitePath(pendingCode)}
+                      className="block w-full min-h-[44px] rounded-lg bg-emerald-600 px-3 py-3 text-center text-white text-sm font-bold break-keep hover:bg-emerald-700 transition"
+                    >
+                      받은 초대로 이어서 참여{' '}
+                      <span className="font-mono tracking-widest whitespace-nowrap">({formatInviteCode(pendingCode)})</span>
+                    </Link>
+                    <p className="mt-3 mb-2 text-xs text-emerald-800 break-keep">다른 초대 코드를 받았다면 입력하세요.</p>
+                  </>
+                ) : (
+                  <p className="mt-1 mb-3 text-xs text-emerald-800 break-keep">
+                    선생님께 받은 초대 코드(XXXX-XXXX)를 입력하면 이 계정으로 이어서 참여해요. 입장 QR이 있다면 다시 찍어도 돼요.
+                  </p>
+                )}
+                <InviteCodeInput compact />
+              </div>
+              <div className="rounded-xl bg-blue-50 border border-blue-100 p-4">
+                <p className="text-sm font-bold text-blue-900">
+                  <span aria-hidden="true">🧑‍🏫 </span>선생님이면 교사 인증
+                </p>
+                <p className="mt-1 text-xs text-blue-800 break-keep">학교에서 받은 교사 인증 코드로 등록을 마쳐요.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null)
+                    setMode('code')
+                  }}
+                  className="mt-3 w-full min-h-[44px] rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-700 transition"
+                >
+                  교사 인증 코드 입력하기
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={cancelCodeStep}
+                className="w-full min-h-[44px] flex justify-center items-center text-sm text-gray-500 hover:text-gray-700"
+              >
+                다른 계정으로 로그인
+              </button>
+            </div>
+          ) : mode === 'code' ? (
+            <form className="space-y-6" method="post" onSubmit={onSubmitCode}>
               {errorBox}
               <div className="text-center">
                 <p className="text-lg font-bold text-gray-900">처음 오셨네요! 👋</p>
@@ -311,7 +446,7 @@ export default function LoginPage() {
               </div>
               <button
                 type="submit"
-                disabled={codeLoading}
+                disabled={!hydrated || codeLoading}
                 className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-lg font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
               >
                 {codeLoading ? '등록 중...' : '교사로 등록하기'}
@@ -324,7 +459,17 @@ export default function LoginPage() {
                 다른 계정으로 로그인
               </button>
               <p className="text-xs text-gray-400 text-center leading-relaxed">
-                학생이신가요? 담임 선생님이 보내주신 초대 링크(QR)로 가입해 주세요.
+                학생이신가요?{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null)
+                    setMode('choose')
+                  }}
+                  className="inline-flex min-h-[44px] items-center font-medium text-emerald-700 underline"
+                >
+                  초대 코드 입력으로 돌아가기
+                </button>
               </p>
             </form>
           ) : (
@@ -365,7 +510,7 @@ export default function LoginPage() {
                 </div>
               </div>
 
-              <form className="space-y-5 mt-4" onSubmit={onSubmit}>
+              <form className="space-y-5 mt-4" method="post" onSubmit={onSubmit}>
                 <div>
                   <label htmlFor="email" className="block text-base font-medium text-gray-700 mb-2">
                     이메일
@@ -406,9 +551,9 @@ export default function LoginPage() {
 
                 <div className="flex items-center justify-between">
                   <div className="text-sm">
-                    <a href="/auth/register" className="font-medium text-blue-600 hover:text-blue-500 text-base">
+                    <Link href={`/auth/register${nextQuery}`} className="font-medium text-blue-600 hover:text-blue-500 text-base">
                       회원가입
-                    </a>
+                    </Link>
                   </div>
                   <div className="text-sm">
                     <a href="/auth/forgot" className="font-medium text-gray-600 hover:text-gray-500 text-base">
@@ -423,7 +568,7 @@ export default function LoginPage() {
                 <div>
                   <button
                     type="submit"
-                    disabled={loading}
+                    disabled={!hydrated || loading}
                     className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-lg font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {loading ? (
@@ -463,6 +608,16 @@ export default function LoginPage() {
             </>
           )}
         </div>
+        {/* 설치한 앱을 처음 연 학생 등: 로그인 전에 초대 코드부터 확인할 수 있게(초대 화면에서 로그인·가입으로 이어짐) */}
+        {mode === 'login' && !showInviteBanner && (
+          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+            <p className="text-sm font-bold text-emerald-900 break-keep">학생인가요? 받은 초대 코드가 있다면</p>
+            <p className="mt-0.5 mb-3 text-xs text-emerald-800 break-keep">
+              코드를 먼저 입력하면 초대 화면에서 로그인하거나 가입하고 이어서 참여해요.
+            </p>
+            <InviteCodeInput compact />
+          </div>
+        )}
         <p className="mt-6 text-center text-sm text-gray-400">
           &copy; 2026 Classmate. All rights reserved.
         </p>
