@@ -6,6 +6,18 @@
 //  - 특별실시간표: 특별실별 블록, 셀 = "반코드 과목\n교사"
 //  - 전체시간표: 행=반, 열=요일×교시 평면화, 셀 = "과목\n교사(\n특별실)"
 //  - 주간시간표: 행=교사("이름(총시수)"), 열=요일×교시 평면화, 셀 = "반코드\n과목"
+//
+// 새 개인 시간표(수업·차시)로 가져올 때는 맨 아래 extractImportRows를 쓴다 — 칸마다 출처(시트·행·열)를
+// 남기고, 역산·보충 없이 파일에 실제로 있던 칸만 돌려준다. parseTimetableSheets의 동작은 그대로다.
+
+import type { Weekday } from './timetable/types';
+import {
+  normalizeClassLabel,
+  normalizeTeacherName,
+  normSpace,
+  parseTimeText,
+  type ImportRow,
+} from './timetable/importRows';
 
 export type CellValue = string | number | null | undefined;
 
@@ -493,3 +505,476 @@ export const compareClassLabels = (a: string, b: string): number => {
   if (Number.isFinite(pa[1]) && Number.isFinite(pb[1])) return pa[1] - pb[1];
   return a.localeCompare(b, 'ko');
 };
+
+// ======================================================================
+// 가져오기(새 개인 시간표)용 추출 — 칸 단위 출처
+// - 파일에 실제로 있던 칸만 ImportRow로 만든다(반표↔교사표 역산, 특별실 보충 없음).
+// - 토·일 열, 8교시 이상, 분반 접두어('A_영어') 그대로 둔다(cleanSubject 적용 안 함).
+// - 시트 유형은 자동 판별하되 교사가 화면에서 바꿀 수 있다(kinds 옵션).
+// - 어느 칸이 같은 수업인지 합치는 일은 매칭 단계(importMatch)가 한다.
+// ======================================================================
+
+/** 병합 셀(시트 절대 좌표, 0부터) — SheetJS ws['!merges'] 형식 */
+export interface MergeRange {
+  s: { r: number; c: number };
+  e: { r: number; c: number };
+}
+
+export interface ImportSheetInput extends SheetInput {
+  /** 시트 사용 범위 시작(0부터, SheetJS decode_range(ws['!ref']).s) — grid[0][0]의 원본 위치 */
+  origin?: { r: number; c: number };
+  /** 병합 셀. 한 줄(세로 또는 가로)로 이어진 작은 병합만 '여러 교시로 이어진 수업'으로 읽는다 */
+  merges?: MergeRange[];
+}
+
+/** 교사가 고른 시트 유형. 'table'은 열 매핑(mapTableRows)으로 따로 읽으므로 여기서는 건너뜀 */
+export type ImportSheetChoice = 'auto' | 'class' | 'teacher' | 'room' | 'table' | 'skip';
+
+export interface SheetDetection {
+  name: string;
+  layout: 'block' | 'wide' | 'none';
+  /** 자동 판별 결과(확정 아님) */
+  detected: 'class' | 'teacher' | 'room' | 'mixed' | 'unknown';
+  blocks: { class: number; teacher: number; room: number };
+  rowCount: number;
+  /** 판별 근거(화면 표시용) */
+  note: string;
+}
+
+export interface ImportWarning {
+  sheet: string;
+  row?: number;
+  col?: number;
+  message: string;
+}
+
+export interface ImportExtractResult {
+  rows: ImportRow[];
+  sheets: SheetDetection[];
+  warnings: ImportWarning[];
+  /** 블록형 교시 칸에 적힌 시각(처음 본 값) */
+  periodTimes: Record<number, { start: string; end?: string }>;
+  /** 병합 셀이라 위 칸 값으로 읽은 칸 수 */
+  mergedCells: number;
+}
+
+type ImportCellKind = 'class' | 'teacher' | 'room';
+
+const ALL_DAYS = ['월', '화', '수', '목', '금', '토', '일'] as const;
+
+/** 요일 머리글 → ISO 요일(월=1 … 일=7), 아니면 0. '월', '월요일', '(월)' */
+const dayOfHeader = (v: CellValue): number => {
+  const t = asText(v).replace(/[()\s]/g, '').replace(/요일$/, '');
+  const i = (ALL_DAYS as readonly string[]).indexOf(t);
+  return i >= 0 ? i + 1 : 0;
+};
+
+/** "1교시\n(09:10)", "1교시(09:10~09:55)" → 교시·시작·종료 */
+const parsePeriodCellEx = (v: CellValue): { period: number; start?: string; end?: string } | null => {
+  const t = asText(v);
+  const m = t.match(/^(\d+)\s*교시/);
+  if (!m) return null;
+  const period = parseInt(m[1], 10);
+  if (!(period >= 1)) return null;
+  const tm = t.slice(m[0].length).match(/(\d{1,2}:\d{2})(?:\s*[~\-–]\s*(\d{1,2}:\d{2}))?/);
+  const out: { period: number; start?: string; end?: string } = { period };
+  const start = tm ? parseTimeText(tm[1]) : null;
+  const end = tm && tm[2] ? parseTimeText(tm[2]) : null;
+  if (start) out.start = start;
+  if (end) out.end = end;
+  return out;
+};
+
+interface ImportBlock {
+  title: string;
+  /** 머리글 행(grid 인덱스) */
+  titleRow: number;
+  dayCols: { col: number; weekday: number }[];
+  rows: { r: number; period: number; start?: string; end?: string }[];
+}
+
+/** "제목 | 월 화 수 …(토·일 포함)" 머리글로 시작하는 블록들 */
+const findImportBlocks = (grid: CellValue[][]): ImportBlock[] => {
+  const blocks: ImportBlock[] = [];
+  for (let r = 0; r < grid.length; r++) {
+    const row = grid[r] || [];
+    const title = asText(row[0]);
+    if (!title || !(dayOfHeader(row[1]) && dayOfHeader(row[2]) && dayOfHeader(row[3]))) continue;
+    const dayCols: ImportBlock['dayCols'] = [];
+    for (let c = 1; c < row.length; c++) {
+      const wd = dayOfHeader(row[c]);
+      if (!wd) break;
+      dayCols.push({ col: c, weekday: wd });
+    }
+    const rows: ImportBlock['rows'] = [];
+    for (let rr = r + 1; rr < grid.length; rr++) {
+      const p = parsePeriodCellEx((grid[rr] || [])[0]);
+      if (!p) break;
+      rows.push({ r: rr, ...p });
+    }
+    if (rows.length > 0) blocks.push({ title, titleRow: r, dayCols, rows });
+  }
+  return blocks;
+};
+
+/** 기존 블록 판별(classifyBlock)을 그대로 쓰기 위한 변환 */
+const toLegacyBlock = (b: ImportBlock, grid: CellValue[][]): Block => ({
+  title: b.title,
+  headerRow: b.titleRow,
+  rows: b.rows.map((row) => ({
+    period: row.period,
+    time: row.start,
+    cells: b.dayCols.map((dc) => (grid[row.r] || [])[dc.col]),
+  })),
+});
+
+const wideKindOf = (label: string): ImportCellKind | null => {
+  switch (label.replace(/\s+/g, '')) {
+    case '학급':
+    case '학년반':
+      return 'class';
+    case '교사':
+    case '교사명':
+    case '선생님':
+      return 'teacher';
+    case '특별실':
+    case '교실':
+      return 'room';
+    default:
+      return null;
+  }
+};
+
+interface ImportWide {
+  headerRow: number;
+  label: string;
+  kind: ImportCellKind;
+  columns: { col: number; weekday: number; period: number }[];
+}
+
+/** 평면형(행=반/교사/교실, 열=요일×교시). 토·일 열도 버리지 않음 */
+const findImportWide = (grid: CellValue[][]): ImportWide | null => {
+  for (let r = 0; r < Math.min(grid.length, 10); r++) {
+    const row = grid[r] || [];
+    const label = asText(row[0]);
+    const kind = wideKindOf(label);
+    if (!kind) continue;
+    const periodRow = grid[r + 1] || [];
+    const columns: ImportWide['columns'] = [];
+    let currentDay = 0;
+    for (let c = 1; c < Math.max(row.length, periodRow.length); c++) {
+      const wd = dayOfHeader(row[c]);
+      if (wd) currentDay = wd;
+      // 요일이 아닌 머리글이면 그 아래 열은 수업 칸이 아님(빈 칸은 병합 셀이라 직전 요일 유지)
+      else if (asText(row[c])) currentDay = 0;
+      const p = parseInt(asText(periodRow[c]), 10);
+      if (currentDay && Number.isFinite(p) && p >= 1 && p <= 20) columns.push({ col: c, weekday: currentDay, period: p });
+    }
+    if (columns.length >= 10) return { headerRow: r, label, kind, columns };
+  }
+  return null;
+};
+
+interface SheetScan {
+  detection: SheetDetection;
+  wide: ImportWide | null;
+  blocks: ImportBlock[];
+  blockKinds: BlockKind[];
+}
+
+/** 왼쪽에 빈 열이 있으면(내용이 B열부터 시작) 잘라 내고 origin을 옮김 — 블록 제목은 첫 열에 있어야 하므로 */
+const trimLeadingEmptyCols = (sheet: ImportSheetInput): ImportSheetInput => {
+  const grid = sheet.grid || [];
+  let first = Infinity;
+  for (const row of grid) {
+    if (!row) continue;
+    for (let c = 0; c < row.length && c < first; c++) {
+      if (asText(row[c])) {
+        first = c;
+        break;
+      }
+    }
+  }
+  if (!Number.isFinite(first) || first === 0) return sheet;
+  return {
+    ...sheet,
+    grid: grid.map((row) => (row ? row.slice(first) : row)),
+    origin: { r: sheet.origin?.r ?? 0, c: (sheet.origin?.c ?? 0) + first },
+  };
+};
+
+const scanImportSheet = (sheet: ImportSheetInput): SheetScan => {
+  const grid = sheet.grid || [];
+  const base = { name: sheet.name, rowCount: grid.length, blocks: { class: 0, teacher: 0, room: 0 } };
+  const wide = findImportWide(grid);
+  if (wide) {
+    const kindKo = wide.kind === 'class' ? '학급' : wide.kind === 'teacher' ? '교사' : '특별실';
+    return {
+      detection: {
+        ...base,
+        layout: 'wide',
+        detected: wide.kind,
+        note: `'${wide.label}' 머리글 + 요일·교시 열 ${wide.columns.length}개 — 행마다 ${kindKo} 하나`,
+      },
+      wide,
+      blocks: [],
+      blockKinds: [],
+    };
+  }
+  const blocks = findImportBlocks(grid);
+  if (blocks.length === 0) {
+    return {
+      detection: {
+        ...base,
+        layout: 'none',
+        detected: 'unknown',
+        note: "시간표 블록·평면형 머리글을 찾지 못했어요. 한 행에 수업 하나씩 적힌 표라면 '표 형식'으로 열을 지정해 주세요.",
+      },
+      wide: null,
+      blocks: [],
+      blockKinds: [],
+    };
+  }
+  const blockKinds = blocks.map((b) => classifyBlock(toLegacyBlock(b, grid)));
+  const counts = { class: 0, teacher: 0, room: 0 };
+  blockKinds.forEach((k) => {
+    counts[k]++;
+  });
+  const kindsFound = (['class', 'teacher', 'room'] as const).filter((k) => counts[k] > 0);
+  return {
+    detection: {
+      ...base,
+      blocks: counts,
+      layout: 'block',
+      detected: kindsFound.length === 1 ? kindsFound[0] : 'mixed',
+      note: `블록 ${blocks.length}개 (학급 ${counts.class} · 교사 ${counts.teacher} · 특별실 ${counts.room})`,
+    },
+    wide: null,
+    blocks,
+    blockKinds,
+  };
+};
+
+/** 시트별 자료 유형 자동 판별(화면에서 교사가 확인·수정) */
+export function detectImportSheets(sheets: ImportSheetInput[]): SheetDetection[] {
+  return sheets.map((s) => scanImportSheet(trimLeadingEmptyCols(s)).detection);
+}
+
+/** 병합 셀 → 덮인 칸 'r,c' → 왼쪽 위 칸 [r, c] (grid 좌표). 한 줄로 이어진 작은 병합만 */
+const buildMergeLookup = (sheet: ImportSheetInput): Map<string, [number, number]> => {
+  const map = new Map<string, [number, number]>();
+  if (!sheet.merges || sheet.merges.length === 0) return map;
+  const or = sheet.origin?.r ?? 0;
+  const oc = sheet.origin?.c ?? 0;
+  for (const m of sheet.merges) {
+    const r0 = m.s.r - or;
+    const c0 = m.s.c - oc;
+    const r1 = m.e.r - or;
+    const c1 = m.e.c - oc;
+    const cells = (r1 - r0 + 1) * (c1 - c0 + 1);
+    // 제목·머리글처럼 큰 병합이나 2차원 병합은 수업 칸이 아님
+    if (cells <= 1 || cells > 8 || (r0 !== r1 && c0 !== c1) || r0 < 0 || c0 < 0) continue;
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        if (r !== r0 || c !== c0) map.set(`${r},${c}`, [r0, c0]);
+      }
+    }
+  }
+  return map;
+};
+
+const classLabelFromCode = (s: string): string | null =>
+  /^(\d{3}|\d{1,2}-\d{1,2}|\d{1,2}\s*학년\s*\d{1,2}\s*반)$/.test(s.trim()) ? normalizeClassLabel(s) : null;
+
+type CellFields = Omit<ImportRow, 'sourceKind' | 'sheet' | 'row' | 'col' | 'weekday' | 'period'>;
+
+/** 칸 하나 → 그 칸에 실제로 적힌 필드만 */
+const importFieldsFromCell = (
+  kind: ImportCellKind,
+  owner: string,
+  v: CellValue,
+  warn: (message: string) => void,
+): CellFields | null => {
+  const lines = cellLines(v);
+  if (lines.length === 0) return null;
+  if (kind === 'class') {
+    const out: CellFields = { subject: normSpace(lines[0]), classLabel: owner };
+    if (lines[1]) out.teacher = normalizeTeacherName(lines[1]);
+    if (lines[2]) out.room = normSpace(lines[2]);
+    if (lines.length > 3) warn(`칸에 줄이 ${lines.length}개라 4번째 줄부터는 읽지 않았어요: "${lines.slice(3).join(' / ')}"`);
+    return out;
+  }
+  if (kind === 'teacher') {
+    const label = classLabelFromCode(lines[0]);
+    if (lines.length === 1) {
+      if (label) {
+        warn(`반 코드(${lines[0]})만 있고 과목이 없어요.`);
+        return { subject: '', classLabel: label, teacher: owner };
+      }
+      return { subject: normSpace(lines[0]), teacher: owner };
+    }
+    if (lines.length > 2) warn(`칸에 줄이 ${lines.length}개라 2번째 줄부터를 과목으로 합쳐 읽었어요: "${lines.slice(1).join(' / ')}"`);
+    return { subject: normSpace(lines.slice(1).join(' ')), classLabel: label ?? normSpace(lines[0]), teacher: owner };
+  }
+  const m = lines[0].match(/^(\d{3}|\d+-\d+)\s+(.+)$/);
+  const out: CellFields = { subject: normSpace(m ? m[2] : lines[0]), room: owner };
+  if (m) out.classLabel = normalizeClassLabel(m[1]) ?? m[1];
+  if (lines[1]) {
+    const t = normalizeTeacherName(lines[1]);
+    if (looksLikeTeacherName(t)) out.teacher = t;
+    else warn(`둘째 줄 '${lines[1]}'을(를) 교사 이름으로 읽지 못해 넣지 않았어요.`);
+  }
+  if (lines.length > 2) warn(`칸에 줄이 ${lines.length}개라 3번째 줄부터는 읽지 않았어요: "${lines.slice(2).join(' / ')}"`);
+  return out;
+};
+
+/**
+ * 시간표 시트들 → 칸 단위 ImportRow + 시트 판별 결과 + 경고.
+ * opts.kinds: 시트 이름 → 교사가 고른 유형('auto'가 기본, 'table'·'skip'은 여기서 건너뜀)
+ */
+export function extractImportRowsWithReport(
+  sheets: ImportSheetInput[],
+  opts: { kinds?: Record<string, ImportSheetChoice> } = {},
+): ImportExtractResult {
+  const result: ImportExtractResult = { rows: [], sheets: [], warnings: [], periodTimes: {}, mergedCells: 0 };
+  const timeConflictWarned = new Set<number>();
+
+  for (const input of sheets) {
+    const sheet = trimLeadingEmptyCols(input);
+    const grid = sheet.grid || [];
+    const scan = scanImportSheet(sheet);
+    result.sheets.push(scan.detection);
+    const choice: ImportSheetChoice =
+      opts.kinds && Object.prototype.hasOwnProperty.call(opts.kinds, sheet.name) ? opts.kinds[sheet.name] : 'auto';
+    if (choice === 'skip' || choice === 'table') continue;
+
+    const or = sheet.origin?.r ?? 0;
+    const oc = sheet.origin?.c ?? 0;
+    const rowNo = (r: number) => r + or + 1;
+    const colNo = (c: number) => c + oc + 1;
+    const warnAt = (r?: number, c?: number) => (message: string) =>
+      result.warnings.push({
+        sheet: sheet.name,
+        ...(r !== undefined ? { row: rowNo(r) } : {}),
+        ...(c !== undefined ? { col: colNo(c) } : {}),
+        message,
+      });
+    const merges = buildMergeLookup(sheet);
+    /** 빈 칸이 병합으로 덮였고 왼쪽 위 칸이 같은 블록의 수업 칸이면 그 값 */
+    const valueAt = (r: number, c: number, sameGroup: (r0: number, c0: number) => boolean) => {
+      const v = (grid[r] || [])[c];
+      if (asText(v)) return { v, merged: false };
+      const tl = merges.get(`${r},${c}`);
+      if (tl && sameGroup(tl[0], tl[1])) return { v: (grid[tl[0]] || [])[tl[1]], merged: true };
+      return { v, merged: false };
+    };
+    const push = (
+      kind: ImportCellKind,
+      r: number,
+      c: number,
+      weekday: number,
+      period: number,
+      fields: CellFields,
+      time?: { start?: string; end?: string },
+    ) => {
+      const row: ImportRow = {
+        sourceKind: kind,
+        sheet: sheet.name,
+        row: rowNo(r),
+        col: colNo(c),
+        weekday: weekday as Weekday,
+        period,
+        subject: fields.subject,
+      };
+      if (fields.section) row.section = fields.section;
+      if (fields.teacher) row.teacher = fields.teacher;
+      if (fields.classLabel) row.classLabel = fields.classLabel;
+      if (fields.room) row.room = fields.room;
+      if (time?.start) row.start = time.start;
+      if (time?.end) row.end = time.end;
+      result.rows.push(row);
+    };
+
+    if (scan.wide) {
+      const wide = scan.wide;
+      const kind: ImportCellKind = choice === 'auto' ? wide.kind : choice;
+      const dataCols = new Set(wide.columns.map((x) => x.col));
+      for (let r = wide.headerRow + 2; r < grid.length; r++) {
+        const rawLabel = asText((grid[r] || [])[0]);
+        if (!rawLabel) continue;
+        if (wideKindOf(rawLabel)) {
+          r++; // 여러 쪽으로 나뉜 표의 반복 머리글(다음 행은 교시 번호)
+          continue;
+        }
+        let owner: string;
+        if (kind === 'class') owner = normalizeClassLabel(rawLabel) ?? normSpace(rawLabel);
+        else if (kind === 'teacher') {
+          owner = normalizeTeacherName(rawLabel);
+          if (choice === 'auto' && !looksLikeTeacherName(owner)) {
+            warnAt(r, 0)(`교사 이름으로 인식하지 못해 이 행을 건너뜀: "${rawLabel}" (시트 유형을 '교사'로 지정하면 그대로 읽어요)`);
+            continue;
+          }
+        } else owner = normSpace(rawLabel);
+        for (const { col, weekday, period } of wide.columns) {
+          const { v, merged } = valueAt(r, col, (r0, c0) => r0 === r && dataCols.has(c0));
+          const fields = importFieldsFromCell(kind, owner, v, warnAt(r, col));
+          if (!fields) continue;
+          if (merged) result.mergedCells++;
+          push(kind, r, col, weekday, period, fields);
+        }
+      }
+      continue;
+    }
+
+    if (scan.blocks.length === 0) {
+      if (choice !== 'auto') {
+        warnAt()(`'${sheet.name}'에서 시간표 블록을 찾지 못했어요. 한 행에 수업 하나씩 적힌 표라면 '표 형식'으로 바꿔 열을 지정해 주세요.`);
+      }
+      continue;
+    }
+
+    scan.blocks.forEach((block, bi) => {
+      const kind: ImportCellKind = choice === 'auto' ? scan.blockKinds[bi] : choice;
+      let owner: string;
+      if (kind === 'class') {
+        owner = parseClassTitle(block.title) ?? normalizeClassLabel(block.title) ?? normSpace(block.title);
+      } else if (kind === 'teacher') {
+        owner = normalizeTeacherName(block.title);
+        if (choice === 'auto' && !looksLikeTeacherName(owner)) {
+          warnAt(block.titleRow, 0)(
+            `교사 블록 제목이 이름 같지 않아 건너뜀: "${block.title}" (시트 유형을 '교사'로 지정하면 그대로 읽어요)`,
+          );
+          return;
+        }
+      } else owner = parseRoomTitle(block.title) ?? normSpace(block.title);
+
+      const periodRows = new Set(block.rows.map((x) => x.r));
+      for (const prow of block.rows) {
+        if (prow.start) {
+          const seen = result.periodTimes[prow.period];
+          if (!seen) result.periodTimes[prow.period] = prow.end ? { start: prow.start, end: prow.end } : { start: prow.start };
+          else if ((seen.start !== prow.start || (prow.end && seen.end && seen.end !== prow.end)) && !timeConflictWarned.has(prow.period)) {
+            timeConflictWarned.add(prow.period);
+            warnAt(prow.r, 0)(`${prow.period}교시 시각이 블록마다 달라요(${seen.start} / ${prow.start}). 칸마다 적힌 시각을 그대로 썼어요.`);
+          }
+        }
+        for (const dc of block.dayCols) {
+          const { v, merged } = valueAt(prow.r, dc.col, (r0, c0) => c0 === dc.col && periodRows.has(r0));
+          const fields = importFieldsFromCell(kind, owner, v, warnAt(prow.r, dc.col));
+          if (!fields) continue;
+          if (merged) result.mergedCells++;
+          push(kind, prow.r, dc.col, dc.weekday, prow.period, fields, { start: prow.start, end: prow.end });
+        }
+      }
+    });
+  }
+  return result;
+}
+
+/** 시간표 시트들 → 칸 단위 ImportRow(파일에 실제로 있던 칸만). 판별 결과·경고가 필요하면 extractImportRowsWithReport */
+export function extractImportRows(
+  sheets: ImportSheetInput[],
+  opts: { kinds?: Record<string, ImportSheetChoice> } = {},
+): ImportRow[] {
+  return extractImportRowsWithReport(sheets, opts).rows;
+}

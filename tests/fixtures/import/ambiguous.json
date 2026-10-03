@@ -1,0 +1,270 @@
+{
+  "note": "가상 데이터입니다. 실제 학교·교사·학생 자료가 아닙니다. 원본 오류·모호한 매칭 검출(T31)용으로 일부러 틀리게 만든 행입니다.",
+  "schoolCode": "S1",
+  "termId": "2026-2",
+  "validFrom": "20260907",
+  "teachers": [
+    {
+      "uid": "uid-test-teacher-kim",
+      "masterName": "김민수"
+    },
+    {
+      "uid": "uid-test-teacher-lee",
+      "masterName": "이영희"
+    },
+    {
+      "uid": "uid-test-teacher-choi",
+      "masterName": "최유나"
+    },
+    {
+      "uid": "uid-test-teacher-choi2",
+      "masterName": "최 유나"
+    }
+  ],
+  "expectedIssueCodes": {
+    "error": [
+      "bad-period",
+      "bad-weekday",
+      "bad-time",
+      "teacher-conflict"
+    ],
+    "review": [
+      "teacher-missing",
+      "duplicate-section",
+      "ambiguous-match",
+      "class-slot-multiple",
+      "room-mismatch",
+      "combined-class",
+      "source-mismatch",
+      "bad-class-label"
+    ],
+    "info": [
+      "teacher-unlinked",
+      "teacher-ambiguous"
+    ]
+  },
+  "rows": [
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 14,
+      "col": 2,
+      "weekday": 1,
+      "period": 11,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "table",
+      "sheet": "전체시간표",
+      "row": 9,
+      "col": 40,
+      "weekday": "월화",
+      "period": 2,
+      "subject": "수학",
+      "teacher": "한도윤",
+      "classLabel": "306"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 7반",
+      "row": 5,
+      "col": 4,
+      "weekday": 3,
+      "period": 4,
+      "subject": "체육",
+      "teacher": "오세진",
+      "classLabel": "3-7",
+      "start": "25:00",
+      "end": "11:40"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 6,
+      "col": 6,
+      "weekday": 5,
+      "period": 5,
+      "subject": "체육",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 5,
+      "col": 2,
+      "weekday": 1,
+      "period": 3,
+      "subject": "A_수학",
+      "teacher": "한도윤",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 7반",
+      "row": 5,
+      "col": 3,
+      "weekday": 2,
+      "period": 3,
+      "subject": "A_수학",
+      "teacher": "오세진",
+      "classLabel": "3-7"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 4,
+      "col": 3,
+      "weekday": 2,
+      "period": 2,
+      "subject": "영어",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#이영희",
+      "row": 4,
+      "col": 3,
+      "weekday": 2,
+      "period": 2,
+      "subject": "A_영어",
+      "teacher": "이영희",
+      "classLabel": "306"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#정하늘",
+      "row": 4,
+      "col": 3,
+      "weekday": 2,
+      "period": 2,
+      "subject": "B_영어",
+      "teacher": "정하늘",
+      "classLabel": "306"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 7반",
+      "row": 4,
+      "col": 5,
+      "weekday": 4,
+      "period": 2,
+      "subject": "화작",
+      "teacher": "강민지",
+      "classLabel": "3-7"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#윤서준",
+      "row": 4,
+      "col": 5,
+      "weekday": 4,
+      "period": 2,
+      "subject": "언매",
+      "teacher": "윤서준",
+      "classLabel": "307"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 3,
+      "col": 6,
+      "weekday": 5,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 7반",
+      "row": 3,
+      "col": 6,
+      "weekday": 5,
+      "period": 1,
+      "subject": "문학",
+      "teacher": "김민수",
+      "classLabel": "3-7"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 5,
+      "col": 6,
+      "weekday": 5,
+      "period": 3,
+      "subject": "음악",
+      "teacher": "최유나",
+      "classLabel": "3-6",
+      "room": "음악실"
+    },
+    {
+      "sourceKind": "room",
+      "sheet": "특별실시간표#음악실2",
+      "row": 5,
+      "col": 6,
+      "weekday": 5,
+      "period": 3,
+      "subject": "음악",
+      "teacher": "최유나",
+      "classLabel": "306",
+      "room": "음악실2"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 6,
+      "col": 3,
+      "weekday": 2,
+      "period": 4,
+      "subject": "과학",
+      "teacher": "오세진",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 7반",
+      "row": 6,
+      "col": 3,
+      "weekday": 2,
+      "period": 4,
+      "subject": "과학",
+      "teacher": "오세진",
+      "classLabel": "3-7"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 6반",
+      "row": 3,
+      "col": 4,
+      "weekday": 3,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "3-6"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#김민수",
+      "row": 3,
+      "col": 2,
+      "weekday": 1,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "306"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 7반",
+      "row": 7,
+      "col": 2,
+      "weekday": 1,
+      "period": 6,
+      "subject": "진로",
+      "teacher": "윤서준",
+      "classLabel": "3학년 반"
+    }
+  ]
+}

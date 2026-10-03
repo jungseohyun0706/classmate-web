@@ -1,0 +1,290 @@
+{
+  "note": "가상 데이터입니다. 실제 학교·교사·학생 자료가 아니며, 실제 컴시간 엑셀 구조를 확인한 것도 아닙니다(실제 파일 미확보). 화면 파서가 만드는 정규화 행(ImportRow) 모양만 흉내 냈습니다.",
+  "schoolCode": "S1",
+  "termId": "2026-2",
+  "validFrom": "20260907",
+  "teachers": [
+    {
+      "uid": "uid-test-teacher-kim",
+      "masterName": "김민수"
+    },
+    {
+      "uid": "uid-test-teacher-lee",
+      "masterName": "이영희"
+    },
+    {
+      "uid": "uid-test-teacher-choi",
+      "masterName": "최유나"
+    }
+  ],
+  "expected": {
+    "courses": 5,
+    "lessons": 9,
+    "rows": 23,
+    "duplicatesMerged": 14,
+    "unlinkedTeachers": 1,
+    "note": "정하늘 선생님은 가입 계정이 없어 미연결(이름만 표시)"
+  },
+  "rows": [
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 4반",
+      "row": 3,
+      "col": 2,
+      "weekday": 1,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수(16)",
+      "classLabel": "3-4"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 4반",
+      "row": 4,
+      "col": 3,
+      "weekday": 2,
+      "period": 2,
+      "subject": "국어",
+      "teacher": "김민수(16)",
+      "classLabel": "3-4"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 4반",
+      "row": 5,
+      "col": 3,
+      "weekday": 2,
+      "period": 3,
+      "subject": "A_영어",
+      "teacher": "이영희(12)",
+      "classLabel": "3-4",
+      "room": "어학실"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 4반",
+      "row": 6,
+      "col": 5,
+      "weekday": 4,
+      "period": 4,
+      "subject": "음악",
+      "teacher": "최유나(10)",
+      "classLabel": "3-4",
+      "room": "음악실"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 4반",
+      "row": 4,
+      "col": 6,
+      "weekday": 5,
+      "period": 2,
+      "subject": "A_영어",
+      "teacher": "이영희(12)",
+      "classLabel": "3-4",
+      "room": "어학실"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 5반",
+      "row": 4,
+      "col": 2,
+      "weekday": 1,
+      "period": 2,
+      "subject": "국어",
+      "teacher": "김민수(16)",
+      "classLabel": "3-5"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 5반",
+      "row": 3,
+      "col": 5,
+      "weekday": 4,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수(16)",
+      "classLabel": "3-5"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 5반",
+      "row": 5,
+      "col": 3,
+      "weekday": 2,
+      "period": 3,
+      "subject": "B_영어",
+      "teacher": "정하늘(12)",
+      "classLabel": "3-5",
+      "room": "3학년 5반 교실"
+    },
+    {
+      "sourceKind": "class",
+      "sheet": "학급시간표#3학년 5반",
+      "row": 4,
+      "col": 6,
+      "weekday": 5,
+      "period": 2,
+      "subject": "B_영어",
+      "teacher": "정하늘(12)",
+      "classLabel": "3-5"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#김민수",
+      "row": 3,
+      "col": 2,
+      "weekday": 1,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "304"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#김민수",
+      "row": 4,
+      "col": 3,
+      "weekday": 2,
+      "period": 2,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "304"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#김민수",
+      "row": 4,
+      "col": 2,
+      "weekday": 1,
+      "period": 2,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "305"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#김민수",
+      "row": 3,
+      "col": 5,
+      "weekday": 4,
+      "period": 1,
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "305"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#이영희",
+      "row": 5,
+      "col": 3,
+      "weekday": 2,
+      "period": 3,
+      "subject": "A_영어",
+      "teacher": "이영희",
+      "classLabel": "304"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#이영희",
+      "row": 4,
+      "col": 6,
+      "weekday": 5,
+      "period": 2,
+      "subject": "A_영어",
+      "teacher": "이영희",
+      "classLabel": "304"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#정하늘",
+      "row": 5,
+      "col": 3,
+      "weekday": 2,
+      "period": 3,
+      "subject": "B_영어",
+      "teacher": "정하늘",
+      "classLabel": "305"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#정하늘",
+      "row": 4,
+      "col": 6,
+      "weekday": 5,
+      "period": 2,
+      "subject": "B_영어",
+      "teacher": "정하늘",
+      "classLabel": "305"
+    },
+    {
+      "sourceKind": "teacher",
+      "sheet": "교사시간표#최유나",
+      "row": 6,
+      "col": 5,
+      "weekday": 4,
+      "period": 4,
+      "subject": "음악",
+      "teacher": "최유나",
+      "classLabel": "304"
+    },
+    {
+      "sourceKind": "room",
+      "sheet": "특별실시간표#음악실",
+      "row": 6,
+      "col": 5,
+      "weekday": 4,
+      "period": 4,
+      "subject": "음악",
+      "teacher": "최유나",
+      "classLabel": "304",
+      "room": "음악실"
+    },
+    {
+      "sourceKind": "room",
+      "sheet": "특별실시간표#어학실",
+      "row": 5,
+      "col": 3,
+      "weekday": 2,
+      "period": 3,
+      "subject": "A_영어",
+      "teacher": "이영희",
+      "classLabel": "304",
+      "room": "어학실"
+    },
+    {
+      "sourceKind": "room",
+      "sheet": "특별실시간표#어학실",
+      "row": 4,
+      "col": 6,
+      "weekday": 5,
+      "period": 2,
+      "subject": "A_영어",
+      "teacher": "이영희",
+      "classLabel": "304",
+      "room": "어학실"
+    },
+    {
+      "sourceKind": "table",
+      "sheet": "전체시간표",
+      "row": 7,
+      "col": 3,
+      "weekday": "월",
+      "period": "1교시",
+      "subject": "국어",
+      "teacher": "김민수",
+      "classLabel": "3학년 4반"
+    },
+    {
+      "sourceKind": "table",
+      "sheet": "전체시간표",
+      "row": 8,
+      "col": 4,
+      "weekday": "Mon",
+      "period": "2",
+      "subject": "국어",
+      "teacher": " 김 민수 ",
+      "classLabel": "0305"
+    }
+  ]
+}
