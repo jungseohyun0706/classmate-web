@@ -315,15 +315,167 @@ service cloud.firestore {
       }
     }
 
-    // ── school_swaps/{schoolCode}/**: 수업 교체 요청 ────────
-    // requests / direct_requests 하위 문서 전부: 같은 학교 교사만 읽기/쓰기
-    match /school_swaps/{schoolCode}/{document=**} {
-      allow read, write: if isTeacher() && sameSchool(schoolCode);
+    // ── school_swaps/{schoolCode}: 수업 교환 ─────────────────
+    // direct_requests: 특정 선생님에게 보낸 1:1 요청 / requests: 학교 게시판 공개 요청
+    // slots/{uid}_{date}_{period}: 교환 수락·SOS 배정으로 채워진 칸 잠금
+    // 읽기는 같은 학교 교사, 상태 변경은 정해진 사람이 정해진 필드만 바꿀 수 있습니다.
+    // (예전 규칙은 같은 학교 교사면 남의 요청을 대신 수락·취소·삭제하거나 내용을 고칠 수 있었습니다.)
+    match /school_swaps/{schoolCode} {
+      function swapTeacher() {
+        return isTeacher() && sameSchool(schoolCode);
+      }
+      // 아직 처리되지 않은 요청 (status 없는 예전 문서는 대기로 봄 — 앱의 normalizeStatus와 같음)
+      function swapOpen() {
+        return !(resource.data.get('status', 'pending') in ['accepted', 'declined', 'cancelled']);
+      }
+      function swapRequester() {
+        return resource.data.get('requesterId', resource.data.get('fromId', null));
+      }
+      function changedOnly(keys) {
+        return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+      }
+      function hasSlot(data) {
+        return data.get('date', null) is string && data.date.matches('^[0-9]{8}$')
+          && data.get('period', null) is int && data.period > 0;
+      }
+      // 날짜·교시가 있는 요청은 같은 트랜잭션에서 내 칸 잠금(이 요청을 가리킴)도 만들어야 수락됩니다.
+      function lockedFor(data, refPath) {
+        return !hasSlot(data)
+          || getAfter(/databases/$(database)/documents/school_swaps/$(schoolCode)/slots/$(request.auth.uid + '_' + data.date + '_' + string(data.period))).data.refPath == refPath;
+      }
+      function acceptOk() {
+        return changedOnly(['status', 'acceptedAt', 'accepterId', 'accepterName'])
+          && request.resource.data.status == 'accepted'
+          && request.resource.data.accepterId == request.auth.uid
+          && request.resource.data.acceptedAt == request.time;
+      }
+      function cancelOk() {
+        return swapRequester() == request.auth.uid
+          && changedOnly(['status', 'cancelledAt'])
+          && request.resource.data.status == 'cancelled';
+      }
+
+      match /direct_requests/{rid} {
+        allow read: if swapTeacher();
+        allow create: if swapTeacher()
+          && request.resource.data.keys().hasOnly(['fromId', 'fromName', 'requesterId', 'requesterName',
+               'requesterClassId', 'requesterClass', 'toId', 'toName', 'day', 'dayLabel', 'period',
+               'subject', 'date', 'note', 'status', 'createdAt'])
+          && request.resource.data.requesterId == request.auth.uid
+          && request.resource.data.get('fromId', request.auth.uid) == request.auth.uid
+          && request.resource.data.toId is string
+          && request.resource.data.toId != request.auth.uid
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdAt == request.time;
+        // 수락: 받은 선생님만
+        allow update: if swapTeacher() && swapOpen()
+          && resource.data.get('toId', null) == request.auth.uid
+          && acceptOk()
+          && lockedFor(resource.data, 'school_swaps/' + schoolCode + '/direct_requests/' + rid);
+        // 거절: 받은 선생님만
+        allow update: if swapTeacher() && swapOpen()
+          && resource.data.get('toId', null) == request.auth.uid
+          && changedOnly(['status', 'declinedAt', 'declinerId', 'declinerName'])
+          && request.resource.data.status == 'declined'
+          && request.resource.data.declinerId == request.auth.uid;
+        // 취소: 보낸 선생님만
+        allow update: if swapTeacher() && swapOpen() && cancelOk();
+        allow delete: if false;
+      }
+
+      match /requests/{rid} {
+        allow read: if swapTeacher();
+        allow create: if swapTeacher()
+          && request.resource.data.keys().hasOnly(['requesterId', 'requesterName', 'requesterClassId',
+               'requesterClass', 'day', 'dayLabel', 'period', 'subject', 'date', 'note', 'status', 'createdAt'])
+          && request.resource.data.requesterId == request.auth.uid
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdAt == request.time;
+        // 수락(선착순): 올린 사람이 아닌 같은 학교 교사
+        allow update: if swapTeacher() && swapOpen()
+          && swapRequester() != request.auth.uid
+          && acceptOk()
+          && lockedFor(resource.data, 'school_swaps/' + schoolCode + '/requests/' + rid);
+        // 취소: 올린 선생님만
+        allow update: if swapTeacher() && swapOpen() && cancelOk();
+        allow delete: if false;
+      }
+
+      // 칸 잠금: 수락·배정 트랜잭션이 만든 결과(이 요청을 내가 수락/배정받음)와 맞을 때만 생성.
+      // 교환은 수락 교사가 요청 교사 칸까지 잠그므로 uid는 나 또는 그 요청의 요청 교사.
+      // 한 번 잡힌 칸은 고치거나 지울 수 없습니다(수락 취소 기능이 생기면 해제 규칙을 함께 추가).
+      function swapLockOk(lock, s) {
+        return s.get('status', '') == 'accepted'
+          && s.get('accepterId', '') == request.auth.uid
+          && s.get('date', '') == lock.date
+          && string(s.get('period', '')) == string(lock.period)
+          && (lock.uid == request.auth.uid || lock.uid == s.get('requesterId', s.get('fromId', '')));
+      }
+      function sosLockOk(lock, s) {
+        return s.get('status', '') == 'assigned'
+          && s.get('assignedTo', '') == request.auth.uid
+          && lock.uid == request.auth.uid
+          && s.get('date', '') == lock.date
+          && string(s.get('period', '')) == string(lock.period);
+      }
+      function lockBacked(lock, p) {
+        return p.size() == 4 && p[1] == schoolCode && (
+          (lock.kind == 'swap' && p[0] == 'school_swaps' && p[2] in ['direct_requests', 'requests']
+            && swapLockOk(lock, getAfter(/databases/$(database)/documents/school_swaps/$(schoolCode)/$(p[2])/$(p[3])).data))
+          || (lock.kind == 'sos' && p[0] == 'school_sos' && p[2] == 'requests'
+            && sosLockOk(lock, getAfter(/databases/$(database)/documents/school_sos/$(schoolCode)/requests/$(p[3])).data)));
+      }
+
+      match /slots/{slotId} {
+        allow read: if swapTeacher();
+        allow create: if swapTeacher()
+          && request.resource.data.keys().hasOnly(['uid', 'date', 'period', 'kind', 'refPath', 'createdAt'])
+          && request.resource.data.uid is string
+          && request.resource.data.date is string
+          && request.resource.data.date.matches('^[0-9]{8}$')
+          && request.resource.data.period is int
+          && request.resource.data.period > 0
+          && slotId == request.resource.data.uid + '_' + request.resource.data.date + '_' + string(request.resource.data.period)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.refPath is string
+          && lockBacked(request.resource.data, request.resource.data.refPath.split('/'));
+        allow update, delete: if false;
+      }
     }
 
-    // ── school_sos/{schoolCode}/**: 긴급 보결(SOS) 요청 ─────
-    match /school_sos/{schoolCode}/{document=**} {
-      allow read, write: if isTeacher() && sameSchool(schoolCode);
+    // ── school_sos/{schoolCode}/requests: 긴급 보결(SOS) 요청 ─────
+    match /school_sos/{schoolCode}/requests/{rid} {
+      function sosTeacher() {
+        return isTeacher() && sameSchool(schoolCode);
+      }
+      allow read: if sosTeacher();
+      allow create: if sosTeacher()
+        && request.resource.data.keys().hasOnly(['date', 'period', 'reason', 'requesterId', 'requesterName',
+             'requesterClass', 'schoolCode', 'status', 'createdAt'])
+        && request.resource.data.requesterId == request.auth.uid
+        && request.resource.data.get('schoolCode', schoolCode) == schoolCode
+        && request.resource.data.status == 'open'
+        && request.resource.data.createdAt == request.time;
+      // 맡기(선착순): 올린 사람이 아닌 교사. 날짜·교시가 있으면 같은 트랜잭션에서 내 칸 잠금도 만들어야 함
+      allow update: if sosTeacher()
+        && resource.data.get('status', 'open') == 'open'
+        && resource.data.get('requesterId', null) != request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'assignedTo', 'assignedName', 'assignedAt'])
+        && request.resource.data.status == 'assigned'
+        && request.resource.data.assignedTo == request.auth.uid
+        && request.resource.data.assignedAt == request.time
+        && (!(resource.data.get('date', null) is string && resource.data.date.matches('^[0-9]{8}$')
+              && resource.data.get('period', null) is int && resource.data.period > 0)
+            || getAfter(/databases/$(database)/documents/school_swaps/$(schoolCode)/slots/$(request.auth.uid + '_' + resource.data.date + '_' + string(resource.data.period))).data.refPath
+                 == 'school_sos/' + schoolCode + '/requests/' + rid);
+      // 취소: 올린 사람만, 모집 중일 때
+      allow update: if sosTeacher()
+        && resource.data.get('requesterId', null) == request.auth.uid
+        && resource.data.get('status', 'open') == 'open'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'cancelledAt'])
+        && request.resource.data.status == 'cancelled';
+      allow delete: if false;
     }
 
     // ── school_timetables/{schoolCode}: 엑셀 업로드 학교 시간표 마스터 ──
@@ -373,8 +525,10 @@ service cloud.firestore {
         // 읽기: 본인 투표만 (중복 참여 확인용)
         allow read: if me(uid);
 
-        // 생성: 본인 명의로, rating은 1~5 정수만 가능
+        // 생성: 본인 명의로, rating은 1~5 정수만 가능.
+        //       익명 계정은 투표할 수 없습니다(익명 계정을 계속 새로 만들어 별점·TOP5를 조작하던 경로 차단).
         allow create: if me(uid)
+          && request.auth.token.firebase.sign_in_provider != 'anonymous'
           && request.resource.data.rating is int
           && request.resource.data.rating >= 1
           && request.resource.data.rating <= 5;
