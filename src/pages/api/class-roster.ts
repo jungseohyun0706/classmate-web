@@ -8,6 +8,7 @@ import { getAdminApp, isAdminConfigured, verifyIdToken } from '../../lib/fcm-adm
 // 서버에서 처리하는 이유: 본반(classId==) + 추가 참여(extraClassIds array-contains)를
 // 합치는 목록 쿼리는 보안 규칙만으로는 증명이 불가능해 클라이언트에서 항상 거부되기 때문.
 // - 같은 학교 교사: 전체 명단(승인 대기 포함) + 인원수
+//   (이 반 담임이면 다른 반에서 옮겨 오려는 반 이동 신청 학생도 승인 대기로 포함)
 // - 이 반의 승인된 학생: 인원수만
 
 // 출석번호는 가입 때 선택 항목이라 없는 학생이 많음. 없거나 숫자가 아니면 0이 아니라 null('번호 없음')로
@@ -60,9 +61,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!isSchoolTeacher && !isClassStudent) {
       return res.status(403).json({ error: '이 반의 구성원만 볼 수 있어요.' })
     }
+    const isClassTeacher = isSchoolTeacher && String(cls.teacherId || '') === decoded.uid
 
-    // 본반 학생(승인 대기 포함) + 추가 참여 학생(승인된 학생만)
-    const [homeSnap, extraSnap] = await Promise.all([
+    // 본반 학생(승인 대기 포함) + 추가 참여 학생(승인된 학생만) + 반 이동 신청 학생(담임에게만)
+    const [homeSnap, extraSnap, moveSnap] = await Promise.all([
       db
         .collection('users')
         .where('classId', '==', classId)
@@ -74,6 +76,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .where('role', '==', 'student')
         .where('status', '==', 'approved')
         .get(),
+      isClassTeacher
+        ? db
+            .collection('users')
+            .where('pendingClassId', '==', classId)
+            .where('role', '==', 'student')
+            .get()
+        : null,
     ])
 
     type Member = {
@@ -82,6 +91,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       studentId: number | null
       status: 'pending' | 'approved'
       homeClassId?: string
+      /** 반 이동 신청 학생의 지금 본반 classId */
+      moveFromClassId?: string
     }
     const seen: Record<string, true> = {}
     const members: Member[] = []
@@ -98,6 +109,20 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         name: String(v.name || v.displayName || '이름 없음'),
         studentId: toStudentNo(v.studentId),
         status,
+      })
+    })
+    // 추가 참여보다 먼저 넣음: 예전에 이 반에 추가 참여했던 학생이 이동 신청하면 승인할 수 있게
+    moveSnap?.forEach((d) => {
+      if (seen[d.id]) return
+      const v = d.data()
+      if (cls.schoolCode && String(v.schoolCode || '') !== String(cls.schoolCode)) return
+      seen[d.id] = true
+      members.push({
+        id: d.id,
+        name: String(v.name || v.displayName || '이름 없음'),
+        studentId: toStudentNo(v.pendingStudentId ?? v.studentId),
+        status: 'pending',
+        moveFromClassId: typeof v.classId === 'string' ? v.classId : undefined,
       })
     })
     extraSnap.forEach((d) => {
@@ -119,7 +144,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!isSchoolTeacher) {
       return res.status(200).json({ count })
     }
-    return res.status(200).json({ count, members })
+    return res.status(200).json({ count, members, isClassTeacher })
   } catch (e) {
     console.error('class-roster error:', e)
     return res.status(500).json({ error: '명단을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.' })

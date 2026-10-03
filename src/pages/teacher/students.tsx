@@ -28,6 +28,8 @@ type Student = {
   status: 'pending' | 'approved' | 'rejected'
   /** 추가 참여 학생의 본반 classId (본반 학생이면 undefined) */
   homeClassId?: string
+  /** 반 이동 신청 학생의 지금 본반 classId (이 반 담임에게만 내려옴) */
+  moveFromClassId?: string
 }
 
 /** 수업 그룹 id(`{base}_g_{uid6}`)에서 원본 반 id 추출 */
@@ -89,6 +91,8 @@ export default function StudentList() {
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [activeId, setActiveId] = useState<string>('')
   const [rosters, setRosters] = useState<Record<string, Student[]>>({})
+  // 탭별: 그 반 teacherId가 나인지 (추가 참여 학생 내보내기 버튼용)
+  const [classTeacherOf, setClassTeacherOf] = useState<Record<string, boolean>>({})
   const [rosterLoading, setRosterLoading] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [rosterReload, setRosterReload] = useState(0)
@@ -230,6 +234,7 @@ export default function StudentList() {
           studentId: typeof m.studentId === 'number' && m.studentId > 0 ? m.studentId : null,
           status: m.status === 'approved' ? 'approved' : 'pending',
           homeClassId: typeof m.homeClassId === 'string' ? m.homeClassId : undefined,
+          moveFromClassId: typeof m.moveFromClassId === 'string' ? m.moveFromClassId : undefined,
         }))
         list.sort((a, b) => {
           const an = parseInt(String(a.studentId ?? ''), 10)
@@ -240,6 +245,7 @@ export default function StudentList() {
           return String(a.name || '').localeCompare(String(b.name || ''), 'ko')
         })
         setRosters((prev) => ({ ...prev, [activeId]: list }))
+        setClassTeacherOf((prev) => ({ ...prev, [activeId]: data.isClassTeacher === true }))
       } catch (e) {
         console.error(e)
         toast('명단을 불러오지 못했어요.', 'error')
@@ -276,6 +282,27 @@ export default function StudentList() {
       tx.update(ref, { status })
       return 'ok' as const
     })
+
+  // 반 이동 신청 승인/거절, 추가 참여 내보내기는 서버 API(교사 규칙으로는 바꿀 수 없는 필드)
+  // 409면 그사이 학생이 신청을 바꿨거나 이미 처리된 것 → 'done'
+  const changeMembership = async (
+    action: 'approve-move' | 'reject-move' | 'remove-extra',
+    studentId: string,
+    classId: string
+  ) => {
+    const token = await auth.currentUser?.getIdToken()
+    const resp = await fetch('/api/class-membership', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, classId, studentUid: studentId }),
+    })
+    if (resp.status === 409) return 'done' as const
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}))
+      throw new Error(data?.error || `class-membership ${resp.status}`)
+    }
+    return 'ok' as const
+  }
 
   const notifyStale = (student: Student, result: 'moved' | 'done', tabId: string) => {
     toast(
@@ -389,15 +416,21 @@ export default function StudentList() {
     const prev = rosters[tabId] || []
     setRosters((cur) => ({
       ...cur,
-      [tabId]: prev.map((s) => (s.id === student.id ? { ...s, status: 'approved' as const } : s)),
+      [tabId]: prev.map((s) =>
+        s.id === student.id ? { ...s, status: 'approved' as const, moveFromClassId: undefined } : s
+      ),
     }))
     try {
-      const result = await decidePending(student.id, tabId, 'approved')
+      const result = student.moveFromClassId
+        ? await changeMembership('approve-move', student.id, tabId)
+        : await decidePending(student.id, tabId, 'approved')
       if (result !== 'ok') {
         notifyStale(student, result, tabId)
         return
       }
       toast('승인했어요', 'success')
+      // 반 이동 승인 알림은 서버가 보냄
+      if (student.moveFromClassId) return
       try {
         const title = '우리 반 입장 완료 🎉'
         const body = `${me?.schoolName || ''} ${classLabel(tabId)} 학생이 되었어요!`
@@ -431,20 +464,32 @@ export default function StudentList() {
   const handleReject = async (student: Student) => {
     if (busyId || !activeId) return
     const tabId = activeId
-    const ok = await confirm({
-      title: '가입 요청을 거절할까요?',
-      description: `${student.name} 학생의 가입 요청을 거절해요. 거절하면 대기 목록에서 사라져요.`,
-      confirmText: '거절하기',
-      cancelText: '취소',
-      danger: true,
-    })
+    const ok = await confirm(
+      student.moveFromClassId
+        ? {
+            title: '반 이동 신청을 거절할까요?',
+            description: `${student.name} 학생은 지금 반(${classLabel(student.moveFromClassId)})에 그대로 남아요.`,
+            confirmText: '거절하기',
+            cancelText: '취소',
+            danger: true,
+          }
+        : {
+            title: '가입 요청을 거절할까요?',
+            description: `${student.name} 학생의 가입 요청을 거절해요. 거절하면 대기 목록에서 사라져요.`,
+            confirmText: '거절하기',
+            cancelText: '취소',
+            danger: true,
+          }
+    )
     if (!ok) return
 
     setBusyId(student.id)
     const prev = rosters[tabId] || []
     setRosters((cur) => ({ ...cur, [tabId]: prev.filter((s) => s.id !== student.id) }))
     try {
-      const result = await decidePending(student.id, tabId, 'rejected')
+      const result = student.moveFromClassId
+        ? await changeMembership('reject-move', student.id, tabId)
+        : await decidePending(student.id, tabId, 'rejected')
       if (result !== 'ok') {
         notifyStale(student, result, tabId)
         return
@@ -454,6 +499,39 @@ export default function StudentList() {
       console.error(e)
       setRosters((cur) => ({ ...cur, [tabId]: prev }))
       toast('거절에 실패했어요. 다시 시도해주세요.', 'error')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // 추가 참여 학생을 이 반에서 내보내기 (본반은 그대로)
+  const handleRemoveExtra = async (student: Student) => {
+    if (busyId || !activeId) return
+    const tabId = activeId
+    const ok = await confirm({
+      title: `${student.name} 학생을 ${classLabel(tabId)}에서 내보낼까요?`,
+      description: '본반은 그대로예요. 다시 들어오려면 QR을 새로 찍어야 해요.',
+      confirmText: '내보내기',
+      cancelText: '취소',
+      danger: true,
+    })
+    if (!ok) return
+
+    setBusyId(student.id)
+    const prev = rosters[tabId] || []
+    setRosters((cur) => ({ ...cur, [tabId]: prev.filter((s) => s.id !== student.id) }))
+    try {
+      const result = await changeMembership('remove-extra', student.id, tabId)
+      if (result !== 'ok') {
+        toast(`${student.name} 학생은 이미 이 반에 없어요.`, 'info')
+        refreshRoster(tabId)
+        return
+      }
+      toast('내보냈어요', 'success')
+    } catch (e) {
+      console.error(e)
+      setRosters((cur) => ({ ...cur, [tabId]: prev }))
+      toast('내보내지 못했어요. 다시 시도해주세요.', 'error')
     } finally {
       setBusyId(null)
     }
@@ -616,7 +694,11 @@ export default function StudentList() {
                             </span>
                             <div className="min-w-0">
                               <div className="text-sm font-medium text-gray-900 truncate">{student.name}</div>
-                              <div className="text-xs text-gray-500">승인 대기 중이에요</div>
+                              <div className="text-xs text-gray-500">
+                                {student.moveFromClassId
+                                  ? `반 이동 신청 · 현재 ${classLabel(student.moveFromClassId)}`
+                                  : '승인 대기 중이에요'}
+                              </div>
                             </div>
                           </div>
                           <div className="flex gap-2">
@@ -680,6 +762,15 @@ export default function StudentList() {
                             </span>
                           )}
                         </div>
+                        {student.homeClassId && student.homeClassId !== activeId && classTeacherOf[activeId] && (
+                          <button
+                            onClick={() => void handleRemoveExtra(student)}
+                            disabled={busyId === student.id}
+                            className="ml-auto shrink-0 whitespace-nowrap text-xs text-gray-400 underline hover:text-red-500 min-h-[44px] px-2 disabled:opacity-50"
+                          >
+                            내보내기
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>

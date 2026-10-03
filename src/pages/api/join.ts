@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { FieldValue, getFirestore, Timestamp } from 'firebase-admin/firestore'
+import { FieldValue, getFirestore, Timestamp, type Firestore } from 'firebase-admin/firestore'
 import { getAdminApp, isAdminConfigured, sendPushToUser, verifyIdToken } from '../../lib/fcm-admin'
 
 // src/lib/join.ts의 JOIN_TOKEN_TTL_MS와 같은 값 (그 파일은 클라이언트 SDK를 불러와 서버에서 import하지 않음)
@@ -13,6 +13,8 @@ const JOIN_TOKEN_TTL_MS = 10 * 60 * 1000
 // 서버에서 처리하는 이유: ① 신규 계정은 users 문서가 없어 보안 규칙상 학급/토큰을
 // 읽을 수 없음 ② 토큰 검증을 클라이언트에 맡기면 우회 가능 ③ 재입장(반 변경/진급)은
 // 규칙상 학생 본인이 classId/status를 바꿀 수 없으므로 서버만 처리 가능.
+// 승인된 학생이 다른 실반 QR을 찍으면 본반은 그대로 두고 반 이동 신청(pendingClassId)만
+// 기록합니다. 새 담임이 /api/class-membership으로 승인해야 본반이 바뀝니다.
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -87,18 +89,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(403).json({ error: '교사 계정으로는 학생 입장을 할 수 없어요.' })
     }
 
-    // 본반이 확정(승인)된 학생: 본반은 그대로 두고, 다른 반 QR은 '추가 반' 참여로 처리
-    // (이동수업·교과 반 대응 — 선생님이 직접 보여주는 QR이므로 별도 승인 없이 즉시 참여)
-    // 예외: 본반이 '수업 그룹'(담임이 앱 미등록이라 임시 본반)인 학생이 실반 QR을 찍으면
-    //       → 실반으로 승급(승인 대기), 기존 수업 그룹은 추가 참여로 이동
-    let promoteFromGroupId = ''
+    // 본반이 확정(승인)된 학생
+    // - 수업 그룹 QR → '추가 반' 참여 (선생님이 직접 보여주는 QR이므로 별도 승인 없이 즉시 참여)
+    // - 다른 실반 QR → 반 이동 신청. 새 담임이 승인하기 전까지 본반·승인 상태·추가 반은 그대로라
+    //   거절되거나 승인을 기다리는 동안에도 지금 반·그룹 톡방을 계속 씁니다.
     if (prev.role === 'student' && prev.status === 'approved' && prev.classId) {
       if (prev.classId === classId) {
         return res.status(200).json({ ok: true, status: 'approved', already: true })
       }
-      const prevIsGroup = /_g_[A-Za-z0-9]+$/.test(String(prev.classId))
-      if (prevIsGroup && cls.isGroup !== true) {
-        promoteFromGroupId = String(prev.classId) // 아래 일반 가입 흐름으로 진행
+      // schoolCode가 없는 예전 문서는 classId 첫 토막(학교 코드)으로 판정 (보안 규칙과 같은 기준)
+      const classSchool = String(cls.schoolCode || classId.split('_')[0])
+      const mySchool = String(prev.schoolCode || String(prev.classId).split('_')[0])
+      if (classSchool !== mySchool) {
+        return res
+          .status(403)
+          .json({ error: '다른 학교 반에는 들어갈 수 없어요. 전학했다면 선생님께 문의해 주세요.' })
+      }
+      if (cls.isGroup !== true) {
+        if (prev.pendingClassId === classId) {
+          return res.status(200).json({ ok: true, status: 'move-pending', already: true })
+        }
+        await userRef.set(
+          {
+            pendingClassId: classId,
+            pendingStudentId: cleanStudentId || null,
+            pendingAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+        await notifyTeacher(db, cls.teacherId ? String(cls.teacherId) : '', {
+          title: '반 이동 신청',
+          body: `${String(prev.name || cleanName)} 학생이 우리 반으로 옮기고 싶어해요`,
+          url: '/teacher/students',
+        })
+        return res.status(200).json({ ok: true, status: 'move-pending' })
       } else {
         const extras: string[] = Array.isArray(prev.extraClassIds) ? prev.extraClassIds : []
         if (extras.includes(classId)) {
@@ -123,59 +147,69 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // 4) 학생 프로필 기록 (재입장/반 이동 포함 — 항상 승인 대기로)
+    // 4) 학생 프로필 기록 (승인 전 학생의 재신청 포함 — 항상 승인 대기로)
     //    수업 그룹 QR도 그대로 허용: 담임이 아직 앱에 없으면 그룹이 임시 본반이 되고,
-    //    그룹 소유 교사가 승인합니다. (실반 담임이 등록하면 위 승급 흐름으로 전환)
+    //    그룹 소유 교사가 승인합니다. (실반 담임이 등록하면 위 반 이동 신청으로 전환)
+    //    그룹에는 여러 반 학생이 섞이므로 학년·반은 그룹 원본 반 값으로 채우지 않습니다.
+    const isGroup = cls.isGroup === true
     const profile: Record<string, unknown> = {
       role: 'student',
       status: 'pending',
       classId,
       schoolCode: cls.schoolCode ?? null,
       schoolName: cls.schoolName ?? null,
-      grade: cls.grade ?? null,
-      classNm: cls.classNm ?? null,
+      grade: isGroup ? null : cls.grade ?? null,
+      classNm: isGroup ? null : cls.classNm ?? null,
       name: cleanName,
       displayName: cleanName,
       email: decoded.email || null,
+      pendingClassId: FieldValue.delete(),
+      pendingStudentId: FieldValue.delete(),
+      pendingAt: FieldValue.delete(),
     }
     if (cls.officeCode) profile.officeCode = cls.officeCode
     if (cleanStudentId) profile.studentId = cleanStudentId
     if (!existing.exists) profile.createdAt = FieldValue.serverTimestamp()
-    if (promoteFromGroupId) profile.extraClassIds = FieldValue.arrayUnion(promoteFromGroupId)
     await userRef.set(profile, { merge: true })
 
     // 5) 담임에게 인앱 알림 + 푸시 (실패해도 입장 신청은 성공)
-    const teacherId = cls.teacherId ? String(cls.teacherId) : ''
-    if (teacherId) {
-      const title = '새 학생 입장 신청'
-      const body = `${cleanName} 학생이 승인을 기다려요`
-      const url = '/teacher/students'
-      try {
-        await db.collection('users').doc(teacherId).collection('notifications').add({
-          title,
-          body,
-          url,
-          createdAt: FieldValue.serverTimestamp(),
-          read: false,
-        })
-        // 응답 뒤에는 서버리스 인스턴스가 멈춰 발송이 유실될 수 있어 응답 전에 기다립니다.
-        // (sendPushToUser는 throw하지 않음. 입장 신청 응답이 늦어지지 않게 최대 3초까지만)
-        let pushTimer: ReturnType<typeof setTimeout> | undefined
-        await Promise.race([
-          sendPushToUser(teacherId, { title, body, url }),
-          new Promise<void>((resolve) => {
-            pushTimer = setTimeout(resolve, 3000)
-          }),
-        ])
-        clearTimeout(pushTimer)
-      } catch (e) {
-        console.error('join: teacher notify failed:', e)
-      }
-    }
+    await notifyTeacher(db, cls.teacherId ? String(cls.teacherId) : '', {
+      title: '새 학생 입장 신청',
+      body: `${cleanName} 학생이 승인을 기다려요`,
+      url: '/teacher/students',
+    })
 
     return res.status(200).json({ ok: true, status: 'pending' })
   } catch (e) {
     console.error('join error:', e)
     return res.status(500).json({ error: '입장 신청에 실패했어요. 잠시 후 다시 시도해 주세요.' })
+  }
+}
+
+// 담임에게 인앱 알림 + 푸시 (실패해도 신청 자체는 성공으로 둡니다)
+async function notifyTeacher(
+  db: Firestore,
+  teacherId: string,
+  msg: { title: string; body: string; url: string }
+): Promise<void> {
+  if (!teacherId) return
+  try {
+    await db.collection('users').doc(teacherId).collection('notifications').add({
+      ...msg,
+      createdAt: FieldValue.serverTimestamp(),
+      read: false,
+    })
+    // 응답 뒤에는 서버리스 인스턴스가 멈춰 발송이 유실될 수 있어 응답 전에 기다립니다.
+    // (sendPushToUser는 throw하지 않음. 입장 신청 응답이 늦어지지 않게 최대 3초까지만)
+    let pushTimer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([
+      sendPushToUser(teacherId, msg),
+      new Promise<void>((resolve) => {
+        pushTimer = setTimeout(resolve, 3000)
+      }),
+    ])
+    clearTimeout(pushTimer)
+  } catch (e) {
+    console.error('join: teacher notify failed:', e)
   }
 }

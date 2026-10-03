@@ -74,13 +74,14 @@ service cloud.firestore {
             && classDoc(resource.data.classId).teacherId == request.auth.uid);
 
       // 수정(본인): role은 절대 변경할 수 없습니다.
-      //            학생은 자신의 status/classId도 스스로 바꿀 수 없습니다.
+      //            학생은 자신의 status/classId/추가 반/반 이동 신청 필드도 스스로 바꿀 수 없습니다
+      //            (반 이동 신청은 /api/join, 승인·거절은 새 반 담임이 /api/class-membership으로).
       //            schoolCode는 한 번 정해지면 바꿀 수 없습니다(타학교 명단 열람 방지).
       //            (fcmTokens, mySchedule, displayName 등은 자유롭게 수정 가능)
       allow update: if me(uid)
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(resource.data.role == 'student'
-               ? ['role', 'status', 'classId', 'extraClassIds']
+               ? ['role', 'status', 'classId', 'extraClassIds', 'pendingClassId', 'pendingStudentId', 'pendingAt']
                : ['role'])
         && (!('schoolCode' in resource.data)
             || request.resource.data.schoolCode == resource.data.schoolCode);

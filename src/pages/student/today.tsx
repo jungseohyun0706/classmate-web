@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
-import { doc, onSnapshot } from 'firebase/firestore'
+import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { auth } from '../../lib/firebase'
 import TodayCard from '../../components/TodayCard'
 import BagChecklist from '../../components/BagChecklist'
@@ -24,9 +24,12 @@ interface StudentData {
   classId?: string
   schoolCode?: string
   schoolName?: string
+  officeCode?: string
   grade?: string | number
   classNm?: string | number
   status?: 'pending' | 'approved' | 'rejected'
+  /** 반 이동 신청 중인 반 (새 담임 승인 전까지 classId는 그대로) */
+  pendingClassId?: string
 }
 
 interface DdayEvent {
@@ -117,6 +120,8 @@ export default function StudentToday(): JSX.Element {
   const [todayYmd, setTodayYmd] = useState<string>(() => ymdOf(kstNow()))
   // 오늘 급식이 있는지(TodayCard가 알려 줌) — 급식 없는 날에는 별점을 받지 않습니다.
   const [hasMealToday, setHasMealToday] = useState<boolean>(false)
+  // 반 이동 신청 중인 반 이름 ('3학년 2반') — 반 문서를 못 읽으면 '새 반'
+  const [pendingClassLabel, setPendingClassLabel] = useState<string>('')
 
   // 1분마다, 그리고 백그라운드에서 돌아올 때 날짜가 바뀌었는지 확인 (같은 날이면 상태 변화 없음)
   useEffect(() => {
@@ -198,6 +203,30 @@ export default function StudentToday(): JSX.Element {
     // status를 의존성에 포함 — 승인되는 순간 알림장을 다시 불러옵니다.
   }, [uid, userData?.classId, userData?.status])
 
+  // 반 이동 신청 중인 반 이름
+  useEffect(() => {
+    const pendingClassId = userData?.pendingClassId
+    if (!pendingClassId) {
+      setPendingClassLabel('')
+      return
+    }
+    let cancelled = false
+    setPendingClassLabel('새 반')
+    ;(async () => {
+      try {
+        const { db } = await import('../../lib/firebase')
+        const snap = await getDoc(doc(db, 'classes', pendingClassId))
+        const c = snap.exists() ? snap.data() : null
+        if (!cancelled && c?.grade && c?.classNm) setPendingClassLabel(`${c.grade}학년 ${c.classNm}반`)
+      } catch {
+        // 반 문서를 못 읽으면 '새 반'으로 둡니다.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [userData?.pendingClassId])
+
   // 30일 이내 학사일정 D-day 칩
   useEffect(() => {
     const schoolCode = userData?.schoolCode
@@ -275,6 +304,11 @@ export default function StudentToday(): JSX.Element {
   const rejected = userData.status === 'rejected'
   const hasClass = Boolean(userData.classId && userData.schoolCode) && !rejected
   const studentName = userData.name || userData.displayName || '학생'
+  // 수업 그룹으로 들어온 학생은 학년·반이 비어 있음(그룹엔 여러 반 학생이 섞임)
+  const classTitle =
+    userData.grade && userData.classNm
+      ? `${userData.schoolName ?? ''} ${userData.grade}학년 ${userData.classNm}반`
+      : String(userData.schoolName ?? '')
 
   return (
     <div className="min-h-screen bg-gray-50 text-black">
@@ -302,14 +336,33 @@ export default function StudentToday(): JSX.Element {
       >
         <div>
           <h1 className="text-xl font-bold text-gray-900 break-keep">
-            {hasClass
-              ? `${userData.schoolName ?? ''} ${userData.grade ?? ''}학년 ${userData.classNm ?? ''}반`
-              : `안녕, ${studentName}!`}
+            {hasClass ? classTitle : `안녕, ${studentName}!`}
           </h1>
           <p className="mt-1 text-sm text-gray-500 break-keep">
             {hasClass ? `${studentName}, 오늘도 좋은 하루 보내요!` : '우리 반에 들어가면 소식이 여기에 보여요.'}
           </p>
         </div>
+
+        {/* 반 이동 신청 안내 */}
+        {userData.pendingClassId && (
+          <div className="flex items-center gap-2.5 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5 shrink-0 text-sky-600"
+              aria-hidden="true"
+            >
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+            <p className="text-sm font-medium text-sky-800 break-keep">
+              {pendingClassLabel || '새 반'}으로 이동 신청 중 — 새 담임 선생님 승인을 기다려요
+            </p>
+          </div>
+        )}
 
         {/* 승인 대기 배너 */}
         {userData.status === 'pending' && (
@@ -402,6 +455,9 @@ export default function StudentToday(): JSX.Element {
                 schoolCode={String(userData.schoolCode)}
                 uid={uid}
                 status={userData.status}
+                grade={userData.grade ?? undefined}
+                classNm={userData.classNm ?? undefined}
+                officeCode={userData.officeCode ? String(userData.officeCode) : undefined}
               />
             )}
 

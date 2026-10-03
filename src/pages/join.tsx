@@ -57,6 +57,8 @@ export default function JoinPage() {
   const [user, setUser] = useState<User | null>(null)
   const [authReady, setAuthReady] = useState(false)
   const [joined, setJoined] = useState(false)
+  // 승인된 학생이 다른 반 QR을 찍은 경우: 반 이동 신청 (already = 이미 같은 반으로 신청 중)
+  const [movePending, setMovePending] = useState<{ already: boolean } | null>(null)
 
   const [mode, setMode] = useState<'signup' | 'login'>('signup')
   const [name, setName] = useState('')
@@ -196,6 +198,11 @@ export default function JoinPage() {
         router.replace(`/class-room?classId=${encodeURIComponent(classId)}`)
         return
       }
+      if (data.status === 'move-pending') {
+        setMovePending({ already: data.already === true })
+        toast(data.already ? '이미 이 반으로 이동 신청 중이에요' : '반 이동 신청을 보냈어요.', 'success')
+        return
+      }
       setJoined(true)
       toast('입장 신청을 보냈어요.', 'success')
     } catch (err: any) {
@@ -270,6 +277,30 @@ export default function JoinPage() {
             보여 달라고 요청한 뒤, 다시 스캔해 주세요.
           </p>
         </div>
+      </div>
+    )
+  } else if (movePending) {
+    // 반 이동 신청 — 승인 전까지 지금 반을 그대로 씀
+    content = (
+      <div className="bg-white shadow-xl rounded-2xl border border-gray-100 p-8 text-center">
+        <div className="mx-auto w-16 h-16 rounded-full bg-emerald-50 flex items-center justify-center">
+          <svg className="w-8 h-8 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <h2 className="mt-4 text-xl font-bold text-gray-900 break-keep">
+          {movePending.already ? '이미 이 반으로 이동 신청 중이에요' : '반 이동 신청을 보냈어요'}
+        </h2>
+        <p className="mt-1 text-sm font-medium text-emerald-700 break-keep">{classLabel}</p>
+        <p className="mt-2 text-sm text-gray-600 break-keep">
+          새 담임 선생님이 승인하면 반이 바뀌어요. 그때까지는 지금 반을 그대로 쓸 수 있어요.
+        </p>
+        <button
+          onClick={() => router.push('/student/today')}
+          className="mt-6 w-full flex justify-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-base font-bold text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 transition-colors"
+        >
+          오늘 화면 보러 가기 &rarr;
+        </button>
       </div>
     )
   } else if (joined) {

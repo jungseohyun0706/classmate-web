@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth, db } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
@@ -21,6 +21,26 @@ interface PendingStudent {
   id: string
   name: string
   studentId?: string
+  /** 반 이동 신청이면 지금 본반 classId */
+  moveFromClassId?: string
+}
+
+/** classId → '1학년 3반' (수업 그룹이면 '1학년 3반 수업') */
+function classLabelOf(classId: string): string {
+  const isGroup = /_g_[A-Za-z0-9]+$/.test(classId)
+  const parts = classId.replace(/_g_[A-Za-z0-9]+$/, '').split('_')
+  if (parts.length < 3) return classId
+  const base = `${parts[parts.length - 2]}학년 ${parts[parts.length - 1]}반`
+  return isGroup ? `${base} 수업` : base
+}
+
+function byStudentNo(a: PendingStudent, b: PendingStudent): number {
+  const an = parseInt(a.studentId ?? '', 10)
+  const bn = parseInt(b.studentId ?? '', 10)
+  const av = Number.isFinite(an) ? an : 9999
+  const bv = Number.isFinite(bn) ? bn : 9999
+  if (av !== bv) return av - bv
+  return a.name.localeCompare(b.name, 'ko')
 }
 
 const RING_RADIUS = 16
@@ -38,7 +58,10 @@ export default function ClassQrPage() {
     grade: string | number
     classNm: string | number
     schoolName: string
+    schoolCode: string
     isGroup: boolean
+    /** 이 반 teacherId가 나인지 — 반 이동 신청은 담임만 처리 */
+    isClassTeacher: boolean
   } | null>(null)
 
   const [issuing, setIssuing] = useState(false)
@@ -48,7 +71,16 @@ export default function ClassQrPage() {
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   // 실시간 입장 신청 목록 (QR을 띄운 채 바로 승인)
-  const [pending, setPending] = useState<PendingStudent[]>([])
+  const [homePending, setHomePending] = useState<PendingStudent[]>([])
+  // 다른 반에서 옮겨 오려는 반 이동 신청 (학생 관리와 같은 기준: 이 반 담임에게만)
+  const [movePending, setMovePending] = useState<PendingStudent[]>([])
+  const pending = useMemo(
+    () =>
+      [...homePending, ...movePending.filter((m) => !homePending.some((p) => p.id === m.id))].sort(
+        byStudentNo
+      ),
+    [homePending, movePending]
+  )
   const [busyId, setBusyId] = useState<string | null>(null)
   const [approvedCount, setApprovedCount] = useState(0)
   const pendingRef = useRef<HTMLDivElement>(null)
@@ -115,7 +147,9 @@ export default function ClassQrPage() {
             grade: cls.grade,
             classNm: cls.classNm,
             schoolName: String(cls.schoolName || data.schoolName || ''),
+            schoolCode: String(data.schoolCode),
             isGroup: cls.isGroup === true,
+            isClassTeacher: cls.teacherId === u.uid,
           })
           setUserData(data)
           void issue(target)
@@ -161,20 +195,47 @@ export default function ClassQrPage() {
             })
           }
         })
-        list.sort((a, b) => {
-          const an = parseInt(a.studentId ?? '', 10)
-          const bn = parseInt(b.studentId ?? '', 10)
-          const av = Number.isFinite(an) ? an : 9999
-          const bv = Number.isFinite(bn) ? bn : 9999
-          if (av !== bv) return av - bv
-          return a.name.localeCompare(b.name, 'ko')
-        })
-        setPending(list)
+        setHomePending(list)
       },
       (e) => console.error('입장 신청 구독 실패', e)
     )
     return () => unsub()
   }, [targetClass?.classId])
+
+  // 반 이동 신청 실시간 구독 — 같은 학교 조건은 보안 규칙(같은 학교 교사만 읽기)을 통과시키기 위함
+  useEffect(() => {
+    const classId = targetClass?.classId
+    const schoolCode = targetClass?.schoolCode
+    if (!classId || !schoolCode || !targetClass?.isClassTeacher) {
+      setMovePending([])
+      return
+    }
+    const q = query(
+      collection(db, 'users'),
+      where('pendingClassId', '==', String(classId)),
+      where('role', '==', 'student'),
+      where('schoolCode', '==', schoolCode)
+    )
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: PendingStudent[] = []
+        snap.forEach((d) => {
+          const v = d.data()
+          const no = v.pendingStudentId ?? v.studentId
+          list.push({
+            id: d.id,
+            name: String(v.name || v.displayName || '이름 없음'),
+            studentId: no ? String(no) : undefined,
+            moveFromClassId: String(v.classId || ''),
+          })
+        })
+        setMovePending(list)
+      },
+      (e) => console.error('반 이동 신청 구독 실패', e)
+    )
+    return () => unsub()
+  }, [targetClass?.classId, targetClass?.schoolCode, targetClass?.isClassTeacher])
 
   // 승인 + 학생에게 알림 (실패 시 목록은 스냅샷이 되돌려줌)
   const approveOne = useCallback(
@@ -184,6 +245,27 @@ export default function ClassQrPage() {
       if (!classId) return
       setBusyId(student.id)
       try {
+        // 반 이동 신청: 서버가 학생 문서를 다시 확인해 본반을 옮기고 학생에게 알림까지 보냄
+        if (student.moveFromClassId) {
+          const token = await auth.currentUser?.getIdToken()
+          const resp = await fetch('/api/class-membership', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: 'approve-move', classId, studentUid: student.id }),
+          })
+          if (resp.status === 409) {
+            toast(`${student.name} 학생의 신청은 이미 처리되었어요.`, 'info')
+            setMovePending((list) => list.filter((p) => p.id !== student.id))
+            return
+          }
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}))
+            throw new Error(data?.error || `class-membership ${resp.status}`)
+          }
+          setApprovedCount((n) => n + 1)
+          toast(`${student.name} 승인 완료`, 'success')
+          return
+        }
         // 화면의 목록이 늦게 갱신되는 사이 학생이 다른 반 QR로 다시 신청했을 수 있으니,
         // 지금도 이 반에 대기 중일 때만 승인 (아니면 다른 반 승인 없이 입장돼 버림)
         const result = await runTransaction(db, async (tx) => {
@@ -203,7 +285,7 @@ export default function ClassQrPage() {
               : `${student.name} 학생의 신청은 이미 처리되었어요.`,
             'info'
           )
-          setPending((list) => list.filter((p) => p.id !== student.id))
+          setHomePending((list) => list.filter((p) => p.id !== student.id))
           return
         }
         setApprovedCount((n) => n + 1)
@@ -430,6 +512,11 @@ export default function ClassQrPage() {
                   <div className="min-w-0">
                     <span className="font-bold text-gray-900">{s.name}</span>
                     {s.studentId && <span className="ml-2 text-sm text-gray-400">{s.studentId}번</span>}
+                    {s.moveFromClassId && (
+                      <p className="text-xs text-gray-500">
+                        반 이동 신청 · 현재 {classLabelOf(s.moveFromClassId)}
+                      </p>
+                    )}
                   </div>
                   <button
                     onClick={() => approveOne(s)}
