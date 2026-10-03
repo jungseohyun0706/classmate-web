@@ -4,7 +4,7 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { auth, db } from '../../lib/firebase'
 import { deleteField, doc, getDoc, setDoc, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
-import { storedClassGridToInfoTimetable } from '../../lib/timetableConvert'
+import { periodTimesToStarts, storedClassGridToInfoTimetable } from '../../lib/timetableConvert'
 
 type School = {
   code: string
@@ -46,6 +46,45 @@ export default function RegisterClass() {
     return true
   }
 
+  // 학교를 처음 정할 때: 보안 규칙상 클라이언트는 schoolCode를 처음 쓸 수 없어서
+  // 서버(/api/set-school)가 NEIS로 학교를 확인한 뒤 정함. 성공하면 서버가 저장한 값, 아니면 안내 후 null
+  const claimSchool = async (school: School): Promise<School | null> => {
+    const user = auth.currentUser
+    if (!user) return null
+    const ok = await confirm({
+      title: `${school.name}에 등록할까요?`,
+      description: '학교는 한 번 정하면 바꿀 수 없어요. 같은 학교 선생님들께 새 선생님 등록 알림이 가요.',
+      confirmText: '등록하기',
+      cancelText: '취소',
+    })
+    if (!ok) return null
+    try {
+      const token = await user.getIdToken()
+      const res = await fetch('/api/set-school', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ schoolCode: school.code }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) {
+        toast(data?.error || '학교 등록에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+        return null
+      }
+      const claimed: School = {
+        ...school,
+        code: String(data.schoolCode),
+        officeCode: String(data.officeCode || school.officeCode),
+        name: String(data.schoolName || school.name),
+      }
+      setSelectedSchool(claimed)
+      return claimed
+    } catch (e) {
+      console.error(e)
+      toast('학교 등록에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      return null
+    }
+  }
+
   // 담임이 아닌(교과 전담 등) 선생님: 반 없이 학교 소속만 등록
   const handleSchoolOnly = async () => {
     if (!selectedSchool) return
@@ -79,13 +118,16 @@ export default function RegisterClass() {
         if (!ok) return
       }
 
+      const school = me?.schoolCode ? selectedSchool : await claimSchool(selectedSchool)
+      if (!school) return
+
       const batch = writeBatch(db)
       batch.set(
         doc(db, 'users', user.uid),
         {
-          schoolCode: selectedSchool.code,
-          officeCode: selectedSchool.officeCode,
-          schoolName: selectedSchool.name,
+          schoolCode: school.code,
+          officeCode: school.officeCode,
+          schoolName: school.name,
           role: 'teacher',
           ...(prevClassId ? { classId: deleteField(), grade: deleteField(), classNm: deleteField() } : {}),
         },
@@ -212,12 +254,16 @@ export default function RegisterClass() {
       if (schoolLocked(me, selectedSchool)) return
       const prevClassId = String(me.classId || '')
 
+      // 반 문서 생성 규칙이 내 users.schoolCode를 보므로, 학교가 없으면 반을 쓰기 전에 서버에서 먼저 정함
+      const school = me.schoolCode ? selectedSchool : await claimSchool(selectedSchool)
+      if (!school) return
+
       // 고유 반 ID 생성 (학교코드_학년_반)
       // 이렇게 하면 중복 생성을 방지하거나 쉽게 찾을 수 있음
       // 숫자로 정규화해 "03" 같은 입력이 다른 ID를 만들지 않게 함
       const gradeNum = parseInt(grade, 10)
       const classNum = parseInt(classNm, 10)
-      const classId = `${selectedSchool.code}_${gradeNum}_${classNum}`
+      const classId = `${school.code}_${gradeNum}_${classNum}`
 
       // 1~2.5를 한 batch로: 어느 하나라도 규칙에 막히면 전부 취소되어,
       // 반 문서만 내 것으로 점유된 채 남는 일이 없게 함
@@ -227,9 +273,9 @@ export default function RegisterClass() {
       // setDoc을 쓰면 이미 있으면 덮어쓰기(업데이트) 됨
       batch.set(doc(db, 'classes', classId), {
         classId: classId,
-        schoolCode: selectedSchool.code,
-        officeCode: selectedSchool.officeCode,
-        schoolName: selectedSchool.name,
+        schoolCode: school.code,
+        officeCode: school.officeCode,
+        schoolName: school.name,
         grade: gradeNum,
         classNm: classNum,
         teacherId: user.uid,
@@ -241,9 +287,9 @@ export default function RegisterClass() {
       // 2. 선생님 계정(Users)에 내 반 정보 연결
       batch.set(doc(db, 'users', user.uid), {
         classId: classId,
-        schoolCode: selectedSchool.code,
-        officeCode: selectedSchool.officeCode,
-        schoolName: selectedSchool.name,
+        schoolCode: school.code,
+        officeCode: school.officeCode,
+        schoolName: school.name,
         grade: gradeNum,
         classNm: classNum,
         role: 'teacher'
@@ -272,13 +318,22 @@ export default function RegisterClass() {
       //    이미 학급 시간표가 있으면(재등록·인수) 손으로 고친 내용일 수 있어 덮어쓰지 않음
       try {
         const ttRef = doc(db, 'classes', classId, 'info', 'timetable')
-        const masterSnap = await getDoc(doc(db, 'school_timetables', selectedSchool.code))
+        const masterSnap = await getDoc(doc(db, 'school_timetables', school.code))
         const classGrid = masterSnap.exists()
           ? (masterSnap.data().classes || {})[`${gradeNum}-${classNum}`]
           : null
         if (classGrid && !(await getDoc(ttRef)).exists()) {
           await setDoc(ttRef, storedClassGridToInfoTimetable(classGrid))
           toast('업로드된 학교 시간표에서 우리 반 시간표를 자동으로 채웠어요!', 'success')
+        }
+        // 교시 시작 시각도 없을 때만 채움 — 업로드 때 반 문서가 없던 반은 복사를 못 받았고,
+        // 학생은 마스터를 읽을 수 없어 이 문서가 없으면 학교급 기본 시각으로 '지금' 교시를 판별함
+        const starts = periodTimesToStarts(masterSnap.exists() ? masterSnap.data().periodTimes : null)
+        if (starts.length > 0) {
+          const ptRef = doc(db, 'classes', classId, 'info', 'periodTimes')
+          if (!(await getDoc(ptRef)).exists()) {
+            await setDoc(ptRef, { times: starts, updatedAt: serverTimestamp() })
+          }
         }
       } catch (autoFillError) {
         // 자동 채움은 부가 기능 — 실패해도 반 등록 자체는 성공으로 처리

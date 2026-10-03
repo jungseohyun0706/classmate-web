@@ -76,27 +76,29 @@ service cloud.firestore {
       // 수정(본인): role은 절대 변경할 수 없습니다.
       //            학생은 자신의 status/classId/추가 반/반 이동 신청 필드도 스스로 바꿀 수 없습니다
       //            (반 이동 신청은 /api/join, 승인·거절은 새 반 담임이 /api/class-membership으로).
-      //            schoolCode는 한 번 정해지면 바꿀 수 없습니다(타학교 명단 열람 방지).
+      //            schoolCode는 클라이언트가 처음 정하거나 바꿀 수 없습니다(타학교 명단 열람 방지).
+      //            교사는 /api/set-school(NEIS 확인 + 같은 학교 교사 알림), 학생은 /api/join이 서버에서 정합니다.
       //            (fcmTokens, mySchedule, displayName 등은 자유롭게 수정 가능)
       allow update: if me(uid)
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(resource.data.role == 'student'
                ? ['role', 'status', 'classId', 'extraClassIds', 'pendingClassId', 'pendingStudentId', 'pendingAt']
                : ['role'])
-        && (!('schoolCode' in resource.data)
-            || request.resource.data.schoolCode == resource.data.schoolCode);
+        && request.resource.data.get('schoolCode', null) == resource.data.get('schoolCode', null);
 
-      // 수정(교사): 승인/거절 흐름 — 같은 학교 교사면 가능
-      //             (교과 교사가 수업 반 학생을 초대·승인하는 흐름 + 담임 미정 반 처리)
-      //             status/classId/grade/classNm 필드만 바꿀 수 있습니다.
+      // 수정(교사): 승인/거절만 — 그 학생이 신청한 반(classId)의 담임(수업 그룹이면 소유 교사)이
+      //             status를 approved/rejected로 바꿀 수 있습니다. 반 이동·추가 반 변경은 서버 API
+      //             (/api/join, /api/class-membership)가 합니다. (예전에는 같은 학교 교사 누구나 학생의
+      //             classId를 자기 반으로 바꿔 명단·공지·톡방·알림 권한을 얻을 수 있었습니다.)
       allow update: if isTeacher()
         && resource.data.role == 'student'
         && sameSchool(resource.data.schoolCode)
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['status', 'classId', 'grade', 'classNm']);
+        && classDoc(resource.data.classId).teacherId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && request.resource.data.status in ['approved', 'rejected'];
 
-      // 삭제: 본인만
-      allow delete: if me(uid);
+      // 삭제: 불가 (문서를 지우고 다시 만들어 학교를 새로 정하는 우회 차단 — 앱에 삭제 기능 없음)
+      allow delete: if false;
 
       // ── users/{uid}/notifications/{nid}: 알림함 ──────────
       match /notifications/{nid} {
@@ -142,12 +144,13 @@ service cloud.firestore {
       // 읽기: 같은 학교의 로그인 사용자 (학생 가입 흐름에서 학급 정보 확인 포함)
       allow read: if signedIn() && sameSchool(resource.data.schoolCode);
 
-      // 생성: 교사가 자기 자신을 teacherId로 지정할 때만.
-      //       학교가 정해진 교사는 자기 학교의 반만 만들 수 있습니다(타학교 반 선점 방지).
+      // 생성: 교사가 자기 자신을 teacherId로 지정할 때만, 자기 학교의 반만(문서 ID도 학교 코드로 시작).
+      //       학교가 아직 없는 교사는 먼저 /api/set-school로 학교를 정해야 합니다(타학교 반 선점 방지).
       allow create: if isTeacher()
         && request.resource.data.teacherId == request.auth.uid
-        && (myDoc().get('schoolCode', null) == null
-            || request.resource.data.get('schoolCode', null) == myDoc().schoolCode);
+        && myDoc().get('schoolCode', null) != null
+        && request.resource.data.get('schoolCode', null) == myDoc().schoolCode
+        && classId.split('_')[0] == myDoc().schoolCode;
 
       // 수정: 담임 교사만. teacherId는 유지하거나(일반 수정)
       //       null로 비울 수만 있습니다(반 변경 시 담임 자리 해제).
@@ -166,8 +169,8 @@ service cloud.firestore {
       allow update: if isTeacher()
         && request.resource.data.teacherId == request.auth.uid
         && (!('teacherId' in resource.data) || resource.data.teacherId == null)
-        && (myDoc().get('schoolCode', null) == null
-            || myDoc().schoolCode == resource.data.get('schoolCode', classId.split('_')[0]))
+        && myDoc().get('schoolCode', null) != null
+        && myDoc().schoolCode == resource.data.get('schoolCode', classId.split('_')[0])
         && (!('schoolCode' in resource.data)
             || request.resource.data.get('schoolCode', null) == resource.data.schoolCode);
 
