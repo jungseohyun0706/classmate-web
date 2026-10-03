@@ -101,7 +101,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       String(sender.name || sender.displayName || (isSchoolTeacher ? '선생님' : '학생')).slice(0, 12)
 
     // 대상: 담임 + 본반 학생 + 추가 참여 학생 (발신자 제외)
-    const [homeSnap, extraSnap] = await Promise.all([
+    const teacherId = cls.teacherId ? String(cls.teacherId) : ''
+    const [homeSnap, extraSnap, teacherSnap] = await Promise.all([
       db
         .collection('users')
         .where('classId', '==', classId)
@@ -114,9 +115,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         .where('role', '==', 'student')
         .where('status', '==', 'approved')
         .get(),
+      teacherId ? db.collection('users').doc(teacherId).get() : null,
     ])
     const targets = new Set<string>()
-    if (cls.teacherId) targets.add(String(cls.teacherId))
+    // 교사가 '이 반 빼기'로 목록에서 뺀 수업 반은 teacherId가 남아 있어도 보내지 않음
+    // (지금 담임 반이거나 수업 반 목록에 있을 때만)
+    const teacher = teacherSnap?.exists ? teacherSnap.data() || {} : {}
+    if (
+      teacherId &&
+      (teacher.classId === classId ||
+        (Array.isArray(teacher.teachingClassIds) && teacher.teachingClassIds.includes(classId)))
+    ) {
+      targets.add(teacherId)
+    }
     homeSnap.forEach((d) => targets.add(d.id))
     extraSnap.forEach((d) => targets.add(d.id))
     targets.delete(decoded.uid)

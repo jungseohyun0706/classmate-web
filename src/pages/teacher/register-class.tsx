@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { onAuthStateChanged } from 'firebase/auth'
 import { auth, db } from '../../lib/firebase'
-import { doc, getDoc, setDoc, serverTimestamp, writeBatch } from 'firebase/firestore'
+import { deleteField, doc, getDoc, setDoc, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 import { storedClassGridToInfoTimetable } from '../../lib/timetableConvert'
 
@@ -16,7 +16,7 @@ type School = {
 
 export default function RegisterClass() {
   const router = useRouter()
-  const { toast } = useUI()
+  const { toast, confirm } = useUI()
 
   // Steps: 0 = Search School, 1 = Input Class Info
   const [step, setStep] = useState(0)
@@ -63,17 +63,50 @@ export default function RegisterClass() {
         router.replace('/student/today')
         return
       }
-      if (schoolLocked(meSnap.exists() ? meSnap.data() : null, selectedSchool)) return
-      await setDoc(
+      const me = meSnap.exists() ? meSnap.data() : null
+      if (schoolLocked(me, selectedSchool)) return
+      const prevClassId = String(me?.classId || '')
+
+      // 이미 담임 반이 있으면 확인 후 담임에서 빠짐 (학생들은 그 반에 그대로 남음)
+      if (prevClassId) {
+        const label = me?.grade && me?.classNm ? `${me.grade}학년 ${me.classNm}반` : prevClassId
+        const ok = await confirm({
+          title: `지금 담임 반(${label}) 담임에서 빠질까요?`,
+          description: '학생들은 그 반에 그대로 남고, 새 담임이 반을 등록하면 이어받아요.',
+          confirmText: '담임에서 빠지기',
+          cancelText: '취소',
+        })
+        if (!ok) return
+      }
+
+      const batch = writeBatch(db)
+      batch.set(
         doc(db, 'users', user.uid),
         {
           schoolCode: selectedSchool.code,
           officeCode: selectedSchool.officeCode,
           schoolName: selectedSchool.name,
           role: 'teacher',
+          ...(prevClassId ? { classId: deleteField(), grade: deleteField(), classNm: deleteField() } : {}),
         },
         { merge: true }
       )
+      // 반 문서의 담임이 아직 나일 때만 비움 (아니면 해제 쓰기가 거부되어 batch 전체가 실패함)
+      if (prevClassId) {
+        try {
+          const prevSnap = await getDoc(doc(db, 'classes', prevClassId))
+          if (prevSnap.exists() && prevSnap.data().teacherId === user.uid) {
+            batch.set(
+              doc(db, 'classes', prevClassId),
+              { teacherId: null, teacherName: '담임 미정' },
+              { merge: true }
+            )
+          }
+        } catch (releaseErr) {
+          console.error('이전 반 확인 실패(해제 생략):', releaseErr)
+        }
+      }
+      await batch.commit()
       toast('학교 등록 완료! 시간표·교환·SOS를 바로 쓸 수 있어요.', 'success')
       router.replace('/dashboard')
     } catch (e: any) {
@@ -236,16 +269,15 @@ export default function RegisterClass() {
       await batch.commit()
 
       // 3. 학교 시간표 엑셀(마스터)이 이미 업로드돼 있으면 우리 반 시간표를 자동으로 채움
+      //    이미 학급 시간표가 있으면(재등록·인수) 손으로 고친 내용일 수 있어 덮어쓰지 않음
       try {
+        const ttRef = doc(db, 'classes', classId, 'info', 'timetable')
         const masterSnap = await getDoc(doc(db, 'school_timetables', selectedSchool.code))
         const classGrid = masterSnap.exists()
           ? (masterSnap.data().classes || {})[`${gradeNum}-${classNum}`]
           : null
-        if (classGrid) {
-          await setDoc(
-            doc(db, 'classes', classId, 'info', 'timetable'),
-            storedClassGridToInfoTimetable(classGrid)
-          )
+        if (classGrid && !(await getDoc(ttRef)).exists()) {
+          await setDoc(ttRef, storedClassGridToInfoTimetable(classGrid))
           toast('업로드된 학교 시간표에서 우리 반 시간표를 자동으로 채웠어요!', 'success')
         }
       } catch (autoFillError) {
