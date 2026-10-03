@@ -23,6 +23,8 @@ const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   open: { label: '모집중', cls: 'bg-red-100 text-red-600' },
   assigned: { label: '배정됨', cls: 'bg-green-100 text-green-700' },
   cancelled: { label: '취소됨', cls: 'bg-gray-100 text-gray-500' },
+  // 아무도 맡지 않은 채 날짜가 지난 open SOS (DB 상태는 open 그대로)
+  expired: { label: '마감', cls: 'bg-gray-100 text-gray-500' },
 }
 
 export default function SosPage() {
@@ -114,6 +116,10 @@ export default function SosPage() {
       toast('날짜를 선택해 주세요.', 'error')
       return
     }
+    if (ymd < todayKstYmd()) {
+      toast('지난 날짜로는 SOS를 보낼 수 없어요. 날짜를 다시 선택해 주세요.', 'error')
+      return
+    }
     const ok = await confirm({
       title: '보결 SOS를 보낼까요?',
       description: `${formatYmd(ymd)} ${period}교시 보결 요청을 우리 학교 선생님들께 알려요.`,
@@ -140,8 +146,12 @@ export default function SosPage() {
       }
       setReason('')
     } catch (e) {
-      console.error(e)
-      toast('SOS 발행에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      if (e instanceof SosStateError) {
+        toast(e.message, 'error')
+      } else {
+        console.error(e)
+        toast('SOS 발행에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      }
     } finally {
       setSending(false)
     }
@@ -207,6 +217,7 @@ export default function SosPage() {
   if (!userData) return null
 
   const hasMySchedule = !!userData.mySchedule
+  const today = todayKstYmd()
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6">
@@ -251,6 +262,7 @@ export default function SosPage() {
                   id="sos-date"
                   type="date"
                   value={dateInput}
+                  min={ymdToInput(today)}
                   onChange={(e) => setDateInput(e.target.value)}
                   className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:ring-2 focus:ring-red-400 focus:border-red-400"
                 />
@@ -327,7 +339,11 @@ export default function SosPage() {
 
         <div className="space-y-3">
           {requests.map((req) => {
-            const chip = STATUS_CHIP[req.status] ?? STATUS_CHIP.cancelled
+            const isOpen = req.status === 'open' && !(req.date < today)
+            const chip =
+              req.status === 'open' && !isOpen
+                ? STATUS_CHIP.expired
+                : STATUS_CHIP[req.status] ?? STATUS_CHIP.cancelled
             const isMine = req.requesterId === uid
             return (
               <div key={req.id} className="bg-white shadow-sm rounded-xl border border-gray-200 p-4">
@@ -353,7 +369,7 @@ export default function SosPage() {
                   </div>
                 )}
 
-                {req.status === 'open' && !isMine && (
+                {isOpen && !isMine && (
                   <button
                     onClick={() => handleAccept(req)}
                     disabled={workingId === req.id}
@@ -363,7 +379,7 @@ export default function SosPage() {
                   </button>
                 )}
 
-                {req.status === 'open' && isMine && (
+                {isOpen && isMine && (
                   <button
                     onClick={() => handleCancel(req)}
                     disabled={workingId === req.id}

@@ -39,9 +39,11 @@ export interface SosRequestDoc {
   cancelledAt?: unknown
 }
 
+export type SosErrorCode = 'not-found' | 'not-open' | 'forbidden' | 'past-date'
+
 export class SosStateError extends Error {
-  code: 'not-found' | 'not-open' | 'forbidden'
-  constructor(code: 'not-found' | 'not-open' | 'forbidden', message: string) {
+  code: SosErrorCode
+  constructor(code: SosErrorCode, message: string) {
     super(message)
     this.name = 'SosStateError'
     this.code = code
@@ -167,9 +169,13 @@ export interface CreateSosResult {
 /**
  * SOS를 발행하고, 그 요일/교시가 비어 있는 선생님들에게
  * 인앱 알림 + 푸시를 보냅니다. 주말 날짜면 알림 대상은 0명입니다.
+ * 지난 날짜면 SosStateError('past-date')를 던집니다.
  */
 export async function createSos(input: CreateSosInput): Promise<CreateSosResult> {
   const date = input.date && /^\d{8}$/.test(input.date) ? input.date : todayKstYmd()
+  if (date < todayKstYmd()) {
+    throw new SosStateError('past-date', '지난 날짜로는 SOS를 보낼 수 없어요.')
+  }
 
   const ref = await addDoc(collection(db, 'school_sos', input.schoolCode, 'requests'), {
     date,
@@ -217,7 +223,7 @@ export interface AcceptSosInput {
 
 /**
  * 선착순 수락: 트랜잭션으로 status가 'open'일 때만 assigned로 바꿉니다.
- * 이미 마감됐으면 SosStateError('not-open')를 던집니다.
+ * 이미 마감됐거나 날짜가 지났으면 SosStateError('not-open')를 던집니다.
  * 성공하면 요청자에게 알림/푸시를 보냅니다.
  */
 export async function acceptSos(input: AcceptSosInput): Promise<void> {
@@ -231,6 +237,9 @@ export async function acceptSos(input: AcceptSosInput): Promise<void> {
     const data = snap.data() as SosRequestDoc
     if (data.status !== 'open') {
       throw new SosStateError('not-open', '이미 마감된 SOS예요.')
+    }
+    if (data.date < todayKstYmd()) {
+      throw new SosStateError('not-open', '지난 SOS예요.')
     }
     if (data.requesterId === input.accepterId) {
       throw new SosStateError('forbidden', '내가 올린 SOS는 맡을 수 없어요.')
