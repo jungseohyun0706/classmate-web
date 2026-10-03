@@ -21,19 +21,30 @@ function safeCompare(input: string, expected: string): boolean {
 }
 
 // 코드 무차별 대입 방지 (인스턴스별 best-effort)
-const attempts = new Map<string, { n: number; t: number }>()
+// 틀린 코드 시도만 셉니다 — 같은 학교 교사들은 공인 IP 하나를 함께 쓰는 경우가 많아서
+// 성공한 가입까지 세면 연달아 가입할 때 429로 막혀 계정만 생기고 등록이 안 돼요.
+const failedAttempts = new Map<string, { n: number; t: number }>()
 const WINDOW_MS = 10 * 60 * 1000
 const MAX_ATTEMPTS = 10
 
 function limited(ip: string): boolean {
-  const now = Date.now()
-  const a = attempts.get(ip)
-  if (!a || now - a.t > WINDOW_MS) {
-    attempts.set(ip, { n: 1, t: now })
+  const a = failedAttempts.get(ip)
+  if (!a) return false
+  if (Date.now() - a.t > WINDOW_MS) {
+    failedAttempts.delete(ip)
     return false
   }
+  return a.n >= MAX_ATTEMPTS
+}
+
+function recordFailure(ip: string) {
+  const now = Date.now()
+  const a = failedAttempts.get(ip)
+  if (!a || now - a.t > WINDOW_MS) {
+    failedAttempts.set(ip, { n: 1, t: now })
+    return
+  }
   a.n += 1
-  return a.n > MAX_ATTEMPTS
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -62,6 +73,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   if (!safeCompare(code.trim(), expected)) {
+    recordFailure(ip)
     return res.status(403).json({ error: '교사 인증 코드가 올바르지 않아요. 관리자에게 문의해 주세요.' })
   }
 
