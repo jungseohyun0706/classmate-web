@@ -16,10 +16,10 @@ import {
 import { auth, db } from '../lib/firebase'
 import { useUI } from '../components/ui/feedback'
 import {
-  checkNotice,
   formatNoticeDate,
   getMyReceipts,
   markRead,
+  setConsent,
   watchAnnouncements,
   type Announcement,
   type ConsentValue,
@@ -488,23 +488,34 @@ export default function ClassRoom(): JSX.Element {
     }
   }
 
-  // 학생: 공지 확인 체크
-  const handleCheck = async (n: Announcement) => {
+  // 학생: 동의가 필요한 공지에 동의/미동의 응답 (상세 화면과 같은 기록 방식, 나중에 바꿀 수 있음)
+  // 예전에는 '공지 확인했어요' 한 번이 곧 '동의'로 집계되고 '동의하지 않음'을 고를 수 없었습니다.
+  const handleConsent = async (n: Announcement, value: ConsentValue) => {
     if (!uid || !classId || consentBusy) return
-    if (receipts[n.id]?.consent === 'agreed') return
+    if (receipts[n.id]?.consent === value) return
+    if (value === 'declined') {
+      const ok = await confirm({
+        title: '동의하지 않을까요?',
+        description: "선생님께 '동의하지 않음'으로 전달돼요. 나중에 언제든 바꿀 수 있어요.",
+        confirmText: '동의 안 함',
+        cancelText: '돌아가기',
+        danger: true,
+      })
+      if (!ok) return
+    }
     setConsentBusy(n.id)
     try {
-      await checkNotice(classId, n.id, uid, myName)
+      await setConsent(classId, n.id, uid, myName, value)
       setReceipts((prev) => ({
         ...prev,
         [n.id]: {
-          readAt: prev[n.id]?.readAt ?? null,
+          readAt: prev[n.id]?.readAt ?? Timestamp.now(),
           studentName: myName,
-          consent: 'agreed',
+          consent: value,
           consentAt: Timestamp.now(),
         },
       }))
-      toast('확인 체크 완료! ✔', 'success')
+      toast(value === 'agreed' ? '동의를 전달했어요.' : "'동의하지 않음'으로 전달했어요.", 'success')
     } catch (e) {
       console.error(e)
       toast('저장하지 못했어요.', 'error')
@@ -703,19 +714,28 @@ export default function ClassRoom(): JSX.Element {
             </button>
             {bannerOpen && !isTeacher && (
               latestNotice.requiresConsent ? (
-                receipts[latestNotice.id]?.consent === 'agreed' ? (
-                  <span className="mt-1.5 inline-block rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
-                    ✔ 확인 완료
-                  </span>
-                ) : (
-                  <button
-                    disabled={consentBusy === latestNotice.id}
-                    onClick={() => void handleCheck(latestNotice)}
-                    className="mt-1.5 w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-bold text-white disabled:opacity-50"
-                  >
-                    ✔ 공지 확인했어요
-                  </button>
-                )
+                <div className="mt-1.5 grid grid-cols-2 gap-2">
+                    {(['agreed', 'declined'] as const).map((v) => {
+                      const picked = receipts[latestNotice.id]?.consent === v
+                      return (
+                        <button
+                          key={v}
+                          disabled={consentBusy === latestNotice.id}
+                          onClick={() => void handleConsent(latestNotice, v)}
+                          className={`rounded-lg py-2.5 text-[13px] font-bold transition disabled:opacity-50 ${
+                            picked
+                              ? v === 'agreed'
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-rose-500 text-white'
+                              : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          {picked ? '✔ ' : ''}
+                          {v === 'agreed' ? '동의해요' : '동의하지 않아요'}
+                        </button>
+                      )
+                    })}
+                  </div>
               ) : (
                 // 동의가 필요 없는 공지는 펼쳐 읽은 것으로 충분합니다.
                 // 예전에는 여기에도 확인 버튼이 떠서, 눌러야만 선생님께 집계됐습니다.
@@ -819,18 +839,29 @@ export default function ClassRoom(): JSX.Element {
                                   👀 읽음
                                 </span>
                               ) : null
-                            ) : receipts[item.notice.id]?.consent === 'agreed' ? (
-                              <span className="inline-block rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
-                                ✔ 확인 완료
-                              </span>
                             ) : (
-                              <button
-                                disabled={consentBusy === item.notice.id}
-                                onClick={() => void handleCheck(item.notice)}
-                                className="w-full rounded-lg bg-emerald-600 py-2.5 text-[13px] font-bold text-white disabled:opacity-50"
-                              >
-                                ✔ 공지 확인했어요
-                              </button>
+                              <div className="grid grid-cols-2 gap-2">
+                    {(['agreed', 'declined'] as const).map((v) => {
+                      const picked = receipts[item.notice.id]?.consent === v
+                      return (
+                        <button
+                          key={v}
+                          disabled={consentBusy === item.notice.id}
+                          onClick={() => void handleConsent(item.notice, v)}
+                          className={`rounded-lg py-2.5 text-[13px] font-bold transition disabled:opacity-50 ${
+                            picked
+                              ? v === 'agreed'
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-rose-500 text-white'
+                              : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          {picked ? '✔ ' : ''}
+                          {v === 'agreed' ? '동의해요' : '동의하지 않아요'}
+                        </button>
+                      )
+                    })}
+                  </div>
                             )}
                           </div>
                         )}
@@ -1055,7 +1086,7 @@ export default function ClassRoom(): JSX.Element {
                               </span>
                               {done ? (
                                 <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-600">
-                                  {r?.consent === 'agreed' ? '✔ 확인' : r?.consent === 'declined' ? '✖ 미동의' : '👀 읽음'}
+                                  {r?.consent === 'agreed' ? '✔ 동의' : r?.consent === 'declined' ? '✖ 미동의' : '👀 읽음'}
                                   {at && <span className="font-normal text-emerald-500/70">{formatTime(at)}</span>}
                                 </span>
                               ) : (

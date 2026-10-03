@@ -95,7 +95,7 @@ export default function WriteNotice() {
       }
 
       // Firestore 저장 (classes/{classId}/announcements)
-      await addDoc(collection(db, 'classes', userData.classId, 'announcements'), {
+      const noticeRef = await addDoc(collection(db, 'classes', userData.classId, 'announcements'), {
         title,
         body,
         authorId: auth.currentUser?.uid,
@@ -108,6 +108,20 @@ export default function WriteNotice() {
         readCount: 0,
         checkCount: 0
       })
+
+      // 학생들에게 푸시 — 예전에는 이 화면으로 올린 공지는 푸시가 전혀 나가지 않았습니다.
+      // 서버가 저장된 문서와 작성자를 확인한 뒤 보냅니다. 실패해도 공지 등록은 유지.
+      const cid = userData.classId
+      void auth.currentUser
+        ?.getIdToken()
+        .then((t) =>
+          fetch('/api/chat-push', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+            body: JSON.stringify({ classId: cid, kind: 'notice', docId: noticeRef.id }),
+          })
+        )
+        .catch((e) => console.warn('[notice/write] 푸시 요청 실패', e))
 
       toast('공지사항이 등록되었어요!', 'success')
       router.replace('/dashboard')
