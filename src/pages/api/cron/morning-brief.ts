@@ -2,7 +2,13 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { timingSafeEqual } from 'crypto'
 import { FieldPath, getFirestore } from 'firebase-admin/firestore'
 import type { QueryDocumentSnapshot } from 'firebase-admin/firestore'
-import { fetchNeis, todayKstYmd } from '../../../lib/neis'
+import {
+  fetchNeis,
+  isOffDay,
+  mergeTimetableRows,
+  neisTimetableEndpoint,
+  todayKstYmd,
+} from '../../../lib/neis'
 import type { NeisRow } from '../../../lib/neis'
 import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm-admin'
 
@@ -11,7 +17,7 @@ import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm
 // 헤더와 함께 호출합니다. 시크릿이 로그·브라우저 기록에 남지 않도록 쿼리스트링(?key=)은 받지 않습니다.
 // 수동 실행: curl -H "Authorization: Bearer $CRON_SECRET" https://<도메인>/api/cron/morning-brief
 // 각 학급 담임에게 오늘의 브리핑(1~2교시 + 급식 + 받은 교환 요청 수)을 푸시합니다.
-// 학사일정(NEIS)에서 오늘이 휴업일·공휴일인 학교는 건너뜁니다.
+// 학사일정(NEIS)에서 오늘이 휴업일·공휴일·방학인 학교(학년)는 건너뜁니다.
 
 // 60초는 모든 Vercel 플랜에서 허용되는 값입니다. 기본값(10~15초)이면 학급이 많을 때 중간에 끊깁니다.
 export const config = { maxDuration: 60 }
@@ -23,18 +29,6 @@ const NEIS_TIMEOUT_MS = 5000
 const TIME_BUDGET_MS = 50 * 1000
 
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
-
-// schoolInfo의 학교 종류 → NEIS 시간표 엔드포인트 (elsTimetable은 초등 전용)
-const NEIS_TIMETABLE_ENDPOINTS: Record<string, string> = {
-  초등학교: 'elsTimetable',
-  중학교: 'misTimetable',
-  고등학교: 'hisTimetable',
-}
-
-// NEIS 학사일정의 학년별 해당 여부 필드: ONE_GRADE_EVENT_YN ~ SIX_GRADE_EVENT_YN
-const GRADE_EVENT_FIELDS = ['ONE', 'TW', 'THREE', 'FR', 'FIV', 'SIX'].map(
-  (g) => `${g}_GRADE_EVENT_YN`
-)
 
 /** 길이가 달라도 실행 시간이 크게 달라지지 않도록 맞춘 비교 */
 function safeCompare(input: string, expected: string): boolean {
@@ -100,24 +94,6 @@ async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promis
       }
     })
   )
-}
-
-/**
- * 학사일정 행 중 ymd가 휴업일·공휴일이고 이 학년에 해당하는 행이 있으면 true.
- * 조회 실패(빈 배열)면 false라서 기존처럼 발송합니다.
- */
-function isDayOff(rows: NeisRow[], ymd: string, grade: unknown): boolean {
-  const g = Number(grade)
-  return rows.some((r) => {
-    if (r.AA_YMD && r.AA_YMD !== ymd) return false
-    const kind = (r.SBTR_DD_SC_NM || '').trim()
-    if (kind !== '휴업일' && kind !== '공휴일') return false
-    // 특정 학년만 쉬는 행이면 그 학년에만 적용, 학년 표시가 없으면 학교 전체로 봄
-    const flags = GRADE_EVENT_FIELDS.map((f) => r[f])
-    if (!flags.includes('Y')) return true
-    const mine = Number.isInteger(g) && g >= 1 && g <= 6 ? flags[g - 1] : undefined
-    return mine !== 'N'
-  })
 }
 
 export default async function handler(
@@ -213,7 +189,8 @@ export default async function handler(
             })
           )
         )
-        if (isDayOff(scheduleRows, today, c.grade)) {
+        // 조회 실패(빈 배열)면 쉬는 날로 보지 않고 평소처럼 발송
+        if (isOffDay(scheduleRows, today, c.grade)) {
           dayOff += 1
           return
         }
@@ -235,11 +212,11 @@ export default async function handler(
         })
       }
       if (byPeriod.size === 0 && officeCode) {
-        const kind = (await getSchoolInfo(schoolCode))?.SCHUL_KND_SC_NM || ''
-        const endpoint = NEIS_TIMETABLE_ENDPOINTS[kind]
-        if (endpoint) {
+        // 학교 정보를 못 받았으면 학교 종류를 몰라 NEIS 시간표는 생략
+        const schoolInfo = await getSchoolInfo(schoolCode)
+        if (schoolInfo) {
           const ttRows = await neisWithTimeout(
-            fetchNeis(endpoint, {
+            fetchNeis(neisTimetableEndpoint(schoolInfo.SCHUL_KND_SC_NM || ''), {
               ATPT_OFCDC_SC_CODE: officeCode,
               SD_SCHUL_CODE: schoolCode,
               ALL_TI_YMD: today,
@@ -247,11 +224,10 @@ export default async function handler(
               CLASS_NM: String(c.classNm ?? ''),
             })
           )
-          for (const r of ttRows) {
-            const p = Number(r.PERIO)
-            const subject = (r.ITRT_CNTNT || '').trim()
-            if (!p || !subject || byPeriod.has(p)) continue
-            byPeriod.set(p, subject)
+          // 같은 교시에 행이 여럿(고교학점제 선택과목 등)이면 /api/timetable과 같이 과목을 ' / '로 이어 씀
+          for (const { period, subject } of mergeTimetableRows(ttRows)) {
+            if (!period || byPeriod.has(period)) continue
+            byPeriod.set(period, subject)
           }
         }
       }

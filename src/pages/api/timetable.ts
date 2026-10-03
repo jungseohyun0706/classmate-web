@@ -1,7 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import {
   fetchNeisResult,
-  lookupOfficeCode,
+  lookupSchool,
+  mergeTimetableRows,
+  neisTimetableEndpoint,
   todayKstYmd,
   NEIS_CACHE_CONTROL_ERROR,
   NEIS_CACHE_CONTROL_OK,
@@ -14,7 +16,8 @@ interface TimetableEntry {
 }
 
 // GET /api/timetable?schoolCode=&officeCode=&grade=&classNm=&from=YYYYMMDD&to=YYYYMMDD
-// 초등학교 시간표(elsTimetable). officeCode 생략 시 자동 조회, 날짜 생략 시 오늘(KST)
+// 학교 종류에 맞는 NEIS 시간표(초 elsTimetable, 중 misTimetable, 고 hisTimetable, 특수 spsTimetable).
+// officeCode 생략 시 자동 조회, 날짜 생략 시 오늘(KST)
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -37,14 +40,13 @@ export default async function handler(
   }
 
   try {
-    let officeCode = (req.query.officeCode as string) || null
-    if (!officeCode) {
-      const lookup = await lookupOfficeCode(schoolCode)
-      if (!lookup.ok) {
-        return res.status(200).json({ timetable: [] })
-      }
-      officeCode = lookup.officeCode
+    // officeCode가 와도 학교 종류로 데이터셋을 골라야 하므로 학교 정보는 항상 조회 (메모리 캐시됨).
+    // 조회 실패 시 종류를 모른 채 초등 데이터셋을 부르면 중·고교는 '데이터 없음'으로 길게 캐시되므로 여기서 멈춤
+    const school = await lookupSchool(schoolCode)
+    if (!school.ok) {
+      return res.status(200).json({ timetable: [] })
     }
+    const officeCode = (req.query.officeCode as string) || school.officeCode
 
     if (!officeCode) {
       return res.status(200).json({ timetable: [] })
@@ -56,7 +58,7 @@ export default async function handler(
     const month = Number(from.slice(4, 6))
     const ay = month <= 2 ? year - 1 : year
 
-    const { ok, rows } = await fetchNeisResult('elsTimetable', {
+    const { ok, rows } = await fetchNeisResult(neisTimetableEndpoint(school.kind), {
       ATPT_OFCDC_SC_CODE: officeCode,
       SD_SCHUL_CODE: schoolCode,
       AY: String(ay),
@@ -69,11 +71,9 @@ export default async function handler(
       return res.status(200).json({ timetable: [] })
     }
 
-    const timetable: TimetableEntry[] = rows.map((row) => ({
-      date: row.ALL_TI_YMD || '',
-      period: Number(row.PERIO) || 0,
-      subject: row.ITRT_CNTNT || '',
-    }))
+    // 같은 교시에 행이 여럿(고교학점제 선택과목 등)이면 한 항목으로 합쳐
+    // 오늘 화면·가방 목록·아침 브리핑이 같은 과목을 보게 함
+    const timetable: TimetableEntry[] = mergeTimetableRows(rows)
 
     res.setHeader('Cache-Control', NEIS_CACHE_CONTROL_OK)
     return res.status(200).json({ timetable })

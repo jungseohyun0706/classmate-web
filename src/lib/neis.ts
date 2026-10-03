@@ -137,8 +137,119 @@ export async function resolveOfficeCode(
 export async function lookupOfficeCode(
   schoolCode: string
 ): Promise<{ ok: boolean; officeCode: string | null }> {
+  const { ok, officeCode } = await lookupSchool(schoolCode)
+  return { ok, officeCode }
+}
+
+export interface SchoolLookup {
+  /** false면 NEIS 오류·장애. 학교가 없으면 ok: true, officeCode: null */
+  ok: boolean
+  /** 시도교육청 코드(ATPT_OFCDC_SC_CODE) */
+  officeCode: string | null
+  /** 학교 종류(SCHUL_KND_SC_NM): 초등학교, 중학교, 고등학교, 특수학교 등. 모르면 '' */
+  kind: string
+  /** 학교 이름(SCHUL_NM). 모르면 '' */
+  name: string
+}
+
+/**
+ * 학교 코드(SD_SCHUL_CODE)로 학교 정보(schoolInfo)를 조회합니다.
+ * fetchNeisResult를 거치므로 정상 결과는 같은 메모리 캐시(Map, 6시간)에 저장되고 오류는 저장되지 않습니다.
+ */
+export async function lookupSchool(schoolCode: string): Promise<SchoolLookup> {
   const { ok, rows } = await fetchNeisResult('schoolInfo', { SD_SCHUL_CODE: schoolCode })
-  return { ok, officeCode: rows[0]?.ATPT_OFCDC_SC_CODE ?? null }
+  const row = rows[0]
+  return {
+    ok,
+    officeCode: row?.ATPT_OFCDC_SC_CODE ?? null,
+    kind: (row?.SCHUL_KND_SC_NM || '').trim(),
+    name: row?.SCHUL_NM || '',
+  }
+}
+
+/**
+ * 학교 종류(SCHUL_KND_SC_NM) → NEIS 시간표 데이터셋.
+ * 네 데이터셋의 행은 같은 필드를 씁니다(ALL_TI_YMD 날짜, PERIO 교시, ITRT_CNTNT 수업내용).
+ * 종류 이름에 드러난 학교급으로 고릅니다.
+ * - '특수'가 들어가면 특수(spsTimetable)
+ * - 중학교, 방송통신중학교, 각종학교(중), 평생학교(중)-…, 재외한국학교(중), 고등공민학교 → 중(misTimetable)
+ *   고등공민학교는 이름과 달리 중학교 과정이라 고등 판정보다 먼저 봅니다.
+ * - 고등학교, 방송통신고등학교, 각종학교(고), 평생학교(고)-…, 재외한국학교(고), 고등기술학교 → 고(hisTimetable)
+ * - 그 밖의 종류(초등학교, 각종학교(초), 외국인학교 등)나 모르는 경우는 초등(elsTimetable)으로 시도합니다.
+ */
+export function neisTimetableEndpoint(kind: string): string {
+  const k = kind.trim()
+  if (k.includes('특수')) return 'spsTimetable'
+  if (k.includes('고등공민학교') || k.includes('(중)') || k.includes('중학교')) return 'misTimetable'
+  if (k.includes('(고)') || k.includes('고등학교') || k.includes('고등기술학교')) return 'hisTimetable'
+  return 'elsTimetable'
+}
+
+export interface NeisTimetableEntry {
+  /** YYYYMMDD */
+  date: string
+  period: number
+  /** 같은 날짜·교시의 서로 다른 과목은 ' / '로 이어 붙임 */
+  subject: string
+}
+
+/**
+ * NEIS 시간표 행을 날짜·교시(ALL_TI_YMD, PERIO)마다 한 항목으로 합칩니다.
+ * 고교학점제 선택과목이나 특수학교의 여러 과정처럼 같은 교시에 행이 여러 개 오면
+ * 과목명(ITRT_CNTNT)을 trim·중복 제거해 ' / '로 잇습니다. 과목명이 빈 행은 버리고, 날짜·교시 순으로 정렬합니다.
+ */
+export function mergeTimetableRows(rows: NeisRow[]): NeisTimetableEntry[] {
+  const byKey = new Map<string, { date: string; period: number; subjects: string[] }>()
+  for (const row of rows) {
+    const subject = (row.ITRT_CNTNT || '').trim()
+    if (!subject) continue
+    const date = row.ALL_TI_YMD || ''
+    const period = Number(row.PERIO) || 0
+    const key = `${date}|${period}`
+    const entry = byKey.get(key)
+    if (!entry) byKey.set(key, { date, period, subjects: [subject] })
+    else if (!entry.subjects.includes(subject)) entry.subjects.push(subject)
+  }
+  return Array.from(byKey.values())
+    .map(({ date, period, subjects }) => ({ date, period, subject: subjects.join(' / ') }))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.period - b.period)
+}
+
+// NEIS 학사일정의 학년별 해당 여부 필드: ONE_GRADE_EVENT_YN ~ SIX_GRADE_EVENT_YN
+export const GRADE_EVENT_FIELDS = ['ONE', 'TW', 'THREE', 'FR', 'FIV', 'SIX'].map(
+  (g) => `${g}_GRADE_EVENT_YN`
+)
+
+/**
+ * 학사일정(SchoolSchedule) 행 하나가 등교하지 않는 날을 뜻하는지 판정합니다.
+ * - 수업공제일(SBTR_DD_SC_NM)이 '휴업일'(재량휴업·방학 등)이나 '공휴일'(한글날 같은 국경일)이면 쉬는 날
+ * - 수업공제일이 비어 있거나 '해당없음'이어도 행사명(EVENT_NM)에 '방학'이 있으면 쉬는 날. 단 '방학식'은 등교하는 날
+ * - 특정 학년만 해당하는 행(*_GRADE_EVENT_YN)은 그 학년에만 적용합니다.
+ *   학년 표시가 없거나 grade를 모르면 학교 전체가 쉬는 것으로 봅니다.
+ */
+export function isOffDayRow(row: NeisRow, grade?: unknown): boolean {
+  const kind = (row.SBTR_DD_SC_NM || '').trim()
+  const eventName = row.EVENT_NM || ''
+  // NEIS는 수업공제가 없는 행을 빈 값 대신 '해당없음'으로 보내기도 함
+  const noSbtr = kind === '' || kind === '해당없음'
+  const off =
+    kind === '휴업일' ||
+    kind === '공휴일' ||
+    (noSbtr && eventName.includes('방학') && !eventName.includes('방학식'))
+  if (!off) return false
+  const flags = GRADE_EVENT_FIELDS.map((f) => row[f])
+  if (!flags.includes('Y')) return true
+  const g = Number(grade)
+  const mine = Number.isInteger(g) && g >= 1 && g <= 6 ? flags[g - 1] : undefined
+  return mine !== 'N'
+}
+
+/**
+ * 학사일정 행 중 ymd(YYYYMMDD)에 해당하는 쉬는 날 행(isOffDayRow)이 있으면 true.
+ * 조회 실패(빈 배열)면 false라서 호출하는 쪽은 평소처럼 처리합니다.
+ */
+export function isOffDay(rows: NeisRow[], ymd: string, grade?: unknown): boolean {
+  return rows.some((r) => (!r.AA_YMD || r.AA_YMD === ymd) && isOffDayRow(r, grade))
 }
 
 /**

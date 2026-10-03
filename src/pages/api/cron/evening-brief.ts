@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { timingSafeEqual } from 'crypto'
 import { FieldPath, getFirestore } from 'firebase-admin/firestore'
 import type { QueryDocumentSnapshot } from 'firebase-admin/firestore'
-import { fetchNeis } from '../../../lib/neis'
+import { fetchNeis, isOffDay } from '../../../lib/neis'
 import type { NeisRow } from '../../../lib/neis'
 import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm-admin'
 
@@ -12,7 +12,7 @@ import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm
 // 수동 실행: curl -H "Authorization: Bearer $CRON_SECRET" https://<도메인>/api/cron/evening-brief
 // 각 학급의 내일 시간표(변경 오버라이드 반영)를 '내일 가방' 푸시로
 // 담임 선생님과 승인된 학생들에게 보냅니다.
-// 학사일정(NEIS)에서 내일이 휴업일·공휴일인 학교는 건너뜁니다.
+// 학사일정(NEIS)에서 내일이 휴업일·공휴일·방학인 학교(학년)는 건너뜁니다.
 
 // 60초는 모든 Vercel 플랜에서 허용되는 값입니다. 기본값(10~15초)이면 학급이 많을 때 중간에 끊깁니다.
 export const config = { maxDuration: 60 }
@@ -46,11 +46,6 @@ function tomorrowKst(): { day: number; key: string; ymd: string } {
   const day = kst.getUTCDay()
   return { day, key: DAY_KEYS[day], ymd: `${y}${m}${d}` }
 }
-
-// NEIS 학사일정의 학년별 해당 여부 필드: ONE_GRADE_EVENT_YN ~ SIX_GRADE_EVENT_YN
-const GRADE_EVENT_FIELDS = ['ONE', 'TW', 'THREE', 'FR', 'FIV', 'SIX'].map(
-  (g) => `${g}_GRADE_EVENT_YN`
-)
 
 /** NEIS 응답이 늦어도 학급 처리가 밀리지 않게 상한을 둡니다. 늦으면 빈 결과(조회 실패와 같은 처리)로 넘어갑니다. */
 function neisWithTimeout(promise: Promise<NeisRow[]>): Promise<NeisRow[]> {
@@ -89,24 +84,6 @@ async function runPool<T>(items: T[], limit: number, worker: (item: T) => Promis
       }
     })
   )
-}
-
-/**
- * 학사일정 행 중 ymd가 휴업일·공휴일이고 이 학년에 해당하는 행이 있으면 true.
- * 조회 실패(빈 배열)면 false라서 기존처럼 발송합니다.
- */
-function isDayOff(rows: NeisRow[], ymd: string, grade: unknown): boolean {
-  const g = Number(grade)
-  return rows.some((r) => {
-    if (r.AA_YMD && r.AA_YMD !== ymd) return false
-    const kind = (r.SBTR_DD_SC_NM || '').trim()
-    if (kind !== '휴업일' && kind !== '공휴일') return false
-    // 특정 학년만 쉬는 행이면 그 학년에만 적용, 학년 표시가 없으면 학교 전체로 봄
-    const flags = GRADE_EVENT_FIELDS.map((f) => r[f])
-    if (!flags.includes('Y')) return true
-    const mine = Number.isInteger(g) && g >= 1 && g <= 6 ? flags[g - 1] : undefined
-    return mine !== 'N'
-  })
 }
 
 export default async function handler(
@@ -195,7 +172,8 @@ export default async function handler(
               })
             )
           )
-          if (isDayOff(scheduleRows, tomorrow.ymd, c.grade)) {
+          // 조회 실패(빈 배열)면 쉬는 날로 보지 않고 평소처럼 발송
+          if (isOffDay(scheduleRows, tomorrow.ymd, c.grade)) {
             dayOff += 1
             return
           }
