@@ -50,10 +50,20 @@ try {
   // 설정 없이(쿼리 파라미터 없이) 등록된 경우: 초기화를 건너뜁니다.
 }
 
+// 알림이 여는 주소는 이 앱(같은 출처) 화면만 허용합니다. 외부 주소면 대시보드로 대체합니다(피싱 차단).
+function toSafeTarget(url) {
+  const fallback = new URL('/dashboard', self.location.origin).href
+  try {
+    const u = new URL(url || '/dashboard', self.location.origin)
+    return u.origin === self.location.origin ? u.href : fallback
+  } catch (e) {
+    return fallback
+  }
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
-  const url = (event.notification.data && event.notification.data.url) || '/dashboard'
-  const target = new URL(url, self.location.origin).href
+  const target = toSafeTarget(event.notification.data && event.notification.data.url)
 
   event.waitUntil(
     (async () => {
@@ -65,19 +75,18 @@ self.addEventListener('notificationclick', (event) => {
           return client.focus()
         }
       }
-      // 2) 같은 origin의 창이 있으면 포커스 후 이동
+      // 2) 같은 origin의 창이 있으면 이동을 요청하고 포커스
+      //    이 SW는 전용 scope라 앱 창을 제어하지 않아 client.navigate()가 항상 거부됩니다.
+      //    그래서 창에 메시지를 보내 앱(_app.tsx에서 띄우는 PushBridge)이 router.push 하게 합니다.
       for (let i = 0; i < clientList.length; i += 1) {
         const client = clientList[i]
         if ('focus' in client) {
-          await client.focus()
-          if ('navigate' in client) {
-            try {
-              return await client.navigate(target)
-            } catch (err) {
-              return undefined
-            }
+          client.postMessage({ type: 'classmate:navigate', url: target })
+          try {
+            return await client.focus()
+          } catch (err) {
+            return self.clients.openWindow(target)
           }
-          return undefined
         }
       }
       // 3) 열린 창이 없으면 새로 열기

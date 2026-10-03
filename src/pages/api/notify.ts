@@ -1,6 +1,15 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { getFirestore } from 'firebase-admin/firestore'
-import { getAdminApp, isAdminConfigured, sendPushToUser, verifyIdToken } from '../../lib/fcm-admin'
+import {
+  getAdminApp,
+  isAdminConfigured,
+  sendPushToUser,
+  toSafePushPath,
+  verifyIdToken,
+} from '../../lib/fcm-admin'
+
+const TITLE_MAX = 100
+const BODY_MAX = 500
 
 // POST /api/notify
 // Body: { toUid, title, body, url? }
@@ -65,10 +74,11 @@ export default async function handler(
     return res.status(500).json({ error: '알림 전송에 실패했어요.' })
   }
 
+  // url은 같은 출처의 앱 경로만 남깁니다(외부 피싱 링크면 버리고 기본 화면으로).
   const result = await sendPushToUser(toUid, {
-    title,
-    body,
-    url: typeof url === 'string' && url.length > 0 ? url : undefined,
+    title: title.slice(0, TITLE_MAX),
+    body: body.slice(0, BODY_MAX),
+    url: toSafePushPath(url),
   })
 
   return res.status(200).json({

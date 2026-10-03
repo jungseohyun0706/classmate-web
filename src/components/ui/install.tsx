@@ -249,7 +249,32 @@ export function InstallProvider({ children }: { children: ReactNode }): JSX.Elem
               </div>
 
               <ol className="mt-4 space-y-3 text-sm text-slate-600">
-                {isIOS ? (
+                {/* iPhone 카카오톡·네이버 인앱 UA에도 'iPhone'이 들어 있어 인앱 여부를 먼저 봅니다. */}
+                {isInApp && isIOS ? (
+                  <>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <MenuDotsIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        지금은 앱 안 브라우저라 설치할 수 없어요. 화면 하단이나 오른쪽의{' '}
+                        <strong className="font-semibold text-slate-800">메뉴</strong>(⋯ 또는 공유)에서{' '}
+                        <strong className="font-semibold text-slate-800">&ldquo;Safari로 열기&rdquo;</strong>를
+                        눌러 주세요.
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
+                        <ShareIcon className="h-5 w-5" />
+                      </span>
+                      <span className="break-keep">
+                        Safari 하단의 <strong className="font-semibold text-slate-800">공유 버튼</strong> →{' '}
+                        <strong className="font-semibold text-slate-800">&ldquo;홈 화면에 추가&rdquo;</strong>를
+                        선택하면 설치가 완료돼요.
+                      </span>
+                    </li>
+                  </>
+                ) : isIOS ? (
                   <>
                     <li className="flex items-center gap-3">
                       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600">

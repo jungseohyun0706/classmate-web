@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState, type JSX } from 'react'
+import Router from 'next/router'
+import { beforeAuthStateChanged, onAuthStateChanged } from 'firebase/auth'
 import type { MessagePayload } from 'firebase/messaging'
 import { useUI } from './ui/feedback'
-import { attachForegroundHandler, enablePush, getActiveRoom, isPushSupported } from '../lib/messaging'
+import { auth } from '../lib/firebase'
+import {
+  attachForegroundHandler,
+  enablePush,
+  getActiveRoom,
+  isPushSupported,
+  refreshPushToken,
+  releasePushToken,
+  toAppPath,
+} from '../lib/messaging'
 
 const ENABLED_KEY = 'classmate_push_enabled'
 const DISMISSED_KEY = 'classmate_push_dismissed_at'
@@ -20,6 +31,14 @@ function readEnabledFlag(): boolean {
 function writeEnabledFlag(): void {
   try {
     window.localStorage.setItem(ENABLED_KEY, '1')
+  } catch {
+    // localStorage 사용 불가 시 무시
+  }
+}
+
+function clearEnabledFlag(): void {
+  try {
+    window.localStorage.removeItem(ENABLED_KEY)
   } catch {
     // localStorage 사용 불가 시 무시
   }
@@ -62,23 +81,10 @@ function BellIcon({ className }: { className?: string }): JSX.Element {
   )
 }
 
-/**
- * 푸시 알림 켜기 카드.
- * - 미지원 브라우저 / 이미 켜짐 / 최근에 닫음 → 아무것도 렌더링하지 않음
- * - 권한 차단됨 → 해제 방법 안내 카드
- * - 그 외 → '알림 켜기' 카드
- */
-export default function EnablePush({ variant = 'teacher' }: { variant?: 'teacher' | 'student' } = {}): JSX.Element | null {
+/** 앱 화면이 보일 때 도착한 푸시를 토스트로 보여 주는 핸들러. */
+function useForegroundToast(): (payload: MessagePayload) => void {
   const { toast } = useUI()
-  const benefitText =
-    variant === 'student'
-      ? '알림장과 준비물(가방싸기) 알림을 놓치지 마세요'
-      : '교환 요청·보결 SOS·아침 브리핑을 놓치지 마세요'
-  const [state, setState] = useState<CardState>('checking')
-  const [dismissed, setDismissed] = useState<boolean>(false)
-  const [busy, setBusy] = useState<boolean>(false)
-
-  const onForeground = useCallback(
+  return useCallback(
     (payload: MessagePayload) => {
       // 지금 열어 둔 톡방의 메시지는 피드에 이미 보이므로 토스트를 생략합니다.
       const url = String(payload.data?.url || '')
@@ -92,6 +98,84 @@ export default function EnablePush({ variant = 'teacher' }: { variant?: 'teacher
     },
     [toast]
   )
+}
+
+/**
+ * 앱 전역 푸시 연결. _app.tsx에서 한 번만 렌더합니다(EnablePush 카드가 없는 페이지 포함).
+ * - 로그인 + 알림 허용이면 포그라운드 수신 토스트 등록
+ * - 알림이 켜진 기기면 앱을 열 때마다 토큰을 다시 받아 문서에 없으면 추가
+ * - 로그아웃·계정 전환 직전에 이 기기 토큰을 이전 계정에서 지우고 '알림 켜짐' 표시 삭제
+ * - 알림 클릭 시 서비스 워커가 보낸 화면 이동 요청 처리
+ */
+export function PushBridge(): null {
+  const onForeground = useForegroundToast()
+
+  useEffect(() => {
+    if (!auth) return
+    let lastUid: string | null = null
+    const offAuth = onAuthStateChanged(auth, (user) => {
+      const uid = user?.uid ?? null
+      if (!uid || uid === lastUid) {
+        lastUid = uid
+        return
+      }
+      lastUid = uid
+      void (async () => {
+        if (!(await isPushSupported()) || Notification.permission !== 'granted') return
+        attachForegroundHandler(onForeground)
+        if (readEnabledFlag()) await refreshPushToken()
+      })()
+    })
+    // 로그아웃 버튼이 여러 화면에 흩어져 있어 상태가 바뀌기 직전 여기 한 곳에서 정리합니다.
+    // 콜백이 throw하면 로그아웃이 막히므로 releasePushToken은 실패를 모두 삼키고 최대 3초만 기다립니다.
+    const offBefore = beforeAuthStateChanged(auth, async (next) => {
+      const prev = auth.currentUser
+      if (!prev || (next && next.uid === prev.uid)) return
+      clearEnabledFlag()
+      await releasePushToken(prev.uid)
+    })
+    return () => {
+      offAuth()
+      offBefore()
+    }
+  }, [onForeground])
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onSwMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown; url?: unknown } | null
+      if (!data || data.type !== 'classmate:navigate' || typeof data.url !== 'string') return
+      const path = toAppPath(data.url)
+      if (path) void Router.push(path)
+    }
+    navigator.serviceWorker.addEventListener('message', onSwMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onSwMessage)
+  }, [])
+
+  return null
+}
+
+/**
+ * 푸시 알림 켜기 카드.
+ * - 미지원 브라우저 / 이미 켜짐 / 최근에 닫음 → 아무것도 렌더링하지 않음
+ * - 권한 차단됨 → 해제 방법 안내 카드
+ * - 그 외 → '알림 켜기' 카드
+ */
+export default function EnablePush({ variant = 'teacher' }: { variant?: 'teacher' | 'student' } = {}): JSX.Element | null {
+  const { toast } = useUI()
+  const benefitText =
+    variant === 'student'
+      ? '알림장과 준비물(가방싸기) 알림을 놓치지 마세요'
+      : '교환 요청·보결 SOS·아침 브리핑을 놓치지 마세요'
+  const blockedText =
+    variant === 'student'
+      ? '알림장과 준비물(가방싸기) 알림을 받아볼 수 있어요.'
+      : '교환 요청·보결 SOS·아침 브리핑을 받아볼 수 있어요.'
+  const [state, setState] = useState<CardState>('checking')
+  const [dismissed, setDismissed] = useState<boolean>(false)
+  const [busy, setBusy] = useState<boolean>(false)
+
+  const onForeground = useForegroundToast()
 
   useEffect(() => {
     let cancelled = false
@@ -174,7 +258,7 @@ export default function EnablePush({ variant = 'teacher' }: { variant?: 'teacher
             <p className="text-sm font-medium text-gray-700">알림이 차단되어 있어요</p>
             <p className="mt-1 text-xs leading-relaxed text-gray-500 break-keep">
               브라우저 주소창의 자물쇠(사이트 설정)에서 알림을 &lsquo;허용&rsquo;으로
-              바꾸면 교환 요청과 아침 브리핑을 받아볼 수 있어요.
+              바꾸면 {blockedText}
             </p>
           </div>
           <button

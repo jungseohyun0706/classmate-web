@@ -158,7 +158,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           createdAt: FieldValue.serverTimestamp(),
           read: false,
         })
-        void sendPushToUser(teacherId, { title, body, url })
+        // 응답 뒤에는 서버리스 인스턴스가 멈춰 발송이 유실될 수 있어 응답 전에 기다립니다.
+        // (sendPushToUser는 throw하지 않음. 입장 신청 응답이 늦어지지 않게 최대 3초까지만)
+        let pushTimer: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([
+          sendPushToUser(teacherId, { title, body, url }),
+          new Promise<void>((resolve) => {
+            pushTimer = setTimeout(resolve, 3000)
+          }),
+        ])
+        clearTimeout(pushTimer)
       } catch (e) {
         console.error('join: teacher notify failed:', e)
       }

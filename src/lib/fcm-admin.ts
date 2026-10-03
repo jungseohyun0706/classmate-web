@@ -83,6 +83,25 @@ export function getAdminApp(): App | null {
   }
 }
 
+// 푸시 링크 검증용 기준 출처. 실제 도메인과 상관없이, 값이 '같은 출처의 경로'로 해석되는지만 봅니다.
+const PUSH_LINK_BASE = 'https://app.invalid'
+
+/**
+ * 푸시를 눌렀을 때 열 주소를 같은 출처의 경로(pathname+search+hash)로만 남깁니다.
+ * 외부 주소('https://…', '//…', '/\\evil.com' 등)나 잘못된 값이면 undefined(피싱 링크 차단).
+ */
+export function toSafePushPath(url: unknown): string | undefined {
+  if (typeof url !== 'string' || url.length === 0) return undefined
+  try {
+    const u = new URL(url, PUSH_LINK_BASE)
+    if (u.origin !== PUSH_LINK_BASE) return undefined
+    // '//'로 시작하는 경로는 다시 해석될 때 외부 주소가 되므로 앞 슬래시를 하나로 줄입니다.
+    return u.pathname.replace(/^\/{2,}/, '/') + u.search + u.hash
+  } catch {
+    return undefined
+  }
+}
+
 /** Firebase ID 토큰을 검증합니다. 실패/미설정 시 null. */
 export async function verifyIdToken(token: string): Promise<DecodedIdToken | null> {
   if (!token) return null
@@ -121,7 +140,9 @@ export async function sendPushToUser(
       return { sent: false, successCount: 0, failureCount: 0, reason: 'no-tokens' }
     }
 
-    const url = payload.url || '/dashboard'
+    // 외부 주소는 버리고 같은 출처 경로만 보냅니다. 그래서 절대 https URL만 받는
+    // fcmOptions.link는 쓰지 않고, 클릭은 SW의 notificationclick이 data.url로 처리합니다.
+    const url = toSafePushPath(payload.url) || '/dashboard'
     const message: MulticastMessage = {
       tokens,
       data: {
@@ -131,9 +152,6 @@ export async function sendPushToUser(
       },
       webpush: {
         headers: { Urgency: 'high', TTL: '86400' },
-        // 링크는 절대 https URL만 허용되므로, 절대 URL일 때만 지정합니다.
-        // (상대 경로는 SW의 notificationclick에서 data.url로 처리)
-        ...(url.indexOf('https://') === 0 ? { fcmOptions: { link: url } } : {}),
       },
     }
 
