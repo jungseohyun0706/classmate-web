@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
+import { timingSafeEqual } from 'crypto'
 import { FieldPath, getFirestore } from 'firebase-admin/firestore'
 import type { QueryDocumentSnapshot } from 'firebase-admin/firestore'
 import { fetchNeis } from '../../../lib/neis'
@@ -7,7 +8,8 @@ import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm
 
 // GET /api/cron/evening-brief
 // Vercel Cron(0 12 * * 0-4 UTC = KST 일~목 21:00)이 Authorization: Bearer CRON_SECRET
-// 헤더와 함께 호출합니다. 수동 호출은 ?key=CRON_SECRET 도 지원합니다.
+// 헤더와 함께 호출합니다. 시크릿이 로그·브라우저 기록에 남지 않도록 쿼리스트링(?key=)은 받지 않습니다.
+// 수동 실행: curl -H "Authorization: Bearer $CRON_SECRET" https://<도메인>/api/cron/evening-brief
 // 각 학급의 내일 시간표(변경 오버라이드 반영)를 '내일 가방' 푸시로
 // 담임 선생님과 승인된 학생들에게 보냅니다.
 // 학사일정(NEIS)에서 내일이 휴업일·공휴일인 학교는 건너뜁니다.
@@ -23,6 +25,17 @@ const NEIS_TIMEOUT_MS = 5000
 const TIME_BUDGET_MS = 50 * 1000
 
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+
+/** 길이가 달라도 실행 시간이 크게 달라지지 않도록 맞춘 비교 */
+function safeCompare(input: string, expected: string): boolean {
+  const a = Buffer.from(input, 'utf8')
+  const b = Buffer.from(expected, 'utf8')
+  if (a.length !== b.length) {
+    timingSafeEqual(b, b)
+    return false
+  }
+  return timingSafeEqual(a, b)
+}
 
 /** 내일 날짜를 KST(Asia/Seoul) 기준으로 { 요일 번호, 시간표 키, YYYYMMDD }로 반환합니다. */
 function tomorrowKst(): { day: number; key: string; ymd: string } {
@@ -111,8 +124,7 @@ export default async function handler(
     return res.status(503).json({ error: 'cron-not-configured' })
   }
   const authHeader = req.headers.authorization || ''
-  const key = typeof req.query.key === 'string' ? req.query.key : ''
-  if (authHeader !== `Bearer ${secret}` && key !== secret) {
+  if (!safeCompare(authHeader, `Bearer ${secret}`)) {
     return res.status(401).json({ error: 'unauthorized' })
   }
 

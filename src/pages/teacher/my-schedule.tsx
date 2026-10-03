@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
-import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
-import { nextOccurrenceYmdKst, notifySwapRequested } from '../../lib/swaps'
+import { formatYmd, nextOccurrenceYmdKst, notifySwapRequested } from '../../lib/swaps'
+import { findFreeTeachers, todayKstYmd } from '../../lib/sos'
 import { storedTeacherGridToMySchedule, normalizeName } from '../../lib/timetableConvert'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
@@ -38,6 +39,7 @@ export default function MySchedulePage() {
   const [selectedCell, setSelectedCell] = useState<any>(null)
   const [availableTeachers, setAvailableTeachers] = useState<any[]>([])
   const [searching, setSearching] = useState(false)
+  const [searched, setSearched] = useState(false)
   const [swapNote, setSwapNote] = useState('') // 공개 요청용 메모
   const [submittingSwap, setSubmittingSwap] = useState(false)
 
@@ -138,56 +140,34 @@ export default function MySchedulePage() {
     toast(`${name} 선생님 시간표를 불러왔어요. [저장하기]를 누르면 확정돼요.`, 'success')
   }
 
-  // 빈 선생님 찾기
-  const findAvailableTeachers = async (day: string, periodIdx: number) => {
+  // 빈 선생님 찾기 — SOS 알림 대상과 같은 기준(findFreeTeachers):
+  // 시간표를 등록한 선생님 중 그 칸이 비어 있고, 그 날짜·교시에 이미 맡은 교환·SOS가 없는 선생님
+  const findAvailableTeachers = async (date: string, periodIdx: number) => {
     if (!userData.schoolCode) {
       toast('학교 정보가 없어요.', 'error')
       return
     }
     setSearching(true)
     setAvailableTeachers([])
-    
-    try {
-      const { db } = await import('../../lib/firebase')
-      
-      // 우리 학교 선생님들 싹 가져오기
-      // (실제로는 수백 명일 수 있으니 쿼리 최적화 필요하지만 MVP는 일단 전체 스캔)
-      const q = query(
-        collection(db, 'users'),
-        where('schoolCode', '==', userData.schoolCode),
-        where('role', '==', 'teacher')
-      )
-      const snap = await getDocs(q)
-      
-      const freeTeachers: any[] = []
-      snap.forEach(doc => {
-        const t = doc.data()
-        // 나 자신은 제외
-        if (doc.id === auth.currentUser?.uid) return
-        
-        // 그 선생님 시간표 확인
-        // 시간표가 없거나, 해당 요일/교시가 비어있으면(Empty String) "가능"으로 간주
-        const tSchedule = t.mySchedule
-        const isFree = !tSchedule || !tSchedule[day] || !tSchedule[day][periodIdx]
-        
-        if (isFree) {
-          freeTeachers.push({
-            id: doc.id,
-            name: t.displayName || t.email,
-            grade: t.grade,
-            classNm: t.classNm
-          })
-        }
-      })
-      
-      setAvailableTeachers(freeTeachers)
+    setSearched(false)
 
+    try {
+      const freeTeachers = await findFreeTeachers(userData.schoolCode, date, periodIdx, auth.currentUser?.uid)
+      setAvailableTeachers(freeTeachers)
+      setSearched(true)
     } catch (e) {
       console.error(e)
       toast('검색에 실패했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSearching(false)
     }
+  }
+
+  // 교환할 수업 날짜 선택 — 검색 결과는 그 날짜 기준이라 날짜를 바꾸면 다시 검색해야 함
+  const selectSwapDate = (date: string) => {
+    setSelectedCell((prev: any) => (prev ? { ...prev, date } : prev))
+    setAvailableTeachers([])
+    setSearched(false)
   }
 
   // 1:1 교환 요청 보내기 (direct_requests 문서 생성 + 받는 선생님에게 알림/푸시)
@@ -200,7 +180,7 @@ export default function MySchedulePage() {
     if (!ok) return
     try {
         const { db } = await import('../../lib/firebase')
-        const date = nextOccurrenceYmdKst(selectedCell.day) // 다음 해당 요일 (KST, YYYYMMDD)
+        const date = selectedCell.date // 패널에서 고른 수업 날짜 (KST, YYYYMMDD)
         await addDoc(collection(db, 'school_swaps', userData.schoolCode, 'direct_requests'), {
             fromId: auth.currentUser?.uid,
             fromName: userData.displayName,
@@ -252,7 +232,7 @@ export default function MySchedulePage() {
         dayLabel: selectedCell.dayLabel,
         period: selectedCell.period,
         subject: selectedCell.subject,
-        date: nextOccurrenceYmdKst(selectedCell.day), // 다음 해당 요일 (KST, YYYYMMDD)
+        date: selectedCell.date, // 패널에서 고른 수업 날짜 (KST, YYYYMMDD)
         note: swapNote,
 
         status: 'pending',
@@ -386,8 +366,11 @@ export default function MySchedulePage() {
                                 if(schedule[day][pIdx]) {
                                     // 모바일: 셀 탭으로 패널이 열릴 때 키보드가 겹치지 않게 포커스 해제
                                     ;(document.activeElement as HTMLElement | null)?.blur()
-                                    setSelectedCell({ day, dayLabel: DAY_LABELS[DAYS.indexOf(day)], period: period, periodIdx: pIdx, subject: schedule[day][pIdx] })
+                                    // 수업 날짜 후보: 가장 가까운 그 요일(기본값, 오늘이 그 요일이면 오늘)과 그다음 주
+                                    const dates = [nextOccurrenceYmdKst(day), nextOccurrenceYmdKst(day, 1)]
+                                    setSelectedCell({ day, dayLabel: DAY_LABELS[DAYS.indexOf(day)], period: period, periodIdx: pIdx, subject: schedule[day][pIdx], dates, date: dates[0] })
                                     setAvailableTeachers([]) // 초기화
+                                    setSearched(false)
                                 }
                             }}
                         >
@@ -420,10 +403,30 @@ export default function MySchedulePage() {
                     </div>
 
                     <div className="mb-4">
+                        <p className="text-xs font-bold text-gray-500 mb-1.5">수업 날짜</p>
+                        <div className="grid grid-cols-2 gap-2">
+                            {selectedCell.dates.map((d: string, i: number) => (
+                                <button
+                                    key={d}
+                                    onClick={() => selectSwapDate(d)}
+                                    disabled={searching}
+                                    className={`py-2 rounded-lg text-sm font-bold border transition disabled:opacity-50 ${
+                                        selectedCell.date === d
+                                            ? 'bg-blue-600 text-white border-blue-600'
+                                            : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    {selectedCell.dates[0] === todayKstYmd() ? `${i === 0 ? '오늘' : '다음 주'} ${formatYmd(d)}` : formatYmd(d)}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="mb-4">
                         <p className="text-sm text-gray-600 mb-2">이 수업을 대신할 선생님을 찾나요?</p>
                         <div className="space-y-2">
                             <button 
-                                onClick={() => findAvailableTeachers(selectedCell.day, selectedCell.periodIdx)}
+                                onClick={() => findAvailableTeachers(selectedCell.date, selectedCell.periodIdx)}
                                 disabled={searching}
                                 className="w-full bg-indigo-100 text-indigo-700 font-bold py-2 rounded hover:bg-indigo-200 transition flex justify-center items-center"
                             >
@@ -435,7 +438,7 @@ export default function MySchedulePage() {
                                 <div className="relative flex justify-center text-xs uppercase"><span className="bg-white px-2 text-gray-400 font-bold">도움말</span></div>
                             </div>
                             <p className="text-xs text-gray-500 text-center leading-relaxed">
-                                선택한 시간에 수업이 없는<br/>교내 선생님을 검색합니다.
+                                선택한 날짜·시간에 수업이 없는<br/>교내 선생님을 검색합니다.<br/>(시간표를 등록한 선생님만 나와요)
                             </p>
                         </div>
                     </div>
@@ -463,7 +466,7 @@ export default function MySchedulePage() {
                         )}
                         {availableTeachers.length === 0 && !searching && selectedCell && (
                             <p className="text-center text-gray-400 text-sm py-4">
-                                (검색 버튼을 눌러보세요)
+                                {searched ? '그 시간에 비어 있는 선생님을 찾지 못했어요.' : '(검색 버튼을 눌러보세요)'}
                             </p>
                         )}
                     </div>

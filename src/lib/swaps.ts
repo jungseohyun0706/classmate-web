@@ -15,9 +15,10 @@ import {
   setDoc,
   where,
   type Timestamp,
+  type Transaction,
 } from 'firebase/firestore'
 import { auth, db } from './firebase'
-import { todayKstYmd } from './sos'
+import { slotLockData, slotLockRef, todayKstYmd } from './sos'
 import { classLabelToParts } from './timetableConvert'
 
 export type SwapStatus = 'pending' | 'accepted' | 'declined' | 'cancelled'
@@ -82,12 +83,12 @@ const DAY_TO_JS_IDX: Record<string, number> = {
 
 /**
  * 선택한 요일(mon..fri)의 다음 도래일을 KST 기준 YYYYMMDD 로 반환합니다.
- * 오늘이 해당 요일이면 오늘 날짜를 반환합니다.
+ * 오늘이 해당 요일이면 오늘 날짜를 반환합니다. weeksAhead 만큼 주를 더 넘깁니다(1 = 그다음 주).
  */
-export function nextOccurrenceYmdKst(day: string): string {
+export function nextOccurrenceYmdKst(day: string, weeksAhead = 0): string {
   const target = DAY_TO_JS_IDX[day] ?? 1
   const nowKst = new Date(Date.now() + 9 * 60 * 60 * 1000)
-  const diff = (target - nowKst.getUTCDay() + 7) % 7
+  const diff = ((target - nowKst.getUTCDay() + 7) % 7) + weeksAhead * 7
   const d = new Date(nowKst.getTime() + diff * 24 * 60 * 60 * 1000)
   const y = d.getUTCFullYear()
   const m = String(d.getUTCMonth() + 1).padStart(2, '0')
@@ -323,6 +324,34 @@ async function afterAccept(req: SwapRequest, actor: SwapActor) {
 // 상태 변경 (트랜잭션)
 // ---------------------------------------------------------------------------
 
+/**
+ * 교환 수락 트랜잭션 안에서 칸 잠금을 확인하고 잡습니다.
+ * - 요청 교사 칸: 같은 수업으로 보낸 여러 요청을 두 선생님이 동시에 수락하지 못하게
+ * - 수락 교사 칸: 한 선생님이 같은 시간에 다른 교환·SOS까지 맡지 않게
+ * 트랜잭션은 읽기가 쓰기보다 먼저여야 하므로 요청 문서 tx.get 다음, tx.update 전에 호출합니다.
+ * 날짜 없는 레거시 문서는 잠금 없이 기존처럼 수락합니다.
+ */
+async function claimSwapSlots(
+  tx: Transaction,
+  schoolCode: string,
+  refPath: string,
+  fresh: Pick<SwapRequestBase, 'requesterId' | 'date' | 'period'>,
+  accepterId: string
+): Promise<void> {
+  const { requesterId, date, period } = fresh
+  if (typeof date !== 'string' || !/^\d{8}$/.test(date) || !period) return
+  const requesterLock = requesterId ? slotLockRef(schoolCode, requesterId, date, period) : null
+  const accepterLock = slotLockRef(schoolCode, accepterId, date, period)
+  if (requesterLock && (await tx.get(requesterLock)).exists()) {
+    throw new Error('이미 다른 선생님이 맡기로 한 수업이에요.')
+  }
+  if ((await tx.get(accepterLock)).exists()) {
+    throw new Error('이미 다른 교환이나 SOS로 채워진 시간이에요.')
+  }
+  if (requesterLock) tx.set(requesterLock, slotLockData(requesterId, date, period, 'swap', refPath))
+  tx.set(accepterLock, slotLockData(accepterId, date, period, 'swap', refPath))
+}
+
 /** 내게 온 1:1 요청 수락 */
 export async function acceptDirectRequest(req: DirectSwapRequest, actor: SwapActor): Promise<void> {
   if (req.toId && req.toId !== actor.uid) throw new Error('나에게 온 요청만 수락할 수 있어요.')
@@ -332,6 +361,7 @@ export async function acceptDirectRequest(req: DirectSwapRequest, actor: SwapAct
     if (!snap.exists()) throw new Error('요청을 찾을 수 없어요.')
     if (normalizeStatus(snap.data().status) !== 'pending') throw new Error('이미 처리된 요청이에요.')
     if (isPastSwapDate(snap.data().date)) throw new Error('날짜가 지난 요청이에요.')
+    await claimSwapSlots(tx, req.schoolCode, ref.path, normalizeDirect(req.schoolCode, snap.id, snap.data()), actor.uid)
     tx.update(ref, {
       status: 'accepted',
       acceptedAt: serverTimestamp(),
@@ -389,6 +419,7 @@ export async function acceptPublicRequest(req: PublicSwapRequest, actor: SwapAct
     if (!snap.exists()) throw new Error('요청을 찾을 수 없어요.')
     if (normalizeStatus(snap.data().status) !== 'pending') throw new Error('이미 다른 선생님이 수락했어요.')
     if (isPastSwapDate(snap.data().date)) throw new Error('날짜가 지난 요청이에요.')
+    await claimSwapSlots(tx, req.schoolCode, ref.path, normalizePublic(req.schoolCode, snap.id, snap.data()), actor.uid)
     tx.update(ref, {
       status: 'accepted',
       acceptedAt: serverTimestamp(),

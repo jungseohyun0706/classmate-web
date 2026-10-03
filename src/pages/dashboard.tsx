@@ -6,6 +6,7 @@ import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firesto
 import TodayCard from '../components/TodayCard'
 import { useUI } from '../components/ui/feedback'
 import { useInstallPrompt } from '../components/ui/install'
+import { todayKstYmd } from '../lib/sos'
 
 export default function Dashboard() {
   const router = useRouter()
@@ -55,7 +56,9 @@ export default function Dashboard() {
                   where('status', '==', 'pending')
                 )
               )
-              setPendingSwaps(swapSnap.size)
+              // 수업 날짜가 지난 요청은 수락할 수 없으므로 빼고 셈 (date 없는 레거시 요청은 포함)
+              const today = todayKstYmd()
+              setPendingSwaps(swapSnap.docs.filter((d) => !d.get('date') || d.get('date') >= today).length)
             } catch (e) {
               console.error(e)
             }

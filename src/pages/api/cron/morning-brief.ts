@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
+import { timingSafeEqual } from 'crypto'
 import { FieldPath, getFirestore } from 'firebase-admin/firestore'
 import type { QueryDocumentSnapshot } from 'firebase-admin/firestore'
 import { fetchNeis, todayKstYmd } from '../../../lib/neis'
@@ -7,7 +8,8 @@ import { getAdminApp, isAdminConfigured, sendPushToUser } from '../../../lib/fcm
 
 // GET /api/cron/morning-brief
 // Vercel Cron(0 23 * * 0-4 UTC = KST 평일 08:00)이 Authorization: Bearer CRON_SECRET
-// 헤더와 함께 호출합니다. 수동 호출은 ?key=CRON_SECRET 도 지원합니다.
+// 헤더와 함께 호출합니다. 시크릿이 로그·브라우저 기록에 남지 않도록 쿼리스트링(?key=)은 받지 않습니다.
+// 수동 실행: curl -H "Authorization: Bearer $CRON_SECRET" https://<도메인>/api/cron/morning-brief
 // 각 학급 담임에게 오늘의 브리핑(1~2교시 + 급식 + 받은 교환 요청 수)을 푸시합니다.
 // 학사일정(NEIS)에서 오늘이 휴업일·공휴일인 학교는 건너뜁니다.
 
@@ -33,6 +35,17 @@ const NEIS_TIMETABLE_ENDPOINTS: Record<string, string> = {
 const GRADE_EVENT_FIELDS = ['ONE', 'TW', 'THREE', 'FR', 'FIV', 'SIX'].map(
   (g) => `${g}_GRADE_EVENT_YN`
 )
+
+/** 길이가 달라도 실행 시간이 크게 달라지지 않도록 맞춘 비교 */
+function safeCompare(input: string, expected: string): boolean {
+  const a = Buffer.from(input, 'utf8')
+  const b = Buffer.from(expected, 'utf8')
+  if (a.length !== b.length) {
+    timingSafeEqual(b, b)
+    return false
+  }
+  return timingSafeEqual(a, b)
+}
 
 /** 급식 메뉴 문자열에서 앞 3개 항목만 뽑아 요약합니다. */
 function summarizeMeal(dishRaw: string): string {
@@ -122,8 +135,7 @@ export default async function handler(
     return res.status(503).json({ error: 'cron-not-configured' })
   }
   const authHeader = req.headers.authorization || ''
-  const key = typeof req.query.key === 'string' ? req.query.key : ''
-  if (authHeader !== `Bearer ${secret}` && key !== secret) {
+  if (!safeCompare(authHeader, `Bearer ${secret}`)) {
     return res.status(401).json({ error: 'unauthorized' })
   }
 
@@ -287,8 +299,10 @@ export default async function handler(
         .where('toId', '==', teacherId)
         .where('status', '==', 'pending')
         .get()
-      if (pendingSnap.size > 0) {
-        parts.push(`받은 교환 요청 ${pendingSnap.size}건`)
+      // 수업 날짜가 지난 요청은 수락할 수 없으므로 빼고 셈 (date 없는 레거시 요청은 포함)
+      const pendingCount = pendingSnap.docs.filter((d) => !d.get('date') || d.get('date') >= today).length
+      if (pendingCount > 0) {
+        parts.push(`받은 교환 요청 ${pendingCount}건`)
       }
 
       const body =

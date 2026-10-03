@@ -39,7 +39,7 @@ export interface SosRequestDoc {
   cancelledAt?: unknown
 }
 
-export type SosErrorCode = 'not-found' | 'not-open' | 'forbidden' | 'past-date'
+export type SosErrorCode = 'not-found' | 'not-open' | 'forbidden' | 'past-date' | 'slot-taken'
 
 export class SosStateError extends Error {
   code: SosErrorCode
@@ -109,44 +109,84 @@ async function sendPush(toUid: string, title: string, body: string, url: string)
   }
 }
 
+// ---------- 칸 잠금 (교환·SOS 공용) ----------
+// school_swaps/{schoolCode}/slots/{uid}_{date}_{period}
+// 한 선생님의 그 날짜·교시가 이미 교환 수락이나 SOS 배정으로 채워졌다는 표시입니다.
+// 수락 트랜잭션에서 tx.get 후 없을 때만 tx.set 해서, 같은 칸 동시 수락·한 교사 이중 배정을 막습니다.
+
+export type SlotLockKind = 'swap' | 'sos'
+
+export function slotLockRef(schoolCode: string, uid: string, date: string, period: number) {
+  return doc(db, 'school_swaps', schoolCode, 'slots', `${uid}_${date}_${period}`)
+}
+
+export function slotLockData(uid: string, date: string, period: number, kind: SlotLockKind, refPath: string) {
+  return { uid, date, period, kind, refPath, createdAt: serverTimestamp() }
+}
+
 // ---------- 빈 시간 선생님 스캔 ----------
 
 export interface FreeTeacher {
   id: string
   name: string
+  grade?: string | number
+  classNm?: string | number
 }
 
 /**
- * 우리 학교 선생님 중 해당 요일/교시가 비어 있는 선생님을 찾습니다.
- * my-schedule의 스캔 로직과 같은 쿼리를 쓰되,
- * 시간표(mySchedule)를 저장하지 않은 선생님은 '알 수 없음'으로 보고
- * 알림 대상에서 제외합니다(빈 시간으로 간주하지 않음).
+ * 우리 학교 선생님 중 해당 날짜/교시가 비어 있는 선생님을 찾습니다.
+ * SOS 알림 대상과 my-schedule의 '빈 시간 선생님 찾기'가 같은 기준을 씁니다.
+ * - 시간표(mySchedule)를 저장하지 않은 선생님은 '알 수 없음'으로 보고 제외(빈 시간으로 간주하지 않음)
+ * - 그 날짜·교시에 이미 교환 수락이나 SOS 배정(칸 잠금)이 있는 선생님도 제외
+ * 주말이거나 날짜 형식이 틀리면 빈 배열입니다.
  */
 export async function findFreeTeachers(
   schoolCode: string,
-  dayKey: DayKey,
+  date: string, // YYYYMMDD
   periodIdx: number, // 0-based (period - 1)
   excludeUid?: string
 ): Promise<FreeTeacher[]> {
+  const dayKey = ymdToDayKey(date)
+  if (!dayKey) return []
+
   const q = query(
     collection(db, 'users'),
     where('schoolCode', '==', schoolCode),
     where('role', '==', 'teacher')
   )
-  const snap = await getDocs(q)
+  const [snap, taken] = await Promise.all([getDocs(q), takenSlotUids(schoolCode, date, periodIdx + 1)])
 
   const free: FreeTeacher[] = []
   snap.forEach((d) => {
     if (excludeUid && d.id === excludeUid) return
+    if (taken.has(d.id)) return
     const t = d.data() as Record<string, any>
     const s = t.mySchedule
     // 시간표 미등록 선생님은 제외 (unknown ≠ free)
     if (!s || !Array.isArray(s[dayKey])) return
     if (!s[dayKey][periodIdx]) {
-      free.push({ id: d.id, name: t.displayName || t.email || '선생님' })
+      free.push({ id: d.id, name: t.displayName || t.email || '선생님', grade: t.grade, classNm: t.classNm })
     }
   })
   return free
+}
+
+/** 그 날짜·교시에 칸 잠금이 있는 선생님 uid (등호 필터만 써서 복합 색인 불필요) */
+async function takenSlotUids(schoolCode: string, date: string, period: number): Promise<Set<string>> {
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, 'school_swaps', schoolCode, 'slots'),
+        where('date', '==', date),
+        where('period', '==', period)
+      )
+    )
+    return new Set(snap.docs.map((d) => String(d.get('uid') ?? '')))
+  } catch (e) {
+    // 검색 단계 제외는 보조 수단 — 실제 이중 배정은 수락 트랜잭션의 잠금이 막으므로 조회 실패 시 시간표 기준으로만 거름
+    console.error('칸 잠금 조회 실패', e)
+    return new Set()
+  }
 }
 
 // ---------- SOS 발행 / 수락 / 취소 ----------
@@ -193,7 +233,7 @@ export async function createSos(input: CreateSosInput): Promise<CreateSosResult>
   let notified = 0
   const dayKey = ymdToDayKey(date)
   if (dayKey) {
-    const free = await findFreeTeachers(input.schoolCode, dayKey, input.period - 1, input.requesterId)
+    const free = await findFreeTeachers(input.schoolCode, date, input.period - 1, input.requesterId)
     const title = '보결 SOS'
     const body = `${input.requesterName} 선생님이 ${formatYmd(date)} ${input.period}교시 보결을 요청했어요`
     const url = '/teacher/sos'
@@ -224,6 +264,7 @@ export interface AcceptSosInput {
 /**
  * 선착순 수락: 트랜잭션으로 status가 'open'일 때만 assigned로 바꿉니다.
  * 이미 마감됐거나 날짜가 지났으면 SosStateError('not-open')를 던집니다.
+ * 맡는 선생님의 그 날짜·교시에 이미 교환이나 SOS가 있으면 SosStateError('slot-taken')를 던집니다.
  * 성공하면 요청자에게 알림/푸시를 보냅니다.
  */
 export async function acceptSos(input: AcceptSosInput): Promise<void> {
@@ -244,12 +285,26 @@ export async function acceptSos(input: AcceptSosInput): Promise<void> {
     if (data.requesterId === input.accepterId) {
       throw new SosStateError('forbidden', '내가 올린 SOS는 맡을 수 없어요.')
     }
+    const period = Number(data.period) || 0
+    const lockRef =
+      /^\d{8}$/.test(String(data.date)) && period
+        ? slotLockRef(input.schoolCode, input.accepterId, data.date, period)
+        : null
+    if (lockRef) {
+      const lockSnap = await tx.get(lockRef)
+      if (lockSnap.exists()) {
+        throw new SosStateError('slot-taken', '이미 다른 교환이나 SOS로 채워진 시간이에요.')
+      }
+    }
     tx.update(ref, {
       status: 'assigned',
       assignedTo: input.accepterId,
       assignedName: input.accepterName,
       assignedAt: serverTimestamp(),
     })
+    if (lockRef) {
+      tx.set(lockRef, slotLockData(input.accepterId, data.date, period, 'sos', ref.path))
+    }
     return data.requesterId
   })
 
