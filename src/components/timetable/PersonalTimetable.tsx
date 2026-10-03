@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react'
 import { buildDayTimetable, slotMinutes } from '../../lib/timetable/engine'
 import { hmToMinutes, schoolHmAt } from '../../lib/timetable/dates'
+import { displayDayState } from '../../lib/timetable/classRefPolicy'
 import {
   calendarFailedOn,
   dayInput,
@@ -32,8 +33,10 @@ export interface PersonalTimetableProps {
   /** 직접 입력 일정을 불러오지 못함(오류 code) */
   personalError?: string | null
   onGoToday?: () => void
-  /** '학급 시간표(참고)' 펼치기 — 볼 수 없으면 생략 */
+  /** '학급 시간표(참고)' 펼치기 — 볼 수 없으면 생략(볼 수 있는지는 화면이 classRefTarget으로 판단) */
   onShowClassReference?: (() => void) | null
+  /** 담임 학급 신청 승인 대기 — 수업 없음 카드에 초대 코드 대신 승인 대기 안내 */
+  awaitingHomeroom?: boolean
 }
 
 function courseTitle(payload: MyTimetablePayload, courseId: string): string {
@@ -120,6 +123,7 @@ export default function PersonalTimetable({
   personalError,
   onGoToday,
   onShowClassReference,
+  awaitingHomeroom,
 }: PersonalTimetableProps): JSX.Element {
   const compact = mode === 'compact'
   const isToday = day.date === today
@@ -142,7 +146,8 @@ export default function PersonalTimetable({
     day.coursesWithoutSchedule.length < day.activeCourseIds.length
   const partialTitles = partial ? day.coursesWithoutSchedule.map((id) => courseTitle(payload, id)) : []
   const calendarFailed = calendarFailedOn(payload, day.date)
-  const stateKind = stateKindForDay(day.state)
+  // 공식 수업 없이 직접 입력만 있는 학생의 빈 날은 '수업 없음(정상)'이 아니라 '연결된 수업 없음'으로
+  const stateKind = stateKindForDay(displayDayState(day))
 
   const isNow = (l: LessonView): boolean => {
     if (!isToday || nowMinutes == null) return false
@@ -177,7 +182,8 @@ export default function PersonalTimetable({
           isToday={isToday}
           offDayName={day.offDayName}
           onGoToday={onGoToday}
-          onShowClassReference={payload.legacyClassTimetableAvailable ? onShowClassReference : null}
+          onShowClassReference={onShowClassReference}
+          awaitingHomeroom={awaitingHomeroom}
         />
       ) : (
         <ol className={compact ? 'space-y-1.5' : 'space-y-2'} aria-label="수업 목록">
@@ -258,10 +264,11 @@ export interface PersonalTimetablePanelProps {
   personalError?: string | null
   onGoToday?: () => void
   onShowClassReference?: (() => void) | null
+  awaitingHomeroom?: boolean
 }
 
-/** 학교 시간대 현재 시각(분) — 1분마다 갱신 */
-function useNowMinutes(): number | null {
+/** 학교 시간대 현재 시각(분) — 1분마다 갱신(학급 시간표(참고)의 '지금' 표시도 같이 씀) */
+export function useNowMinutes(): number | null {
   const [now, setNow] = useState<number | null>(null)
   useEffect(() => {
     const tick = () => setNow(hmToMinutes(schoolHmAt(Date.now())))
@@ -287,6 +294,7 @@ export function PersonalTimetablePanel({
   personalError,
   onGoToday,
   onShowClassReference,
+  awaitingHomeroom,
 }: PersonalTimetablePanelProps): JSX.Element {
   const nowMinutes = useNowMinutes()
   const { payload, covered, error, loading, syncedAt, fromCache, retry } = tt
@@ -323,6 +331,7 @@ export function PersonalTimetablePanel({
         personalError={personalError}
         onGoToday={onGoToday}
         onShowClassReference={onShowClassReference}
+        awaitingHomeroom={awaitingHomeroom}
       />
     </div>
   )

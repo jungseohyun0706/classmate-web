@@ -12,6 +12,10 @@ import { loadStudentTimetableData, TimetableApiError } from '../../../lib/timeta
 // 오류: 400 bad-date/bad-range, 401 unauthenticated, 403 no-profile/not-student, 409 no-school,
 //       500 load-failed/index-required, 503 not-configured — 모두 { error, code }
 
+// 기본 함수 시간 한도(플랜에 따라 10~15초)면 콜드 스타트 + Firestore + NEIS 학사일정이 겹칠 때 504가 날 수 있어 여유를 둠.
+// 학사일정 자체는 studentData의 상한(CALENDAR_TIMEOUT_MS) 뒤 calendarErrors로 넘어가므로 보통은 훨씬 빨리 끝남
+export const config = { maxDuration: 30 }
+
 const MAX_DAYS = 21
 
 function dayDiff(from: string, to: string): number {

@@ -20,6 +20,14 @@ import {
   weekdayShort,
   type CourseSlotSummary,
 } from '../../lib/timetable/client'
+import {
+  awaitingHomeroomClass,
+  classRefAutoOpen,
+  classRefOffDay,
+  classRefTarget,
+  defaultPeriodTimes,
+} from '../../lib/timetable/classRefPolicy'
+import { isYmd } from '../../lib/timetable/dates'
 import { usePersonalEntries } from '../../lib/timetable/personalEntries'
 import { awaitingHomeroomApproval } from '../../lib/homeroomStatus'
 import type { Course } from '../../lib/timetable/types'
@@ -267,6 +275,12 @@ export default function StudentToday(): JSX.Element {
   // 수업 정보 시트로 연 수업
   const [sheetCourseId, setSheetCourseId] = useState<string | null>(null)
 
+  // 알림(저녁 '내일 가방')이 /student/today?date=YYYYMMDD로 열면 개인 시간표 카드를 그 날짜로 — 가방 체크리스트는 이 화면에 있음
+  const queryDate = typeof router.query.date === 'string' && isYmd(router.query.date) ? router.query.date : null
+  useEffect(() => {
+    if (queryDate) setTtDate(queryDate)
+  }, [queryDate])
+
   // 1분마다, 그리고 백그라운드에서 돌아올 때 날짜가 바뀌었는지 확인 (같은 날이면 상태 변화 없음)
   useEffect(() => {
     const check = (): void => setTodayYmd(ymdOf(kstNow()))
@@ -307,14 +321,12 @@ export default function StudentToday(): JSX.Element {
     [tt.payload, todayYmd, uid]
   )
   const closeSheet = useCallback(() => setSheetCourseId(null), [])
-  // 연결된 공식 수업이 없거나(no-courses) 시간표가 아직 등록되지 않은(not-registered) 날에는 학급 시간표(참고)를 처음부터 펼쳐 둠
-  // — 예전처럼 학급 시간표를 볼 수 있게 하되, 개인 시간표처럼 보이지 않도록 '참고' 라벨의 별도 영역으로
-  const noLinkedLessons = useMemo<boolean>(() => {
-    if (!tt.payload || !coversDate(tt.payload, ttDate) || !personal.loaded) return false
-    const state = buildDayTimetable(dayInput(tt.payload, ttDate, personal.entries, uid)).state
-    return state === 'no-courses' || state === 'not-registered'
-  }, [tt.payload, ttDate, personal.loaded, personal.entries, uid])
-  const refOpen = refChoice ?? noLinkedLessons
+  // 그 날의 공식 수업(수강·학급 공통 수업)만 본 결과 — 학급 시간표(참고)를 처음부터 펼칠지 판단용.
+  // 직접 입력 일정은 넣지 않음: 일정 하나를 추가했다고 학급 시간표가 접히거나 사라지지 않게(classRefAutoOpen)
+  const officialDay = useMemo(() => {
+    if (!tt.payload || !coversDate(tt.payload, ttDate)) return null
+    return buildDayTimetable(dayInput(tt.payload, ttDate, [], uid))
+  }, [tt.payload, ttDate, uid])
 
   // 로그인 + 학생 역할 가드
   // 내 계정 문서를 실시간 구독 — 선생님이 승인하는 순간 새로고침 없이 반영됩니다.
@@ -504,10 +516,26 @@ export default function StudentToday(): JSX.Element {
         })()
   const schoolName = String(payloadHr?.schoolName || userData.schoolName || '')
 
-  // 학급 시간표(참고): 승인된 소속 학급이 있을 때만(수업 그룹·승인 전 학급 제외)
-  const refClassId = payloadHr && !payloadHr.isGroupLegacy && payloadHr.classId === classId ? payloadHr.classId : null
-  const canShowRef = Boolean(tt.payload?.legacyClassTimetableAvailable && refClassId && userData.schoolCode)
-  const refOffDay = tt.payload && coversDate(tt.payload, ttDate) ? tt.payload.offDays[ttDate] ?? null : undefined
+  // 학급 시간표(참고): 개인 시간표 카드 밖의 별도 영역. 승인된 소속 학급 → 학급 id까지, 담임 승인 대기 → 공개 NEIS만,
+  // /api/timetable/me가 서버·네트워크 오류로 실패해도 프로필(승인된 소속 학급)로 계속 보여 줌(예전 TodayCard처럼)
+  const ttFailed = !tt.covered && !!tt.error && (tt.error.kind === 'server' || tt.error.kind === 'offline')
+  // 담임 학급 신청 승인 대기(수업 그룹 신청 제외) — 수업 없음 카드에 초대 코드 대신 승인 대기 안내
+  const pendingHomeroom = !rejected && awaitingHomeroomClass(userData)
+  const refTarget = classRefTarget({
+    profile: {
+      classId: classId || null,
+      status: userData.status ?? null,
+      schoolCode: userData.schoolCode ?? null,
+      grade: userData.grade ?? null,
+      classNm: userData.classNm ?? null,
+    },
+    payload: tt.payload,
+    loadFailed: ttFailed,
+  })
+  // 공식 수업 시간표가 없는 날(직접 입력만 있어도)·자료를 못 받은 날은 처음부터 펼침. 학생이 접거나 펼치면 그 선택대로
+  const refOpen = refChoice ?? classRefAutoOpen({ day: officialDay, loadFailed: ttFailed })
+  const refOffDay = classRefOffDay(tt.payload, ttDate)
+  const refPeriodTimes = tt.payload?.periodTimes ?? defaultPeriodTimes(schoolName)
 
   const sheetCourse = sheetCourseId && tt.payload ? tt.payload.courses.find((c) => c.courseId === sheetCourseId) ?? null : null
 
@@ -713,21 +741,24 @@ export default function StudentToday(): JSX.Element {
               personalReady={personal.loaded}
               personalError={personal.error}
               onGoToday={() => setTtDate(todayYmd)}
-              onShowClassReference={canShowRef ? () => setRefChoice(true) : null}
+              onShowClassReference={refTarget ? () => setRefChoice(true) : null}
+              awaitingHomeroom={pendingHomeroom}
             />
           </div>
         </section>
 
-        {/* 학급 시간표(참고): 개인 시간표 카드 밖의 별도 영역(항상 '참고' 라벨) */}
-        {refOpen && canShowRef && refClassId && (
+        {/* 학급 시간표(참고): 개인 시간표 카드 밖의 별도 영역(항상 '참고' 라벨). 접어도 머리줄이 남아 다시 펼칠 수 있음 */}
+        {refTarget && (
           <ClassTimetableReference
-            schoolCode={String(userData.schoolCode)}
-            grade={userData.grade}
-            classNm={userData.classNm}
-            classId={refClassId}
+            schoolCode={refTarget.schoolCode}
+            grade={refTarget.grade}
+            classNm={refTarget.classNm}
+            classId={refTarget.classId}
             date={ttDate}
             offDay={refOffDay}
-            open
+            periodTimes={refPeriodTimes}
+            today={todayYmd}
+            open={refOpen}
             onOpenChange={setRefChoice}
           />
         )}

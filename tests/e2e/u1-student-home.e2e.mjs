@@ -6,7 +6,8 @@
 // 사용: BASE=http://127.0.0.1:3100 node tests/e2e/u1-student-home.e2e.mjs
 // 모든 데이터는 에뮬레이터의 테스트용 가상 데이터이며 실제 학생 정보가 아닙니다.
 //
-// 요구 식별자(지시서): R01 R03 R08 R11 R15, T01 T03 T10 T11 T12 T13 T16 T34 T35 T36 T37
+// 요구 식별자(지시서): R01 R03 R05 R08 R11 R15, T01 T03 T10 T11 T12 T13 T16 T34 T35 T36 T37
+//  + 첫날 회귀(F16~F20): 학급 시간표(참고)가 직접 입력 일정·승인 대기·/me 오류로 사라지지 않음, '지금' 교시, '내일 가방' 알림 링크
 //  - 작업 지시의 '(T09/T10) 날짜 이동'은 지시서 번호로는 T11(일간 탐색)·T12(날짜 경계)에 해당해 그 번호로 기록하고,
 //    T10(계정 변경 시 캐시)은 로그아웃·계정 전환 캐시 삭제 검사에 씁니다.
 import { admin, wipe, createUsers, writeNeisFixture, reporter, launchBrowser, newPage, uiLogin, sleep, Timestamp, BASE, PW } from './lib/env.mjs'
@@ -31,7 +32,10 @@ const SER = {
   sciAThu2: 'e2eSerSciAThu2',
   physDTue5: 'e2eSerPhysDTue5',
 }
-const INTERNAL_IDS = [...Object.values(C), ...Object.values(SER), 'cs_e2e_u1', 'e2eOv', 'S1_3_4', 'S1_3_5']
+const INTERNAL_IDS = [...Object.values(C), ...Object.values(SER), 'cs_e2e_u1', 'e2eOv', 'e2ePeAcademy', 'S1_3_4', 'S1_3_5']
+
+// 학급 시간표(참고) 머리줄(접기·펼치기 버튼) 이름 — ClassTimetableReference의 CLASS_REFERENCE_LABEL
+const REF_LABEL = '학급 시간표(참고) — 내 수업과 다를 수 있어요'
 
 function neisFixture() {
   return {
@@ -65,6 +69,8 @@ async function seed() {
     { uid: 'stuG', email: 'g@u1.e2e.kr', doc: St('최학생', 'S1_3_5_g_engb', null, null) },
     { uid: 'stuN', email: 'n@u1.e2e.kr', doc: St('정학생', 'S1_3_5', 3, 5) }, // 수강 없음
     { uid: 'stuR', email: 'r@u1.e2e.kr', doc: St('한학생', 'S1_3_5', 3, 5) }, // 수학 C(시간표 없음) + 물리 D 승인 대기
+    { uid: 'stuP', email: 'p@u1.e2e.kr', doc: St('윤학생', 'S1_3_5', 3, 5) }, // 수강 없음 + 직접 입력 '학원'(매주 월)만
+    { uid: 'stuQ', email: 'q@u1.e2e.kr', doc: { ...St('서학생', 'S1_3_5', 3, 5), status: 'pending' } }, // 3-5 담임 승인 대기
   ])
   const { db } = admin()
   const now = Timestamp.now()
@@ -151,6 +157,20 @@ async function seed() {
     start: '16:30',
     end: '18:00',
     roomName: '컴퓨터실',
+    memo: null,
+    linkedCourseId: null,
+    createdAt: now,
+  })
+  // P의 직접 입력 일정(매주 월 18:00 학원) — 공식 수업 없이 개인 일정만 있는 학생(F16)
+  await db.doc('users/stuP/personalEntries/e2ePeAcademy').set({
+    title: '학원',
+    kind: 'weekly',
+    weekday: 1,
+    date: null,
+    period: null,
+    start: '18:00',
+    end: '20:00',
+    roomName: null,
     memo: null,
     linkedCourseId: null,
     createdAt: now,
@@ -636,9 +656,160 @@ async function t37t10OfflineAndAccount(browser) {
   await ctx.close()
 }
 
+// ───────────────────────── 첫날 회귀: 학급 시간표(참고) ─────────────────────────
+
+const refHeader = (page) => page.getByRole('button', { name: REF_LABEL, exact: true }).first()
+const refList = (page) => page.getByRole('list', { name: '학급 시간표(참고)' }).first()
+
+/** 머리줄이 보이고 펼침 상태가 expanded인지(최대 timeout) */
+async function refExpanded(page, expanded, timeout = 10000) {
+  const h = refHeader(page)
+  if (!(await visible(h, timeout))) return false
+  const end = Date.now() + timeout
+  while (Date.now() < end) {
+    if ((await h.getAttribute('aria-expanded').catch(() => null)) === String(expanded)) return true
+    await sleep(150)
+  }
+  return false
+}
+
+async function f16PersonalOnlyKeepsReference(browser) {
+  // P: 공식 수업 없음 + 직접 입력 '학원'(매주 월)만. 예전에는 일정 하나로 홈의 학급 시간표(참고)가 사라지고 '이 날은 수업이 없어요'로 보였음
+  const { ctx, page, errors } = await openAs(browser, 'p@u1.e2e.kr')
+  const region = ttRegion(page)
+  const noCourses = await visible(region.getByText('아직 연결된 수업이 없어요'))
+  const text = await bodyText(page)
+  check('F16.1', '직접 입력만 있는 학생의 일정 없는 화요일: "아직 연결된 수업이 없어요"("이 날은 수업이 없어요"로 학교가 쉬는 것처럼 보이지 않음)', noCourses && !text.includes('이 날은 수업이 없어요'))
+  const open = await refExpanded(page, true)
+  const subj = await visible(refList(page).getByText('국어'), 10000)
+  check('F16.2/R05', '공식 수업이 없으니 학급 시간표(참고)를 처음부터 펼침(개인 일정이 있어도) — 개인 시간표 카드 밖 별도 영역', open && subj && !(await visible(region.getByRole('list', { name: '학급 시간표(참고)' }), 500)))
+  await shot(page, 'F16-personal-only-tue')
+
+  await page.getByRole('button', { name: '이전 날' }).first().click()
+  const academy = await articleText(region, /학원/)
+  const monRef = await visible(refList(page).getByText('국어'), 10000)
+  check('F16.3', '일정이 있는 월요일: 개인 시간표에 학원(직접 입력) + 학급 시간표(참고)는 그대로 펼침', !!academy && academy.includes('직접 입력') && (await refExpanded(page, true, 3000)) && monRef, academy?.replace(/\n/g, ' '))
+
+  // 접어도 머리줄이 남아 다시 펼칠 수 있음(예전 홈은 접으면 영역이 통째로 사라짐)
+  await refHeader(page).click()
+  const collapsed = (await refExpanded(page, false, 3000)) && !(await visible(refList(page), 1000))
+  await refHeader(page).click()
+  const reopened = (await refExpanded(page, true, 3000)) && (await visible(refList(page).getByText('국어'), 10000))
+  check('F16.4', '홈에서 학급 시간표(참고)를 접어도 머리줄이 남고 다시 펼칠 수 있음', collapsed && reopened, JSON.stringify({ collapsed, reopened }))
+  if (errors.some((e) => e.kind === 'pageerror')) note('F16.errors', JSON.stringify(errors.slice(0, 5)))
+  await ctx.close()
+
+  // 전체 화면도 같은 규칙
+  const t = await openAs(browser, 'p@u1.e2e.kr', `/student/timetable?date=${TODAY}`)
+  const tText = await bodyText(t.page)
+  check('F16.5', '/student/timetable도 직접 입력만 있는 학생은 학급 시간표(참고)를 펼침 + "이 날은 수업이 없어요" 없음', (await refExpanded(t.page, true)) && (await visible(refList(t.page).getByText('국어'), 10000)) && !tText.includes('이 날은 수업이 없어요'))
+  await t.ctx.close()
+
+  // 공식 수업 시간표가 있는 학생(A): 접힌 채로 머리줄만 — 눌러서 펼칠 수 있음(T16에서 영어 B가 2교시로 옮겨진 뒤)
+  const a = await openAs(browser, 'a@u1.e2e.kr')
+  await articleText(ttRegion(a.page), /영어 B/)
+  const aCollapsed = await refExpanded(a.page, false)
+  let aOpened = false
+  if (aCollapsed) {
+    await refHeader(a.page).click()
+    aOpened = await refExpanded(a.page, true, 3000)
+  }
+  check('F16.6', '공식 수업이 연결된 학생은 학급 시간표(참고)가 접힌 머리줄로 남고 눌러서 펼칠 수 있음', aCollapsed && aOpened, JSON.stringify({ aCollapsed, aOpened }))
+  await a.ctx.close()
+}
+
+async function f17PendingSeesReference(browser) {
+  // Q: 3-5 담임 승인 대기. 예전(b7d6c46)에는 승인 전에도 NEIS 학급 시간표를 봤음 → 공개 NEIS 참고 보기(classId 없이)
+  const { ctx, page, errors } = await openAs(browser, 'q@u1.e2e.kr')
+  const region = ttRegion(page)
+  check('F17.0', '승인 대기 배너', await seen(page, '선생님 승인을 기다리고 있어요'))
+  const open = await refExpanded(page, true)
+  const subjects = await refList(page).innerText().catch(() => '')
+  check('F17.1/R05', '승인 대기 학생도 학급 시간표(참고)(공개 NEIS 3-5: 국어·수학·영어·과학)를 별도 영역으로 봄', open && ['국어', '수학', '영어', '과학'].every((x) => subjects.includes(x)), subjects.replace(/\n/g, ' '))
+  const note17 = await visible(region.getByText(/담임 선생님이 학급 신청을 승인하기 전이에요/))
+  const invite = await visible(region.getByRole('link', { name: '초대 코드 입력' }), 1000)
+  check('F17.2', '수업 없음 카드는 초대 코드 대신 승인 대기 안내(초대 코드 입력 버튼 없음)', note17 && !invite)
+  await shot(page, 'F17-pending-today')
+  // classId 없이 공개 NEIS만 조회 — NEIS가 빈 날(10/7)에 승인 전 학급 문서(classes/{id}/info/timetable·overrides)를 읽으면
+  // 규칙 거부로 '불러오지 못했어요'가 뜸. 공개 NEIS만이면 '이 날 학급 시간표 정보가 없어요'
+  await page.getByRole('button', { name: '다음 날' }).first().click()
+  await navHas(page, ['내일'])
+  const empty = await visible(page.getByText('이 날 학급 시간표 정보가 없어요'), 10000)
+  const denied = await visible(page.getByText('학급 시간표를 불러오지 못했어요'), 1000)
+  check('F17.3', 'NEIS가 빈 날에도 승인 전 학급 문서를 읽지 않음(조회 오류 없이 "이 날 학급 시간표 정보가 없어요")', empty && !denied, JSON.stringify({ empty, denied }))
+  if (errors.length) note('F17.errors', JSON.stringify(errors.slice(0, 5)))
+  await ctx.close()
+
+  const t = await openAs(browser, 'q@u1.e2e.kr', `/student/timetable?date=${TODAY}`)
+  check('F17.4', '/student/timetable도 승인 대기 학생에게 학급 시간표(참고)', (await refExpanded(t.page, true)) && (await visible(refList(t.page).getByText('국어'), 10000)))
+  await t.ctx.close()
+}
+
+async function f19MeFailureKeepsReference(browser) {
+  // /api/timetable/me 500(캐시 없음) — 예전 TodayCard는 학급 시간표를 따로 불러와 계속 보였음
+  let mode = { status: 500, code: 'load-failed' }
+  const setup = async (page) => {
+    await page.route('**/api/timetable/me**', (route) => {
+      if (!mode) return route.continue()
+      if (mode === 'offline') return route.abort('internetdisconnected')
+      return route.fulfill({ status: mode.status, contentType: 'application/json', body: JSON.stringify({ error: '테스트 오류', code: mode.code }) })
+    })
+  }
+  const { ctx, page } = await openAs(browser, 'n@u1.e2e.kr', '/student/today', setup)
+  const region = ttRegion(page)
+  const errCard = await visible(region.getByText('시간표를 불러오지 못했어요 (load-failed)'))
+  const open = await refExpanded(page, true)
+  const subj = await visible(refList(page).getByText('국어'), 10000)
+  const text = await bodyText(page)
+  check('F19.1/R15', '/me 500: 개인 시간표는 오류 카드 + 학급 시간표(참고)는 프로필(승인된 3-5) 기준으로 펼쳐 계속 표시', errCard && open && subj && !text.includes('이 날은 수업이 없어요'))
+  await shot(page, 'F19-me-500')
+
+  mode = 'offline'
+  await page.reload({ waitUntil: 'load' })
+  const offline = await visible(region.getByText('인터넷 연결을 확인해 주세요'), 15000)
+  check('F19.2', '/me 네트워크 실패(캐시 없음)에도 학급 시간표(참고) 표시', offline && (await refExpanded(page, true)) && (await visible(refList(page).getByText('국어'), 10000)))
+
+  mode = null
+  await region.getByRole('button', { name: '다시 시도' }).first().click()
+  check('F19.3', '다시 시도 → 정상 상태 카드로 복구(학급 시간표(참고)는 그대로)', (await visible(region.getByText('아직 연결된 수업이 없어요'), 15000)) && (await refExpanded(page, true, 3000)))
+  await ctx.close()
+
+  mode = { status: 500, code: 'load-failed' }
+  const t = await openAs(browser, 'n@u1.e2e.kr', `/student/timetable?date=${TODAY}`, setup)
+  check('F19.4', '/student/timetable도 /me 500일 때 학급 시간표(참고) 표시', (await refExpanded(t.page, true)) && (await visible(refList(t.page).getByText('국어'), 10000)))
+  await t.ctx.close()
+}
+
+async function f20NowPeriodInReference(browser) {
+  // 10:00 KST = 고등학교 기본 교시표 2교시(09:40~10:30) — 예전 TodayCard처럼 '지금' 표시
+  const errors = []
+  const { ctx, page } = await newPage(browser, { fixedTime: '2026-10-06T10:00:00+09:00', errors, who: 'n@u1.e2e.kr' })
+  await uiLogin(page, 'n@u1.e2e.kr')
+  if (!page.url().endsWith('/student/today')) await page.goto(BASE + '/student/today', { waitUntil: 'load' })
+  await refExpanded(page, true)
+  const row = refList(page).getByRole('listitem').filter({ hasText: '수학' }).first()
+  const rowText = (await visible(row, 10000)) ? await row.innerText() : ''
+  const other = await refList(page).getByRole('listitem').filter({ hasText: '국어' }).first().innerText().catch(() => '')
+  check('F20.1', "학급 시간표(참고): 수업 중인 2교시(수학)에 '지금' + 교시 시각 09:40~10:30", rowText.includes('지금') && rowText.includes('09:40~10:30') && !other.includes('지금'), rowText.replace(/\n/g, ' '))
+  await page.getByRole('button', { name: '다음 날' }).first().click()
+  await navHas(page, ['내일'])
+  check('F20.2', "다른 날짜에는 '지금' 표시 없음", !(await visible(refList(page).getByText('지금', { exact: true }), 2000)))
+  await shot(page, 'F20-now-period')
+  await ctx.close()
+}
+
+async function f18EveningBagLink(browser) {
+  // 저녁 '내일 가방' 알림 주소(/student/today?date=내일): 가방 체크리스트가 있는 홈 + 개인 시간표 카드는 내일
+  const { ctx, page } = await openAs(browser, 'p@u1.e2e.kr', '/student/today?date=20261007')
+  const nav = await navHas(page, ['내일', '10월 7일 (수)'])
+  const bag = await visible(page.getByRole('heading', { name: '내일 가방 싸기' }))
+  check('F18.1', "'내일 가방' 알림 링크 → 홈(가방 체크리스트 \"내일 가방 싸기\") + 개인 시간표 카드는 내일(10월 7일 (수))", nav.ok && bag, nav.text)
+  await ctx.close()
+}
+
 async function main() {
   await seed()
-  note('setup', `고정 시각 ${FIXED}, 학교 S1, 수업 문학(3-4 공통)·생활과 과학 A·영어 B·영어 C·수학 C(시간표 없음)·물리 D, 10/9 한글날`)
+  note('setup', `고정 시각 ${FIXED}, 학교 S1, 수업 문학(3-4 공통)·생활과 과학 A·영어 B·영어 C·수학 C(시간표 없음)·물리 D, 10/9 한글날, P(직접 입력만)·Q(3-5 승인 대기)`)
   const browser = await launchBrowser()
   try {
     await t01GroupLegacyStudent(browser)
@@ -648,6 +819,11 @@ async function main() {
     await t11t12DateNav(browser)
     await t34States(browser)
     await t35Errors(browser)
+    await f16PersonalOnlyKeepsReference(browser)
+    await f17PendingSeesReference(browser)
+    await f19MeFailureKeepsReference(browser)
+    await f20NowPeriodInReference(browser)
+    await f18EveningBagLink(browser)
     await t37t10OfflineAndAccount(browser)
   } catch (e) {
     check('X', '시나리오 예외', false, e?.stack || String(e))

@@ -248,10 +248,11 @@ export default async function handler(
         .where('role', '==', 'student')
         .where('status', '==', 'approved')
         .get()
+      // '내일 가방' 알림이므로 가방 체크리스트가 있는 홈으로 — ?date=내일로 홈의 개인 시간표 카드도 내일을 보여 줌
       for (const sDoc of studentsSnap.docs) {
         const tokens = sDoc.get('fcmTokens')
         if (Array.isArray(tokens) && tokens.length > 0) {
-          targets.push({ uid: sDoc.id, url: `/student/timetable?date=${tomorrow.ymd}`, body: studentBody })
+          targets.push({ uid: sDoc.id, url: `/student/today?date=${tomorrow.ymd}`, body: studentBody })
         }
       }
 

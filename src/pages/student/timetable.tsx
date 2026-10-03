@@ -9,6 +9,13 @@ import { PersonalTimetablePanel } from '../../components/timetable/PersonalTimet
 import ClassTimetableReference from '../../components/timetable/ClassTimetableReference'
 import { buildDayTimetable } from '../../lib/timetable/engine'
 import { coversDate, dayInput, useMyTimetable } from '../../lib/timetable/client'
+import {
+  awaitingHomeroomClass,
+  classRefAutoOpen,
+  classRefOffDay,
+  classRefTarget,
+  defaultPeriodTimes,
+} from '../../lib/timetable/classRefPolicy'
 import { usePersonalEntries } from '../../lib/timetable/personalEntries'
 import { isYmd, schoolYmdAt } from '../../lib/timetable/dates'
 import { isSignedInUser, loginPathWithNext } from '../../lib/authRouting'
@@ -16,7 +23,7 @@ import type { Ymd } from '../../lib/timetable/types'
 
 /**
  * 학생 개인 시간표 전체 화면 — /student/timetable?date=YYYYMMDD
- * (저녁 알림·변경 알림이 /student/timetable?date=내일 로 연결)
+ * (시간표 변경 알림이 /student/timetable?date=그 날짜 로 연결. 저녁 '내일 가방' 알림은 가방 체크리스트가 있는 홈 /student/today?date=내일)
  * - date가 없거나 형식이 틀리면 오늘(학교 시간대)
  * - 날짜 이동, 개인 시간표(전체), 상태 카드, 학급 시간표(참고) 접힘, '내 수업 관리' 링크
  * - 로그인 안 됨(둘러보기 익명 세션 포함) → 로그인 화면(?next=지금 주소 — 로그인 화면이 같은 사이트 상대 경로만 받아 로그인 뒤 이 날짜로 돌아옴)
@@ -24,6 +31,9 @@ import type { Ymd } from '../../lib/timetable/types'
 
 interface ProfileLite {
   schoolCode?: string
+  schoolName?: string
+  classId?: string | null
+  status?: string | null
   grade?: string | number | null
   classNm?: string | number | null
 }
@@ -60,7 +70,7 @@ export default function StudentTimetablePage(): JSX.Element {
     routerRef.current = router
   }, [router])
 
-  // 로그인 확인 + 학급 시간표(참고)에 쓸 학년·반(표시용 — 권한 판단은 서버 API가 함)
+  // 로그인 확인 + 학급 시간표(참고)에 쓸 소속·학년·반(표시용 — 시간표 권한 판단은 서버 API가 함)
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       // 둘러보기(익명) 세션도 로그인 안 됨으로 봄 — /meals가 만든 익명 계정을 로그인으로 보면
@@ -78,7 +88,18 @@ export default function StudentTimetablePage(): JSX.Element {
           const { db } = await import('../../lib/firebase')
           const snap = await getDoc(doc(db, 'users', u.uid))
           const d = snap.exists() ? (snap.data() as ProfileLite) : null
-          setProfile(d ? { schoolCode: d.schoolCode, grade: d.grade ?? null, classNm: d.classNm ?? null } : null)
+          setProfile(
+            d
+              ? {
+                  schoolCode: d.schoolCode,
+                  schoolName: d.schoolName,
+                  classId: d.classId ?? null,
+                  status: d.status ?? null,
+                  grade: d.grade ?? null,
+                  classNm: d.classNm ?? null,
+                }
+              : null
+          )
         } catch {
           // 프로필을 못 읽어도 시간표 상태는 API 응답으로 안내
           setProfile(null)
@@ -90,13 +111,13 @@ export default function StudentTimetablePage(): JSX.Element {
 
   const tt = useMyTimetable(uid, date, { schoolCode: profile?.schoolCode ?? null })
   const personal = usePersonalEntries(uid)
-  // 연결된 공식 수업이 없거나 시간표 미등록인 날에는 학급 시간표(참고)를 처음부터 펼쳐 둠(별도 영역·참고 라벨 유지)
-  const noLinkedLessons = useMemo<boolean>(() => {
-    if (!tt.payload || !date || !coversDate(tt.payload, date) || !personal.loaded) return false
-    const state = buildDayTimetable(dayInput(tt.payload, date, personal.entries, uid)).state
-    return state === 'no-courses' || state === 'not-registered'
-  }, [tt.payload, date, personal.loaded, personal.entries, uid])
-  const refOpen = refChoice ?? noLinkedLessons
+  // 그 날의 공식 수업만 본 결과 — 공식 수업 시간표가 없는 날(직접 입력만 있어도)은 학급 시간표(참고)를 처음부터 펼쳐 둠(별도 영역·참고 라벨 유지)
+  const officialDay = useMemo(() => {
+    if (!tt.payload || !date || !coversDate(tt.payload, date)) return null
+    return buildDayTimetable(dayInput(tt.payload, date, [], uid))
+  }, [tt.payload, date, uid])
+  const ttFailed = !tt.covered && !!tt.error && (tt.error.kind === 'server' || tt.error.kind === 'offline')
+  const refOpen = refChoice ?? classRefAutoOpen({ day: officialDay, loadFailed: ttFailed })
   const setRefOpen = setRefChoice
 
   const changeDate = useCallback(
@@ -116,9 +137,11 @@ export default function StudentTimetablePage(): JSX.Element {
   }
 
   const hr = tt.payload?.homeroom ?? null
-  const refClassId = hr && !hr.isGroupLegacy ? hr.classId : null
-  const canShowRef = Boolean(tt.payload?.legacyClassTimetableAvailable && refClassId && tt.payload?.schoolCode)
-  const refOffDay = tt.payload && coversDate(tt.payload, date) ? tt.payload.offDays[date] ?? null : undefined
+  // 학급 시간표(참고): 홈과 같은 규칙(승인된 소속 학급 / 담임 승인 대기는 공개 NEIS만 / /me 실패 시 프로필)
+  const refTarget = classRefTarget({ profile, payload: tt.payload, loadFailed: ttFailed })
+  const refOffDay = classRefOffDay(tt.payload, date)
+  const refPeriodTimes = tt.payload?.periodTimes ?? defaultPeriodTimes(hr?.schoolName || profile?.schoolName)
+  const pendingHomeroom = awaitingHomeroomClass(profile)
 
   return (
     <div className="min-h-screen bg-gray-50 text-black">
@@ -166,18 +189,21 @@ export default function StudentTimetablePage(): JSX.Element {
             personalReady={personal.loaded}
             personalError={personal.error}
             onGoToday={goToday}
-            onShowClassReference={canShowRef ? () => setRefOpen(true) : null}
+            onShowClassReference={refTarget ? () => setRefOpen(true) : null}
+            awaitingHomeroom={pendingHomeroom}
           />
         </section>
 
-        {canShowRef && refClassId && tt.payload?.schoolCode && (
+        {refTarget && (
           <ClassTimetableReference
-            schoolCode={tt.payload.schoolCode}
-            grade={profile?.grade}
-            classNm={profile?.classNm}
-            classId={refClassId}
+            schoolCode={refTarget.schoolCode}
+            grade={refTarget.grade}
+            classNm={refTarget.classNm}
+            classId={refTarget.classId}
             date={date}
             offDay={refOffDay}
+            periodTimes={refPeriodTimes}
+            today={today}
             open={refOpen}
             onOpenChange={setRefOpen}
           />

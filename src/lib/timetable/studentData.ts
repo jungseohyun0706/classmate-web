@@ -192,13 +192,37 @@ export function buildPeriodTimes(schoolName: string, starts?: unknown): PeriodTi
   }))
 }
 
+export type OffDaysResult = { offDays: Record<Ymd, { name: string } | null>; calendarErrors: Ymd[] }
+
+/**
+ * 학사일정 조회 상한(ms). NEIS가 느리면(학교 조회 5초 + 학사일정 5초가 이어질 수 있음) 시간표 응답 전체가 늦어지거나
+ * 함수 시간 한도에 걸려 5xx가 되므로, 넘으면 그 기간을 calendarErrors로 돌려 시간표는 먼저 보여 줌.
+ */
+export const CALENDAR_TIMEOUT_MS = 4000
+
+/** 학사일정 조회에 상한을 둠 — ms 안에 끝나지 않으면 모든 날짜를 calendarErrors로(쉬는 날 아님으로 단정하지 않음) */
+export async function boundCalendarLookup(lookup: Promise<OffDaysResult>, dates: Ymd[], ms: number = CALENDAR_TIMEOUT_MS): Promise<OffDaysResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<OffDaysResult>((resolve) => {
+    timer = setTimeout(() => {
+      console.error('timetable/me: school schedule timed out', ms)
+      resolve({ offDays: {}, calendarErrors: dates.slice() })
+    }, ms)
+  })
+  try {
+    return await Promise.race([lookup, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** NEIS 학사일정 → 날짜별 쉬는 날. 실패하면 모든 날짜를 calendarErrors로(쉬는 날 아님으로 단정하지 않음) */
 async function loadOffDays(
   schoolCode: string,
   officeCodeHint: string,
   dates: Ymd[],
   grade: unknown
-): Promise<{ offDays: Record<Ymd, { name: string } | null>; calendarErrors: Ymd[] }> {
+): Promise<OffDaysResult> {
   const fail = () => ({ offDays: {} as Record<Ymd, { name: string } | null>, calendarErrors: dates.slice() })
   if (!dates.length) return { offDays: {}, calendarErrors: [] }
   try {
@@ -257,7 +281,11 @@ export async function loadStudentTimetableData(
   const hr = user.role === 'student' ? homeroomOf(user) : null
   const homeroomId = hr && !hr.isGroupLegacy ? hr.classId : null
 
-  const offDaysPromise = loadOffDays(schoolCode, typeof user.officeCode === 'string' ? user.officeCode : '', dates, user.grade)
+  // 학사일정은 Firestore 조회와 함께 시작하고, 느리면 상한(CALENDAR_TIMEOUT_MS) 뒤 calendarErrors로
+  const offDaysPromise = boundCalendarLookup(
+    loadOffDays(schoolCode, typeof user.officeCode === 'string' ? user.officeCode : '', dates, user.grade),
+    dates
+  )
 
   const [termDocs, enrollSnap, commonSnap, classSnap, infoTimetableSnap, periodTimesSnap] = await Promise.all([
     readTermDocs(db, schoolCode),

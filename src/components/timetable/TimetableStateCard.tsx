@@ -78,6 +78,8 @@ export interface TimetableStateCardProps {
   onGoToday?: () => void
   /** '학급 시간표(참고)' 펼치기 — 볼 수 없으면 생략(버튼 숨김) */
   onShowClassReference?: (() => void) | null
+  /** 담임 학급 신청이 승인 대기 중 — no-courses 카드에서 초대 코드 대신 승인 대기 안내 */
+  awaitingHomeroom?: boolean
 }
 
 type Tone = 'neutral' | 'info' | 'warn' | 'error'
@@ -198,7 +200,9 @@ function specOf(props: TimetableStateCardProps): Spec {
     case 'no-courses':
       return {
         title: '아직 연결된 수업이 없어요',
-        desc: '선생님께 받은 초대 코드로 수업에 참여하거나, 공식 수업을 찾거나, 직접 입력할 수 있어요.',
+        desc: props.awaitingHomeroom
+          ? `담임 선생님이 학급 신청을 승인하기 전이에요.${props.onShowClassReference ? ' 그동안 아래 학급 시간표(참고)를 볼 수 있어요.' : ''}`
+          : '선생님께 받은 초대 코드로 수업에 참여하거나, 공식 수업을 찾거나, 직접 입력할 수 있어요.',
         tone: 'info',
         icon: 'link',
       }
@@ -309,17 +313,20 @@ function actionsOf(props: TimetableStateCardProps): JSX.Element[] {
       )
       break
     case 'no-courses':
-      out.push(
-        <LinkBtn key="invite" href={COURSES_LINKS.invite} primary>
-          초대 코드 입력
-        </LinkBtn>,
-        <LinkBtn key="catalog" href={COURSES_LINKS.catalog}>
-          공식 수업 찾기
-        </LinkBtn>,
-        <LinkBtn key="personal" href={COURSES_LINKS.personal}>
-          직접 입력
-        </LinkBtn>
-      )
+      // 담임 승인 대기 중에는 초대 코드·수업 찾기를 앞세우지 않음(학급 신청이 이미 기다리는 중)
+      if (!props.awaitingHomeroom) {
+        out.push(
+          <LinkBtn key="invite" href={COURSES_LINKS.invite} primary>
+            초대 코드 입력
+          </LinkBtn>,
+          <LinkBtn key="catalog" href={COURSES_LINKS.catalog}>
+            공식 수업 찾기
+          </LinkBtn>,
+          <LinkBtn key="personal" href={COURSES_LINKS.personal}>
+            직접 입력
+          </LinkBtn>
+        )
+      }
       if (onShowClassReference) {
         out.push(
           <ActionBtn key="ref" onClick={onShowClassReference}>

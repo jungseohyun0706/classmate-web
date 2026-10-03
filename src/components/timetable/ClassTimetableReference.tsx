@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useId, useState, type JSX } from 'react'
 import { loadClassTimetableDay, type ClassTimetableDay } from '../../lib/classTimetable'
-import type { Ymd } from '../../lib/timetable/types'
+import { classRefNowPeriod } from '../../lib/timetable/classRefPolicy'
+import type { PeriodTime, Ymd } from '../../lib/timetable/types'
+import { lessonTimeRange } from './LessonCard'
+import { useNowMinutes } from './PersonalTimetable'
 
 /**
  * '학급 시간표(참고) — 내 수업과 다를 수 있어요' 접힘 영역.
@@ -11,11 +14,15 @@ export interface ClassTimetableReferenceProps {
   schoolCode: string
   grade: string | number | null | undefined
   classNm: string | number | null | undefined
-  /** 소속 학급 id(수업 그룹·승인 전 학급은 넘기지 마세요) */
+  /** 소속 학급 id(수업 그룹·승인 전 학급은 넘기지 마세요 — 승인 전에는 null로 공개 NEIS만) */
   classId: string | null | undefined
   date: Ymd
   /** 개인 시간표 자료의 그 날 쉬는 날(모르면 생략 → 학사일정 조회) */
   offDay?: { name: string } | null
+  /** 교시 시각표 — 주면 교시 옆 시각과 오늘의 '지금' 교시 표시 */
+  periodTimes?: PeriodTime[] | null
+  /** 오늘(학교 시간대) — date가 오늘일 때만 '지금' 표시 */
+  today?: Ymd | null
   /** 제어형 펼침(생략하면 자체 상태) */
   open?: boolean
   onOpenChange?: (open: boolean) => void
@@ -35,6 +42,8 @@ export default function ClassTimetableReference({
   classId,
   date,
   offDay,
+  periodTimes,
+  today,
   open: openProp,
   onOpenChange,
   defaultOpen = false,
@@ -72,6 +81,18 @@ export default function ClassTimetableReference({
     }
   }, [open, hasTarget, schoolCode, grade, classNm, classId, date, offKey, reqKey])
   const load: LoadState = result.key === reqKey ? result.state : { status: 'loading' }
+  const nowMinutes = useNowMinutes()
+  const nowPeriod =
+    load.status === 'ready'
+      ? classRefNowPeriod({
+          date,
+          today,
+          offDay: !!load.data.offDay,
+          nowMinutes,
+          periods: load.data.periods.map((p) => p.period),
+          periodTimes,
+        })
+      : null
 
   return (
     <section className="overflow-hidden rounded-xl border border-gray-200 bg-white">
@@ -132,17 +153,31 @@ export default function ClassTimetableReference({
             </p>
           ) : (
             <ol className="space-y-1" aria-label="학급 시간표(참고)">
-              {load.data.periods.map((p) => (
-                <li key={p.period} className="flex items-center gap-3 rounded-lg bg-gray-50 px-3 py-2">
-                  <span className="w-10 shrink-0 text-xs font-bold text-gray-500">{p.period}교시</span>
-                  <span className="min-w-0 flex-1 text-sm text-gray-700 break-keep wrap-anywhere">{p.subject}</span>
-                  {p.changed && (
-                    <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
-                      학급 변경
+              {load.data.periods.map((p) => {
+                const time = periodTimes ? lessonTimeRange({ period: p.period }, periodTimes) : null
+                const isNow = p.period === nowPeriod
+                return (
+                  <li
+                    key={p.period}
+                    aria-current={isNow ? 'time' : undefined}
+                    className={`flex items-center gap-3 rounded-lg px-3 py-2 ${isNow ? 'bg-emerald-50 ring-1 ring-emerald-300' : 'bg-gray-50'}`}
+                  >
+                    <span className="w-16 shrink-0">
+                      <span className="block text-xs font-bold text-gray-500">{p.period}교시</span>
+                      {time && <span className="block text-[10px] leading-tight text-gray-400">{time}</span>}
                     </span>
-                  )}
-                </li>
-              ))}
+                    <span className="min-w-0 flex-1 text-sm text-gray-700 break-keep wrap-anywhere">{p.subject}</span>
+                    {p.changed && (
+                      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                        학급 변경
+                      </span>
+                    )}
+                    {isNow && (
+                      <span className="shrink-0 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white">지금</span>
+                    )}
+                  </li>
+                )
+              })}
             </ol>
           )}
         </div>
