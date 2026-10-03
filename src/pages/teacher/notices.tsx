@@ -85,7 +85,10 @@ export default function NoticeList() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [receiptsMap, setReceiptsMap] = useState<Record<string, Receipt[]>>({})
   const [students, setStudents] = useState<StudentLite[] | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
+  // 행별 로딩 상태 — 공용 플래그 하나로 두면 A를 여는 중에 B를 열 때 A의 완료가 B의 로딩까지 꺼 버립니다.
+  const [loadingAids, setLoadingAids] = useState<Record<string, boolean>>({})
+  // 명단 API 실패 여부 — 실패를 '안 읽은 학생 0명'(🎉)으로 보여주지 않기 위해 따로 기억합니다.
+  const [rosterFailed, setRosterFailed] = useState(false)
 
   // 확장된 알림장의 댓글 실시간 구독
   const [comments, setComments] = useState<NoticeComment[]>([])
@@ -93,11 +96,10 @@ export default function NoticeList() {
   const [sendingComment, setSendingComment] = useState(false)
 
   useEffect(() => {
+    // 다른 공지를 펼치면 이전 공지의 댓글이 첫 스냅샷 전까지 남지 않도록 먼저 비웁니다.
+    setComments([])
     const cid = userData?.classId
-    if (!cid || !expandedId) {
-      setComments([])
-      return
-    }
+    if (!cid || !expandedId) return
     const unsub = watchComments(cid, expandedId, setComments, () => setComments([]))
     return () => unsub()
   }, [userData?.classId, expandedId])
@@ -246,10 +248,10 @@ export default function NoticeList() {
     if (!userData?.classId) return
     if (receiptsMap[aid] && students) return
 
-    setDetailLoading(true)
+    setLoadingAids((prev) => ({ ...prev, [aid]: true }))
+    const cid: string = userData.classId
+    // 명단 조회와 읽음 기록 조회는 서로 독립 — 명단 API가 실패해도 읽은 학생 목록은 보여줍니다.
     try {
-      const cid: string = userData.classId
-
       // 승인된 학생 명단은 한 번만 가져와요 (미확인 명단 계산용 — 추가 참여 학생 포함, 서버 API)
       if (!students) {
         const token = await auth.currentUser?.getIdToken()
@@ -267,8 +269,14 @@ export default function NoticeList() {
           }))
         list.sort((a, b) => a.studentId - b.studentId)
         setStudents(list)
+        setRosterFailed(false)
       }
+    } catch (e) {
+      console.error(e)
+      setRosterFailed(true)
+    }
 
+    try {
       if (!receiptsMap[aid]) {
         // orderBy('readAt')를 서버 쿼리에 걸면 readAt 필드가 없는 receipt
         // (확인/동의만 남긴 예전 기록)가 결과에서 통째로 빠져 '미확인'으로 잘못 잡힙니다.
@@ -295,9 +303,9 @@ export default function NoticeList() {
       }
     } catch (e) {
       console.error(e)
-      toast('확인 명단을 불러오지 못했어요.', 'error')
+      toast('읽음 기록을 불러오지 못했어요. 다시 펼치면 재시도해요.', 'error')
     } finally {
-      setDetailLoading(false)
+      setLoadingAids((prev) => ({ ...prev, [aid]: false }))
     }
   }
 
@@ -379,8 +387,12 @@ export default function NoticeList() {
                     {/* 확장 패널: 읽은 학생 + 미확인 명단 */}
                     {expanded && (
                       <div className="px-4 pb-5 bg-gray-50 border-t border-gray-100">
-                        {detailLoading && !receiptsMap[n.id] ? (
+                        {loadingAids[n.id] && !receiptsMap[n.id] ? (
                           <div className="py-6 text-center text-sm text-gray-500">명단을 불러오는 중...</div>
+                        ) : !receiptsMap[n.id] ? (
+                          <div className="py-6 text-center text-sm text-gray-500">
+                            읽음 기록을 불러오지 못했어요. 다시 펼치면 재시도해요.
+                          </div>
                         ) : (
                           <>
                             <div className="pt-4">
@@ -409,9 +421,15 @@ export default function NoticeList() {
 
                             <div className="pt-4">
                               <h3 className="text-xs font-bold text-gray-500 mb-2">
-                                안 읽음 {unread.length}명
+                                안 읽음 {students ? `${unread.length}명` : ''}
                               </h3>
-                              {unread.length === 0 ? (
+                              {!students ? (
+                                <p className="text-sm text-gray-400">
+                                  {rosterFailed
+                                    ? '학생 명단을 불러오지 못했어요. 다시 펼치면 재시도해요.'
+                                    : '학생 명단을 불러오는 중...'}
+                                </p>
+                              ) : unread.length === 0 ? (
                                 <p className="text-sm text-emerald-600 font-medium">모든 학생이 읽었어요 🎉</p>
                               ) : (
                                 <div className="flex flex-wrap gap-1.5">

@@ -9,7 +9,9 @@ import {
   getCountFromServer,
   getDoc,
   onSnapshot,
+  query,
   serverTimestamp,
+  where,
 } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import { useUI } from '../components/ui/feedback'
@@ -24,6 +26,7 @@ import {
   type Receipt,
 } from '../lib/notices'
 import { CHAT_MAX_LEN, deleteChat, sendChat, watchChat, type ChatMessage } from '../lib/classChat'
+import { setActiveRoom } from '../lib/messaging'
 
 // 우리 반 이야기방 — 카카오톡 오픈채팅 스타일의 반 단톡방.
 // 공지도 여기서 보냅니다(선생님 입력창의 📢 토글). 알림장 별도 화면은 관리(명단)용만 유지.
@@ -105,7 +108,7 @@ export default function ClassRoom(): JSX.Element {
   const [loading, setLoading] = useState(true)
   const [uid, setUid] = useState<string | null>(null)
   const [me, setMe] = useState<MyData | null>(null)
-  const [blocked, setBlocked] = useState<'pending' | 'no-class' | null>(null)
+  const [blocked, setBlocked] = useState<'pending' | 'rejected' | 'no-class' | null>(null)
   const [memberCount, setMemberCount] = useState<number | null>(null)
   // 교사: 현재 보고 있는 반 + 전환 가능한 반 목록 (담임 반 + 수업 반)
   const [roomClassId, setRoomClassId] = useState('')
@@ -127,6 +130,10 @@ export default function ClassRoom(): JSX.Element {
   const [rosterStudents, setRosterStudents] = useState<{ id: string; name: string; no: number }[] | null>(null)
   type RosterReceipt = { readAt: Timestamp | null; consent?: ConsentValue; consentAt: Timestamp | null }
   const [rosterChecked, setRosterChecked] = useState<Record<string, RosterReceipt>>({})
+  const [rosterError, setRosterError] = useState(false)
+  const [rosterRetry, setRosterRetry] = useState(0)
+  // 이 방의 담임 uid — 규칙상 남의 메시지 삭제는 담임만 가능하므로 버튼 노출 기준으로 씁니다.
+  const [roomTeacherId, setRoomTeacherId] = useState<string | null>(null)
 
   const feedRef = useRef<HTMLDivElement>(null)
   const stickBottom = useRef(true)
@@ -153,7 +160,10 @@ export default function ClassRoom(): JSX.Element {
     setReceipts({})
     setRosterFor(null)
     setRosterStudents(null)
+    setRosterError(false)
     setReadCounts({})
+    setConsentCounts({})
+    setRoomTeacherId(null)
     setBannerOpen(false)
     setMemberCount(null)
     setRoomClassId(id)
@@ -198,6 +208,12 @@ export default function ClassRoom(): JSX.Element {
         if (data.role === 'student') {
           if (!data.classId) {
             setBlocked('no-class')
+            setLoading(false)
+            return
+          }
+          // 거절된 학생에게 '승인 대기'로 안내하면 영영 기다리게 됩니다.
+          if (data.status === 'rejected') {
+            setBlocked('rejected')
             setLoading(false)
             return
           }
@@ -276,6 +292,28 @@ export default function ClassRoom(): JSX.Element {
     }
   }, [classId, uid, wakeTick])
 
+  // 교사: 이 방의 담임 uid
+  useEffect(() => {
+    if (!isTeacher || !classId) return
+    let cancelled = false
+    getDoc(doc(db, 'classes', classId))
+      .then((snap) => {
+        if (!cancelled) setRoomTeacherId(snap.exists() ? String(snap.data().teacherId || '') : null)
+      })
+      .catch(() => {
+        if (!cancelled) setRoomTeacherId(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isTeacher, classId])
+
+  // 지금 보고 있는 방 — 같은 방 푸시의 포그라운드 토스트를 생략하는 데 씁니다.
+  useEffect(() => {
+    setActiveRoom(classId || null)
+    return () => setActiveRoom(null)
+  }, [classId])
+
   // 공지 id 목록 — 자동 읽음 effect의 의존성으로 씁니다(개수만으로는 변화를 놓칩니다).
   const noticeIdsKey = useMemo(() => notices.map((n) => n.id).join(','), [notices])
 
@@ -283,16 +321,23 @@ export default function ClassRoom(): JSX.Element {
   // announcement.readCount는 비정규화 카운터라 예전 기록·동시 기록 때문에 실제와 어긋날 수 있어,
   // 카드에는 명단 시트와 같은 기준(receipt 존재)의 수를 보여줍니다.
   const [readCounts, setReadCounts] = useState<Record<string, number>>({})
+  // 동의 필요 공지의 실제 동의 수. checkCount 카운터는 상세 화면의 동의/미동의(setConsent)를
+  // 반영하지 않고 줄어들지도 않아 실제 동의 수와 어긋납니다.
+  const [consentCounts, setConsentCounts] = useState<Record<string, number>>({})
   useEffect(() => {
     if (!isTeacher || !classId || notices.length === 0) return
     let cancelled = false
     void Promise.all(
       notices.map(async (n) => {
         try {
-          const snap = await getCountFromServer(
-            collection(db, 'classes', classId, 'announcements', n.id, 'receipts')
-          )
-          return [n.id, snap.data().count] as const
+          const col = collection(db, 'classes', classId, 'announcements', n.id, 'receipts')
+          const [read, agreed] = await Promise.all([
+            getCountFromServer(col),
+            n.requiresConsent
+              ? getCountFromServer(query(col, where('consent', '==', 'agreed')))
+              : Promise.resolve(null),
+          ])
+          return [n.id, read.data().count, agreed ? agreed.data().count : null] as const
         } catch {
           return null
         }
@@ -302,6 +347,11 @@ export default function ClassRoom(): JSX.Element {
       setReadCounts((prev) => {
         const next = { ...prev }
         for (const e of entries) if (e) next[e[0]] = e[1]
+        return next
+      })
+      setConsentCounts((prev) => {
+        const next = { ...prev }
+        for (const e of entries) if (e && e[2] !== null) next[e[0]] = e[2]
         return next
       })
     })
@@ -376,14 +426,15 @@ export default function ClassRoom(): JSX.Element {
   }
 
   // 반 구성원들에게 푸시 fan-out (실패해도 무시 — 방을 열어둔 사람은 실시간으로 받음)
-  const firePush = (kind: 'chat' | 'notice', preview: string) => {
+  // 서버는 docId로 저장된 문서를 직접 읽어 작성자와 내용을 확인한 뒤 보냅니다.
+  const firePush = (kind: 'chat' | 'notice', docId: string) => {
     void auth.currentUser
       ?.getIdToken()
       .then((t) =>
         fetch('/api/chat-push', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
-          body: JSON.stringify({ classId, kind, preview }),
+          body: JSON.stringify({ classId, kind, docId }),
         })
       )
       .catch(() => {})
@@ -398,7 +449,7 @@ export default function ClassRoom(): JSX.Element {
       if (isTeacher && noticeMode) {
         // 📢 공지로 보내기 — 알림장(announcements)으로 저장되어 읽음/동의 추적
         const firstLine = t.split('\n')[0].slice(0, 30)
-        await addDoc(collection(db, 'classes', classId, 'announcements'), {
+        const ref = await addDoc(collection(db, 'classes', classId, 'announcements'), {
           title: firstLine,
           body: t,
           authorId: uid,
@@ -409,11 +460,11 @@ export default function ClassRoom(): JSX.Element {
           requiresConsent: false,
         })
         setNoticeMode(false)
-        toast('공지를 올렸어요. 학생들 확인 현황은 [명단]에서 볼 수 있어요.', 'success')
-        firePush('notice', t)
+        toast('공지를 올렸어요. 읽음 현황은 [명단 보기]에서 볼 수 있어요.', 'success')
+        firePush('notice', ref.id)
       } else {
-        await sendChat(classId, { uid, name: myName, role: isTeacher ? 'teacher' : 'student' }, t)
-        firePush('chat', t)
+        const mid = await sendChat(classId, { uid, name: myName, role: isTeacher ? 'teacher' : 'student' }, t)
+        firePush('chat', mid)
       }
       setText('')
       stickBottom.current = true
@@ -491,7 +542,8 @@ export default function ClassRoom(): JSX.Element {
               return {
                 id: String(m.id),
                 name: String(m.name || '이름 없음'),
-                no: Number.isFinite(no) ? no : 9999,
+                // 명단 API는 번호가 없으면 0을 돌려줍니다 — 0번으로 맨 앞에 서지 않게 뒤로 보냅니다.
+                no: Number.isFinite(no) && no > 0 ? no : 9999,
               }
             })
           list.sort((a, b) => (a.no !== b.no ? a.no - b.no : a.name.localeCompare(b.name, 'ko')))
@@ -499,9 +551,11 @@ export default function ClassRoom(): JSX.Element {
         })
         .catch((e) => {
           console.error('명단 로드 실패', e)
-          toast('명단을 불러오지 못했어요.', 'error')
+          if (!cancelled) setRosterError(true)
         })
     }
+    // 다른 공지의 명단을 열 때 이전 공지의 읽음 현황이 잠깐 보이지 않게 비웁니다.
+    setRosterChecked({})
     const unsub = onSnapshot(
       collection(db, 'classes', classId, 'announcements', rosterFor.id, 'receipts'),
       (snap) => {
@@ -520,8 +574,12 @@ export default function ClassRoom(): JSX.Element {
           }
         })
         setRosterChecked(map)
-        // 시트가 열려 있는 동안 카드의 읽음 수도 실시간으로 맞춥니다.
+        // 시트가 열려 있는 동안 카드의 읽음·동의 수도 실시간으로 맞춥니다.
         setReadCounts((prev) => ({ ...prev, [rosterFor.id]: snap.size }))
+        if (rosterFor.requiresConsent) {
+          const agreed = Object.values(map).filter((r) => r.consent === 'agreed').length
+          setConsentCounts((prev) => ({ ...prev, [rosterFor.id]: agreed }))
+        }
       },
       (e) => console.error('명단 구독 실패', e)
     )
@@ -530,7 +588,7 @@ export default function ClassRoom(): JSX.Element {
       unsub()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTeacher, rosterFor?.id, classId])
+  }, [isTeacher, rosterFor?.id, classId, rosterRetry])
 
   const classLabel = classId ? labelOf(classId) : me ? `${me.grade}학년 ${me.classNm}반` : ''
   const roomOptions = managed.includes(classId) || !classId ? managed : [...managed, classId]
@@ -548,15 +606,21 @@ export default function ClassRoom(): JSX.Element {
       <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-6 text-center text-black">
         <p className="text-3xl">💬</p>
         <p className="mt-3 font-bold text-gray-900">
-          {blocked === 'pending' ? '선생님 승인을 기다리고 있어요' : '아직 소속된 반이 없어요'}
+          {blocked === 'pending'
+            ? '선생님 승인을 기다리고 있어요'
+            : blocked === 'rejected'
+              ? '입장 신청이 승인되지 않았어요'
+              : '아직 소속된 반이 없어요'}
         </p>
         <p className="mt-1 text-sm text-gray-500 break-keep">
           {blocked === 'pending'
             ? '승인이 끝나면 우리 반 톡방에 들어올 수 있어요.'
-            : '반에 들어가면 톡방이 열려요. 선생님은 학생 관리에서 수업 반을 추가해 주세요.'}
+            : blocked === 'rejected'
+              ? '선생님께 확인한 뒤 반 QR을 다시 찍어 신청해 주세요.'
+              : '반에 들어가면 톡방이 열려요. 선생님은 학생 관리에서 수업 반을 추가해 주세요.'}
         </p>
         <button
-          onClick={() => router.replace(blocked === 'pending' ? '/student/today' : '/dashboard')}
+          onClick={() => router.replace(blocked === 'no-class' && me?.role !== 'student' ? '/dashboard' : '/student/today')}
           className="mt-5 rounded-xl bg-gray-900 px-6 py-3 text-sm font-bold text-white"
         >
           돌아가기
@@ -738,9 +802,9 @@ export default function ClassRoom(): JSX.Element {
                           >
                             <span className="text-[12px] font-bold text-emerald-700">
                               👀 읽음 {readCounts[item.notice.id] ?? item.notice.readCount}명
-                              {item.notice.requiresConsent && item.notice.checkCount > 0 && (
+                              {item.notice.requiresConsent && consentCounts[item.notice.id] !== undefined && (
                                 <span className="ml-1.5 font-semibold text-emerald-600">
-                                  · 동의 {item.notice.checkCount}
+                                  · 동의 {consentCounts[item.notice.id]}
                                 </span>
                               )}
                             </span>
@@ -826,7 +890,7 @@ export default function ClassRoom(): JSX.Element {
                               <div className="inline-block whitespace-pre-wrap rounded-2xl rounded-tl-md bg-white px-3 py-1.5 text-left text-[13.5px] leading-relaxed text-gray-900 break-keep shadow-sm">
                                 {m.text}
                               </div>
-                              {isTeacher && (
+                              {isTeacher && roomTeacherId === uid && (
                                 <button
                                   onClick={() => void handleDelete(m.id)}
                                   className="absolute -right-8 top-1/2 hidden -translate-y-1/2 rounded p-1 text-[10px] text-gray-500 group-hover:block"
@@ -867,7 +931,7 @@ export default function ClassRoom(): JSX.Element {
                 📢 공지로 보내기
               </button>
               {noticeMode && (
-                <span className="text-xs text-gray-400">학생들에게 확인 체크 버튼이 함께 가요</span>
+                <span className="text-xs text-gray-400">학생이 읽으면 [명단 보기]에서 읽음 현황을 볼 수 있어요</span>
               )}
             </div>
           )}
@@ -930,7 +994,20 @@ export default function ClassRoom(): JSX.Element {
               className="overflow-y-auto px-5 py-4"
               style={{ maxHeight: 'calc(80vh - 90px)', paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}
             >
-              {!rosterStudents ? (
+              {!rosterStudents && rosterError ? (
+                <div className="py-8 text-center">
+                  <p className="text-sm text-gray-500">명단을 불러오지 못했어요.</p>
+                  <button
+                    onClick={() => {
+                      setRosterError(false)
+                      setRosterRetry((t) => t + 1)
+                    }}
+                    className="mt-3 rounded-lg bg-gray-100 px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-200"
+                  >
+                    다시 시도
+                  </button>
+                </div>
+              ) : !rosterStudents ? (
                 <p className="py-8 text-center text-sm text-gray-400">명단을 불러오는 중...</p>
               ) : (
                 (() => {

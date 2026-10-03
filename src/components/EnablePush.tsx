@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type JSX } from 'react'
 import type { MessagePayload } from 'firebase/messaging'
 import { useUI } from './ui/feedback'
-import { attachForegroundHandler, enablePush, isPushSupported } from '../lib/messaging'
+import { attachForegroundHandler, enablePush, getActiveRoom, isPushSupported } from '../lib/messaging'
 
 const ENABLED_KEY = 'classmate_push_enabled'
 const DISMISSED_KEY = 'classmate_push_dismissed_at'
@@ -80,6 +80,12 @@ export default function EnablePush({ variant = 'teacher' }: { variant?: 'teacher
 
   const onForeground = useCallback(
     (payload: MessagePayload) => {
+      // 지금 열어 둔 톡방의 메시지는 피드에 이미 보이므로 토스트를 생략합니다.
+      const url = String(payload.data?.url || '')
+      if (url.startsWith('/class-room')) {
+        const roomId = new URLSearchParams(url.split('?')[1] || '').get('classId')
+        if (roomId && roomId === getActiveRoom()) return
+      }
       const title =
         payload.notification?.title || payload.data?.title || '새 알림이 도착했어요.'
       toast(title, 'info')

@@ -63,16 +63,17 @@ export async function sendChat(
   classId: string,
   author: { uid: string; name: string; role: 'teacher' | 'student' },
   text: string
-): Promise<void> {
+): Promise<string> {
   const clean = text.trim().slice(0, CHAT_MAX_LEN)
   if (!clean) throw new Error('내용을 입력해 주세요.')
-  await addDoc(collection(db, 'classes', classId, 'chat'), {
+  const ref = await addDoc(collection(db, 'classes', classId, 'chat'), {
     authorId: author.uid,
     authorName: author.name,
     role: author.role,
     text: clean,
     createdAt: serverTimestamp(),
   })
+  return ref.id
 }
 
 export async function deleteChat(classId: string, mid: string): Promise<void> {

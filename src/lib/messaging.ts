@@ -34,6 +34,18 @@ export async function isPushSupported(): Promise<boolean> {
 
 let foregroundAttached = false
 
+// 지금 화면에 열려 있는 톡방 classId. 실시간 피드로 이미 보이는 메시지에
+// 포그라운드 토스트를 또 띄우지 않기 위해 씁니다.
+let activeRoomId: string | null = null
+
+export function setActiveRoom(id: string | null): void {
+  activeRoomId = id
+}
+
+export function getActiveRoom(): string | null {
+  return activeRoomId
+}
+
 /**
  * 포그라운드(onMessage) 수신 핸들러를 1회만 등록합니다.
  * 지원되지 않는 환경이면 조용히 무시합니다.

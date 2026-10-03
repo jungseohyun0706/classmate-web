@@ -194,6 +194,13 @@ service cloud.firestore {
             && request.resource.data.text is string
             && request.resource.data.text.size() > 0
             && request.resource.data.text.size() <= 500
+            // 작성 시각은 서버 시각, 역할 표시는 실제 계정 역할과 일치해야 합니다.
+            // (검사가 없으면 학생이 role:'teacher'로 선생님 행세를 하거나,
+            //  createdAt을 먼 미래로 넣어 목록 맨 아래에 고정할 수 있었습니다.)
+            && request.resource.data.createdAt == request.time
+            && request.resource.data.role == (myDoc().role == 'teacher' ? 'teacher' : 'student')
+            && request.resource.data.authorName is string
+            && request.resource.data.authorName.size() <= 50
             && request.resource.data.keys()
                  .hasOnly(['authorId', 'authorName', 'role', 'text', 'createdAt']);
 
@@ -232,6 +239,11 @@ service cloud.firestore {
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 500
+          // 작성 시각은 서버 시각, 역할 표시는 실제 계정 역할과 일치해야 합니다.
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.role == (myDoc().role == 'teacher' ? 'teacher' : 'student')
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() <= 50
           && request.resource.data.keys()
                .hasOnly(['authorId', 'authorName', 'role', 'text', 'createdAt']);
 
