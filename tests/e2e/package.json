@@ -1,0 +1,9 @@
+{
+  "name": "classmate-e2e",
+  "private": true,
+  "description": "로컬 Firebase 에뮬레이터 + Next 서버 + Chromium E2E (앱 의존성과 분리)",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}

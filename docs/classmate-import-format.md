@@ -1,0 +1,73 @@
+# 시간표·수강 명단 가져오기 형식
+
+원본 요구서 13·14·17장, R13·R14, T29~T33. 화면: `/teacher/timetable-import`, `/teacher/roster-import`. 서버: `/api/timetable-import`(`src/pages/api/timetable-import.ts`, 매칭 `src/lib/timetable/importMatch.ts`), `/api/roster-import`(`src/pages/api/roster-import.ts`). 파일 읽기·열 매핑: `src/lib/timetableParser.ts`(`extractImportRows`), `src/lib/timetable/importRows.ts`.
+
+> **실제 학교 엑셀·컴시간 파일·수강 명단 표본은 저장소에 없습니다.** 열 이름이나 구조를 추정해 고정하지 않았습니다. 기존 파서가 알아보는 시트 모양은 자동으로 판별하고, 그 밖의 표는 교사가 화면에서 열을 직접 고릅니다. 테스트 픽스처(`tests/fixtures/import/*.json`)는 가상 자료입니다.
+
+## 1. 시간표 원본 세 가지와 표 형식
+
+| 유형 | 판별 | 한 칸의 의미 | 읽는 값 |
+|---|---|---|---|
+| 학급표 `class` | 기존 파서가 학급 블록형·전체 평면형으로 인식한 시트 | 학급 × 요일 × 교시 | 과목(분반 접두어 `A_화작A` 원문 유지), 교사, 특별실 |
+| 교사표 `teacher` | 교사 블록형·주간 평면형 | 교사 × 요일 × 교시 | 과목, 학급 라벨, 특별실 |
+| 교실표 `room` | 특별실 시트 | 교실 × 요일 × 교시 | 과목, 교사, 학급 |
+| 표 형식 `table` | 위에 해당하지 않음 → 교사가 열 매핑 | 한 행 = 수업 한 칸 | 요일·교시·과목 필수, 분반·교사·학급·교실·시작/끝 시각·수업 코드 선택 |
+
+- 셀 형식 `과목\n교사(시수)\n특별실`을 나눠 읽습니다. 파일에 실제로 있던 칸만 행으로 만들고, 교사표에서 학급표를 역산하는 식의 보충은 하지 않습니다.
+- 토·일 열과 8교시 이상도 읽습니다(가져오기 검증은 1~10교시, 범위 밖은 오류로 행 번호와 함께 표시).
+- 파일: .xlsx/.xls/.csv, 10MB, 시트당 5000행×300열. 수식·매크로는 실행하지 않고 값만 읽습니다. CSV는 UTF-8 → 실패 시 EUC-KR. 파일 확인값은 브라우저 SHA-256.
+
+정규화 행(`ImportRow`): `{ sourceKind, sheet, row, col?, weekday 1..7, period, subject, section?, teacher?, classLabel? ('3-4'), room?, start?, end?, code? }`.
+- 요일 `월`/`Mon`/숫자(숫자는 '월=1' 옵션을 켰을 때만), 교시 `3교시`/`3`/`3~4`(두 교시로 펼침), 학급 `3학년 4반`/`3-4`/`304`/`03-4` → `3-4`.
+- 공백 차이만 정리하고, **이름이 비슷하다는 이유로 합치지 않습니다.**
+
+## 2. 통합 규칙 (`buildCandidates`)
+
+- 같은 요일·교시에 같은 교사(공백 정리 후 같은 이름)가 여러 자료에 나오면 한 차시로 합칩니다(T29). 교사가 빈 행은 학급·분반·코드가 맞는 교사 묶음이 정확히 하나일 때만 붙입니다.
+- 수업 식별 키 `importKey`: 수업 코드가 있으면 `code|코드`, 분반이 있으면 `sec|과목|분반|교사`(선택·이동 수업), 한 학급이면 `hr|학급|과목|교사`, 학급이 여럿이면 `mc|…`(검토), 학급이 없으면 `none|…`(검토).
+- 같은 과목명이라도 교사·분반이 다르면 다른 수업입니다(T33).
+- 결과는 입력 순서와 무관하고 같은 파일·순서 바꾼 파일은 같은 결정적 id(`im_`+sha256(학교|학기|importKey), 차시 `is_`+sha256(courseId|요일|교시|적용일))로 수렴합니다(T30).
+
+### 미리보기 이슈
+
+| 등급 | 코드 | 발행 |
+|---|---|---|
+| error | `bad-period`, `bad-weekday`, `bad-time`, `bad-source-kind`, `teacher-conflict`(같은 교사가 같은 시간 다른 수업), `future-version` | 막힘(422 `has-errors`) |
+| review | `class-slot-multiple`(같은 학급·시간에 분반 없는 수업 여럿 — 이동수업/선택 가능, 분반 코드 필요), `duplicate-section`, `room-mismatch`, `time-mismatch`, `source-mismatch`(한 자료에만 있는 차시 — 마지막 업로드를 정답으로 쓰지 않음), `section-mismatch`, `bad-class-label`, `subject-missing`, `subject-variants`, `teacher-missing`, `ambiguous-match`, `combined-class`, `no-class` | '검토 항목 제외하고 발행'을 체크해야 함(해당 수업은 제외) |
+| info | `teacher-unlinked`, `teacher-ambiguous` | 영향 없음 |
+
+## 3. 발행 정책 (학생에게 임의 시간표를 만들지 않음)
+
+- **공통 수업은 자동 지정하지 않습니다.** `hr` 키 수업은 `importCommon`(공통 수업 '후보')에만 기록됩니다. 그 학급 담임이 `/teacher/courses`에서 후보를 확인(`/api/courses` `setCommon`)해야 학생 개인 시간표에 나타납니다.
+- **분반·선택 수업은 수강 자료가 있어야 학생에게 연결됩니다**(T32): 수강 명단 가져오기의 연결 확정, 수업 초대, 신청 승인 중 하나.
+- **교사 계정 연결은 발행 교사가 확인한 것만**: 같은 학교 교사 중 `masterName`이 같은 계정을 '후보'로 보여 주고(표시 이름·가린 이메일), 발행 교사가 체크한 **(엑셀 교사 이름, 계정) 쌍**(`confirmTeacherLinks: [{nameKey, uid}]`)만 그 이름의 수업들에 `teacherUids`(일정 변경·수강 관리 권한)로 연결합니다. 서버가 확정 시점에 후보를 다시 계산해 같은 이름 아래 그 계정이 후보일 때만 받습니다(미리보기와 확정 사이 `masterName`을 바꿔 다른 이름의 수업 권한을 얻을 수 없음). `masterName`은 교사가 스스로 쓰는 값이므로 그것만으로 권한을 주지 않습니다. 가져오기로 만든 수업은 발행 교사가 관리 교사(`managerUids`)가 됩니다.
+- 교사 이름은 표시용(`teacherNames`)입니다. 동명이인(같은 `masterName` 계정이 여럿)이면 후보를 모두 보여 주고 발행 교사가 고릅니다. 후보 이메일은 사용자가 바꿀 수 있는 users 문서가 아니라 Firebase Auth에서 읽어 가립니다(`ab***@도메인`); 조회 실패는 `teacherEmailError:true`로 알립니다.
+- 다시 올릴 때 이전에 확인된 연결은 지금도 후보이고 아직 `teacherUids`에 남아 있을 때만 유지합니다(수정본 재업로드로 권한이 소리 없이 사라지지 않게). 사람이 직접 넣은 담당 교사는 보존합니다.
+- 미리보기 응답: `courses[].candidateTeacherUids`, `courses[].commonCandidates`, `courses[].commonForHomerooms`(발행 후 저장될 값 — 새 수업은 `[]`), `teacherLinks[{name, reason:'candidate'|'ambiguous'|'no-account', candidates[{uid,name,emailMasked}]}]`, `stats.teacherLinkCandidates`. 확정 응답: `confirmedTeacherUids`, `ignoredTeacherCount`(후보가 아닌 uid는 무시하고 개수만 기록).
+- 남은 결정: 같은 학교 교사는 누구나 가져오기를 발행할 수 있어, 자기 계정이 후보인 수업에 스스로를 체크할 수 있습니다(감사 로그에 `actorUid`·`confirmedTeacherUids` 기록). 발행 권한을 학교 관리자로 좁힐지는 운영 정책으로 정해야 합니다.
+- 동시 수정: 미리보기 이후 **수업·차시 계획이나 교사 후보 매핑이 실제로 바뀌었을 때만** 409 `stale-revision`(학생 초대 수락 같은 수강 변경으로 학교 버전만 오른 경우는 막지 않음 — 비교 해시에서 버전 값을 뺌).
+- 행 단위 검토 이슈(분반 표기 불일치·학급 표기 오류 등)도 그 행으로 만든 수업에 연결되어, '검토 항목 제외'에 동의하면 그 수업이 실제로 발행에서 빠집니다.
+
+## 4. 적용·재업로드·원복
+
+- 적용일(`validFrom`, 기본 오늘 이후 첫 월요일)부터 새 차시가 적용되고, 바뀐 기존 차시는 적용일에 끝납니다(`validTo`) — 과거 시간표는 보존(T21).
+- 모드: 병합(`merge`, 파일에 있는 수업만 반영) / 교체(`replace`, 같은 학기 가져오기 수업 중 파일에 없는 수업의 차시를 적용일에 끝냄 — 삭제하지 않음).
+- 같은 파일 재업로드는 `duplicateOf`로 알려 주고 바뀐 것이 없으면 쓰지 않습니다. 수정본은 '갱신'으로 분류됩니다.
+- 쓰기는 400개 단위로 나누어 배치 상태(`committing`→`committed`/`failed`)와 진행 지점을 남기고, 다시 시도하면 멈춘 지점부터 같은 계획으로 이어 씁니다(이어서 발행은 남은 대상 문서가 계획 뒤 바뀌지 않았는지로 판단). 함수가 끊겨 `committing`에 멈춘 배치(임대 만료)는 목록에 `stalled`로 보이고 '이어서 발행' 또는 '되돌리기'(반영된 묶음까지만)를 할 수 있습니다.
+- 원복(`rollback`): 그 배치가 만든 차시는 끝내고, 바꾼 차시·수업은 이전 값으로 되돌립니다. 이후 사람이 고친 수업은 건드리지 않고 `skipped`로 보고합니다.
+- 바뀐 것이 있을 때만 `scheduleRevision`을 한 번 올립니다. 감사 로그에는 개수·버전만 남깁니다.
+
+## 5. 수강 명단 (`/api/roster-import`)
+
+- 행: `{ studentKey?(학번), grade, classNm, number, name?, courseCode?, subject?, section?, teacher? }`, 최대 3000행. 필수 열: 학년·반·번호, 수업 식별(수업 코드 또는 과목+분반(+교사)).
+- 수업 매칭: 같은 학기 수업 중 코드·`importKey`(가져오기의 `code|…` 수업 코드 포함)·(과목+분반(+교사))가 **정확히 하나**일 때만. 코드로 못 찾으면 과목·분반·교사로 다시 찾고, 분반 열이 없는 'A_영어' 같은 접두어 표기는 가져오기와 같은 규칙으로 나눠 비교합니다. 명단에 분반이 없는데 같은 과목에 분반 수업이 있으면 모호(`section-missing`)로 남깁니다. 학년 정보가 있는 수업은 다른 학년과 매칭하지 않습니다.
+- 학생 연결: **이름으로 연결하지 않습니다.** 같은 학교·같은 소속 학급(`users.classId == 학교_학년_반`, 승인)·같은 번호(`studentId`) 학생이 정확히 한 명일 때만 '후보'로 표시하고, 이름이 다르면 경고만 합니다. 미가입 학생은 미연결 명단 행으로 보관합니다.
+- 연결 확정(`link`, `confirm:true`): 그 학생의 담임 또는 그 수업 담당·관리 교사만. 서버가 후보를 다시 계산하며 클라이언트가 보낸 uid는 받지 않습니다. 확정하면 `enrollments/{courseId}__{uid}`(active, source `roster`, from=적용일).
+- 나중에 가입·승인된 학생은 `list {unlinked:true}`에서 연결 후보로 보입니다.
+- 명단 행은 결정적 id라 같은 파일을 다시 올려도 늘지 않고 기존 연결이 유지됩니다.
+
+## 6. 미검증·운영 전 확인
+
+- 실제 학교 엑셀(컴시간 등)·명단 파일로 열 구조를 검증하지 않았습니다.
+- 이 개발 환경의 `node_modules/xlsx`는 실제 라이브러리가 아니어서(설치 제한), 파서 검증은 별도 설치한 xlsx 0.18.5로 했습니다. 운영 의존성(xlsx 0.20.3)·.xls(BIFF) 파일 읽기는 확인하지 않았습니다.
+- 명단 재업로드로 연결된 행의 수업이 바뀌면 `pendingCourseChange`에 기록만 하고 화면 표시는 아직 없습니다.
