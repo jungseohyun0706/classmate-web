@@ -8,9 +8,7 @@ import { getAdminApp, isAdminConfigured, verifyIdToken } from '../../lib/fcm-adm
 // 구글 로그인으로 처음 들어온 사용자가 교사 인증 코드를 제출하면
 // 서버(admin)가 코드를 검증하고 users/{uid}에 교사 role을 부여합니다.
 // (role은 보안 규칙상 클라이언트가 스스로 만들 수 없으므로 서버에서 처리)
-
-// TEACHER_SIGNUP_CODE 환경변수가 없을 때 쓰는 레거시 코드 — verify-teacher-code와 동일 규칙
-const LEGACY_TEACHER_CODE = 'classmate2026'
+// TEACHER_SIGNUP_CODE가 설정되지 않았으면 교사 가입을 받지 않습니다(503) — verify-teacher-code와 동일 규칙
 
 function safeCompare(input: string, expected: string): boolean {
   const a = Buffer.from(input, 'utf8')
@@ -45,6 +43,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!isAdminConfigured()) {
     return res.status(503).json({ error: '서버 인증 설정이 없어요. 관리자에게 문의해 주세요.' })
   }
+  const expected = (process.env.TEACHER_SIGNUP_CODE ?? '').trim()
+  if (!expected) {
+    return res.status(503).json({ error: '교사 가입이 아직 열리지 않았어요. 관리자에게 문의해 주세요.' })
+  }
 
   const ip =
     (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
@@ -59,8 +61,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ error: '필수 항목이 누락되었어요.' })
   }
 
-  const envCode = (process.env.TEACHER_SIGNUP_CODE ?? '').trim()
-  const expected = envCode.length > 0 ? envCode : LEGACY_TEACHER_CODE
   if (!safeCompare(code.trim(), expected)) {
     return res.status(403).json({ error: '교사 인증 코드가 올바르지 않아요. 관리자에게 문의해 주세요.' })
   }
@@ -84,7 +84,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     await ref.set(
       {
         email: decoded.email || null,
-        displayName: decoded.name || null,
+        // 이미 저장된 이름은 구글 이름/null로 덮어쓰지 않아요.
+        ...(existing.get('displayName') ? {} : { displayName: decoded.name || null }),
         role: 'teacher',
         ...(existing.exists ? {} : { schoolId: null, createdAt: FieldValue.serverTimestamp() }),
       },

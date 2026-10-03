@@ -1,7 +1,13 @@
 import React, { useState } from 'react'
 import { useRouter } from 'next/router'
 import { auth } from '../../lib/firebase'
-import { createUserWithEmailAndPassword, sendEmailVerification } from 'firebase/auth'
+import {
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signOut,
+  updateProfile,
+  type User,
+} from 'firebase/auth'
 import { doc, setDoc } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 
@@ -43,7 +49,8 @@ export default function RegisterPage() {
       })
       const verify = await verifyRes.json().catch(() => ({ ok: false }))
       if (!verifyRes.ok || !verify?.ok) {
-        const msg = '교사 인증 코드가 올바르지 않습니다. 관리자에게 문의하세요.'
+        // 가입 미개설(503)·시도 초과(429)는 서버 안내를 그대로 보여 줘요.
+        const msg = verify?.error || '교사 인증 코드가 올바르지 않습니다. 관리자에게 문의하세요.'
         toast(msg, 'error')
         setError(msg)
         setLoading(false)
@@ -56,10 +63,14 @@ export default function RegisterPage() {
       return
     }
 
+    // 교사 등록 전에 실패하면 방금 만든 Auth 계정을 지워야 같은 이메일로 다시 가입할 수 있어요.
+    let created: User | null = null
+    let roleGranted = false
     try {
       // 3. Firebase Auth 가입
       const cred = await createUserWithEmailAndPassword(auth, email, password)
       const user = cred.user
+      created = user
 
       // 4. 교사 role 부여는 서버에서만 (보안 규칙상 클라이언트는 role을 쓸 수 없음)
       const idToken = await user.getIdToken()
@@ -72,6 +83,7 @@ export default function RegisterPage() {
         const d = await signupRes.json().catch(() => ({}))
         throw new Error(d?.error || '교사 등록에 실패했어요. 잠시 후 다시 시도해 주세요.')
       }
+      roleGranted = true
       if (displayName) {
         try {
           const { db } = await import('../../lib/firebase')
@@ -79,11 +91,31 @@ export default function RegisterPage() {
         } catch (e) {
           console.warn('displayName write failed', e)
         }
+        // 반 등록 때 담임 이름은 Auth 프로필의 displayName을 써요.
+        try {
+          await updateProfile(user, { displayName })
+        } catch (e) {
+          console.warn('updateProfile failed', e)
+        }
       }
 
-      // 5. 이메일 인증 발송
-      await sendEmailVerification(user)
-      setInfo('가입이 완료되었습니다! 인증 메일을 확인해 주세요. (잠시 후 로그인 페이지로 이동합니다)')
+      // 5. 이메일 인증 발송 — 가입은 이미 끝났으니 발송 실패는 오류로 보여 주지 않아요.
+      let mailSent = true
+      try {
+        await sendEmailVerification(user)
+      } catch (e) {
+        console.warn('sendEmailVerification failed', e)
+        mailSent = false
+      }
+      // 이메일 인증 전에는 로그인 상태로 남기지 않아요(인증 후 로그인해야 대시보드에 들어갈 수 있게).
+      try {
+        await signOut(auth)
+      } catch {}
+      setInfo(
+        mailSent
+          ? '가입이 완료되었습니다! 인증 메일을 확인해 주세요. (잠시 후 로그인 페이지로 이동합니다)'
+          : '가입은 완료됐어요. 다만 인증 메일을 보내지 못했어요. 로그인 화면에서 로그인한 뒤 "인증메일 다시 보내기"를 눌러 주세요. (잠시 후 로그인 페이지로 이동합니다)'
+      )
       
       // 3초 후 로그인 페이지로 이동
       setTimeout(() => {
@@ -92,6 +124,16 @@ export default function RegisterPage() {
 
     } catch (e: any) {
       console.error(e)
+      if (created && !roleGranted) {
+        try {
+          await created.delete()
+        } catch (delErr) {
+          console.warn('rollback delete failed', delErr)
+          try {
+            await signOut(auth)
+          } catch {}
+        }
+      }
       if (e.code === 'auth/email-already-in-use') {
         setError('이미 가입된 이메일입니다.')
       } else if (e.code === 'auth/invalid-email') {

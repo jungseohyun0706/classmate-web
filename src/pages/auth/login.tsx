@@ -20,6 +20,8 @@ const GoogleIcon = () => (
   </svg>
 )
 
+const ROLE_CHECK_FAILED = '계정 정보를 확인하지 못했어요. 네트워크를 확인하고 다시 시도해 주세요.'
+
 export default function LoginPage() {
   const router = useRouter()
   const [email, setEmail] = useState('')
@@ -34,9 +36,14 @@ export default function LoginPage() {
   const [pendingUser, setPendingUser] = useState<User | null>(null)
   const [signupCode, setSignupCode] = useState('')
   const [codeLoading, setCodeLoading] = useState(false)
+  // 이메일 인증 전 교사는 로그아웃시키므로, 인증 메일 재전송에 쓸 User를 따로 보관해요.
+  const [unverifiedUser, setUnverifiedUser] = useState<User | null>(null)
 
-  /** 로그인 성공 후 공통 처리: users 문서의 role에 따라 이동 */
-  const routeByRole = async (user: User): Promise<'student' | 'teacher' | 'none'> => {
+  /**
+   * 로그인 성공 후 공통 처리: users 문서의 role에 따라 이동
+   * missing = 문서/role 없음(교사 등록 전), error = 읽기 실패(네트워크 등)
+   */
+  const routeByRole = async (user: User): Promise<'student' | 'teacher' | 'missing' | 'error'> => {
     try {
       const { db } = await import('../../lib/firebase')
       const udoc = await getDoc(doc(db, 'users', user.uid))
@@ -45,10 +52,11 @@ export default function LoginPage() {
         if (role === 'student') return 'student'
         if (role === 'teacher') return 'teacher'
       }
+      return 'missing'
     } catch (e) {
       console.warn('users doc check failed', e)
+      return 'error'
     }
-    return 'none'
   }
 
   const onGoogleLogin = async () => {
@@ -66,6 +74,14 @@ export default function LoginPage() {
       }
       if (role === 'teacher') {
         router.replace('/dashboard')
+        return
+      }
+      // 읽기 실패를 '처음 온 사용자'로 착각해 코드 단계로 보내지 않아요.
+      if (role === 'error') {
+        try {
+          await signOut(auth)
+        } catch {}
+        setError(ROLE_CHECK_FAILED)
         return
       }
       // 처음 온 사용자 → 교사 인증 코드 입력 단계
@@ -109,6 +125,30 @@ export default function LoginPage() {
         setError(data?.error || '등록 처리 중 오류가 발생했어요.')
         return
       }
+      // 이메일(비밀번호) 계정은 인증 메일을 확인해야 대시보드에 들어갈 수 있어요.
+      const isPasswordUser = pendingUser.providerData.some((p) => p.providerId === 'password')
+      if (isPasswordUser && !pendingUser.emailVerified) {
+        let mailSent = true
+        try {
+          await sendEmailVerification(pendingUser)
+        } catch (err) {
+          console.warn('sendEmailVerification failed', err)
+          mailSent = false
+        }
+        setUnverifiedUser(pendingUser)
+        try {
+          await signOut(auth)
+        } catch {}
+        setPendingUser(null)
+        setSignupCode('')
+        setMode('login')
+        setInfo(
+          mailSent
+            ? '교사 등록이 완료됐어요. 인증 메일을 확인한 뒤 다시 로그인해 주세요.'
+            : '교사 등록이 완료됐어요. 인증 메일을 보내지 못했으니 아래에서 다시 보내 주세요.'
+        )
+        return
+      }
       router.replace('/dashboard')
     } catch (e) {
       console.error(e)
@@ -133,6 +173,7 @@ export default function LoginPage() {
     e.preventDefault()
     setError(null)
     setInfo(null)
+    setUnverifiedUser(null)
     if (!email || !password) {
       setError('이메일과 비밀번호를 입력해 주세요.')
       return
@@ -151,8 +192,28 @@ export default function LoginPage() {
         return
       }
 
+      if (role === 'error') {
+        try {
+          await signOut(auth)
+        } catch {}
+        setError(ROLE_CHECK_FAILED)
+        return
+      }
+
+      // 교사 등록(complete-signup)이 끝나지 않은 계정 → 구글과 같이 코드 단계에서 이어서 등록
+      if (role === 'missing') {
+        setPendingUser(user)
+        setMode('code')
+        return
+      }
+
       // 교사: 이메일 인증을 마쳐야 대시보드에 들어갈 수 있어요.
+      // 로그인 상태로 두면 /dashboard로 바로 들어갈 수 있으니 로그아웃시켜요.
       if (!user.emailVerified) {
+        setUnverifiedUser(user)
+        try {
+          await signOut(auth)
+        } catch {}
         setInfo('이메일 인증이 필요합니다. 인증 메일을 다시 보낼 수 있어요.')
         setLoading(false)
         return
@@ -175,12 +236,12 @@ export default function LoginPage() {
   const resendVerification = async () => {
     setError(null)
     setInfo(null)
-    if (!auth.currentUser) {
+    if (!unverifiedUser) {
       setError('먼저 로그인을 시도해 주세요.')
       return
     }
     try {
-      await sendEmailVerification(auth.currentUser)
+      await sendEmailVerification(unverifiedUser)
       setInfo('인증 메일을 다시 보냈습니다. 메일함을 확인해 주세요.')
     } catch (e) {
       console.error(e)

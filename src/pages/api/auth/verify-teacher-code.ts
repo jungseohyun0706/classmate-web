@@ -1,9 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { timingSafeEqual } from 'crypto'
 
-// TEACHER_SIGNUP_CODE 환경변수가 없을 때 개발용으로 쓰는 레거시 코드
-const LEGACY_TEACHER_CODE = 'classmate2026'
-
 // 길이가 달라도 실행 시간이 크게 달라지지 않도록 맞춘 비교 (timing-safe-ish)
 function safeCompare(input: string, expected: string): boolean {
   const a = Buffer.from(input, 'utf8')
@@ -16,30 +13,54 @@ function safeCompare(input: string, expected: string): boolean {
   return timingSafeEqual(a, b)
 }
 
+// 코드 무차별 대입 방지 (인스턴스별 best-effort) — complete-signup과 같은 규칙
+const attempts = new Map<string, { n: number; t: number }>()
+const WINDOW_MS = 10 * 60 * 1000
+const MAX_ATTEMPTS = 10
+
+function limited(ip: string): boolean {
+  const now = Date.now()
+  const a = attempts.get(ip)
+  if (!a || now - a.t > WINDOW_MS) {
+    attempts.set(ip, { n: 1, t: now })
+    return false
+  }
+  a.n += 1
+  return a.n > MAX_ATTEMPTS
+}
+
 // POST /api/auth/verify-teacher-code
 // Body: { code }
-// 응답: 200 { ok:true, configured } / 403 { ok:false, configured }
-// configured=false 이면 서버에 TEACHER_SIGNUP_CODE가 설정되지 않아
-// 레거시 기본 코드로 검사했다는 뜻입니다(운영 환경에서는 반드시 설정하세요).
+// 응답: 200 { ok:true } / 403 { ok:false } / 429·503 { ok:false, error }
+// 서버에 TEACHER_SIGNUP_CODE가 설정되지 않았으면 교사 가입을 받지 않습니다(503).
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: '허용되지 않는 요청입니다.' })
   }
 
-  const envCode = (process.env.TEACHER_SIGNUP_CODE ?? '').trim()
-  const configured = envCode.length > 0
-  const expected = configured ? envCode : LEGACY_TEACHER_CODE
+  const expected = (process.env.TEACHER_SIGNUP_CODE ?? '').trim()
+  if (!expected) {
+    return res
+      .status(503)
+      .json({ ok: false, error: '교사 가입이 아직 열리지 않았어요. 관리자에게 문의해 주세요.' })
+  }
+
+  const ip =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.socket.remoteAddress ||
+    'unknown'
+  if (limited(ip)) {
+    return res.status(429).json({ ok: false, error: '시도가 너무 많아요. 잠시 후 다시 시도해 주세요.' })
+  }
 
   const { code } = (req.body ?? {}) as { code?: unknown }
   if (typeof code !== 'string' || code.trim().length === 0) {
-    return res
-      .status(403)
-      .json({ ok: false, configured, error: '인증 코드를 입력해 주세요.' })
+    return res.status(403).json({ ok: false, error: '인증 코드를 입력해 주세요.' })
   }
 
   if (safeCompare(code.trim(), expected)) {
-    return res.status(200).json({ ok: true, configured })
+    return res.status(200).json({ ok: true })
   }
 
-  return res.status(403).json({ ok: false, configured })
+  return res.status(403).json({ ok: false })
 }
