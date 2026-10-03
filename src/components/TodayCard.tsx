@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { doc, getDoc } from 'firebase/firestore'
+import { applyClassOverrides, fetchNeisClassTimetable, periodsFromNeisResponse, readClassTimetableDoc } from '../lib/classTimetable'
 import { pickMainMeal } from '../lib/meals'
 import { currentPeriodAt, periodRanges, schoolLevelOf } from '../lib/periodTimes'
 import { offDayOn, type CalendarEventLike } from '../lib/schoolDay'
@@ -12,6 +13,11 @@ export interface TodayCardProps {
   classId: string
   /** 오늘 급식 조회가 끝나면 급식 유무를 알려 줍니다(급식 없는 날 별점 숨김용). */
   onMealLoaded?: (hasMeal: boolean) => void
+  /**
+   * 학급 시간표 부분을 보일지(기본 true — 교사 대시보드 등 기존 사용처 동작 유지).
+   * 학생 홈은 개인 시간표를 따로 보여 주므로 false로 급식·학사일정만 씁니다.
+   */
+  showTimetable?: boolean
 }
 
 interface PeriodItem {
@@ -39,9 +45,6 @@ interface OffDayInfo {
 }
 
 const WEEKDAY_LABELS = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'] as const
-// getUTCDay() 인덱스(0=일) → Firestore 시간표 문서의 요일 키
-const DAY_KEYS = ['', 'mon', 'tue', 'wed', 'thu', 'fri', ''] as const
-
 /** KST 기준 현재 시각. 반환된 Date는 반드시 getUTC* 계열로만 읽어야 합니다. */
 function kstNow(): Date {
   return new Date(Date.now() + 9 * 60 * 60 * 1000)
@@ -90,6 +93,7 @@ export default function TodayCard({
   classNm,
   classId,
   onMealLoaded,
+  showTimetable = true,
 }: TodayCardProps): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true)
   const [periods, setPeriods] = useState<PeriodItem[]>([])
@@ -139,7 +143,6 @@ export default function TodayCard({
       const today = todayYmd
       const base = parseYmd(today)
       const weekLater = ymdOf(new Date(base.getTime() + 7 * 86400000))
-      const dayIdx = base.getUTCDay()
 
       const fetchJson = async (url: string): Promise<Record<string, unknown> | null> => {
         try {
@@ -152,85 +155,32 @@ export default function TodayCard({
       }
 
       const s = encodeURIComponent(schoolCode)
-      const g = encodeURIComponent(String(grade))
-      const c = encodeURIComponent(String(classNm))
 
+      // 학급 시간표를 숨기면(학생 홈) NEIS 학급 시간표는 조회하지 않습니다.
       const [ttData, mealData, calData] = await Promise.all([
-        fetchJson(`/api/timetable?schoolCode=${s}&grade=${g}&classNm=${c}&from=${today}&to=${today}`),
+        showTimetable ? fetchNeisClassTimetable(schoolCode, grade, classNm, today) : Promise.resolve(null),
         fetchJson(`/api/meals?schoolCode=${s}&from=${today}&to=${today}`),
         fetchJson(`/api/calendar?schoolCode=${s}&from=${today}&to=${weekLater}`),
       ])
 
-      // --- 오늘 시간표: NEIS 우선, 비어 있으면 Firestore 학급 시간표로 대체 ---
-      let list: PeriodItem[] = []
-      const rows =
-        (ttData?.timetable as Array<{ date?: string; period?: number; subject?: string }> | undefined) ?? []
-      const byPeriod = new Map<number, string>()
-      for (const row of rows) {
-        if (row.date && row.date !== today) continue
-        const p = Number(row.period)
-        const subject = String(row.subject ?? '').trim()
-        if (!p || !subject || byPeriod.has(p)) continue
-        byPeriod.set(p, subject)
-      }
-      byPeriod.forEach((subject, period) => {
-        list.push({ period, subject })
-      })
-      list.sort((a, b) => a.period - b.period)
+      // --- 오늘 시간표: NEIS 우선, 비어 있으면 Firestore 학급 시간표로 대체 (src/lib/classTimetable.ts 공용) ---
+      let list: PeriodItem[] = showTimetable ? periodsFromNeisResponse(ttData, today) : []
 
       // --- 쉬는 날: NEIS 시간표가 없고 주말이거나 학사일정상 휴업일·공휴일·방학이면 ---
       // 일정 조회가 실패하면(calData 없음) 평일은 기존처럼 요일 시간표로 대체합니다.
       const eventsArr = (calData?.events as CalendarEventLike[] | undefined) ?? []
-      const off: OffDayInfo | null = list.length === 0 ? offDayOn(today, eventsArr, grade) : null
+      const off: OffDayInfo | null = showTimetable && list.length === 0 ? offDayOn(today, eventsArr, grade) : null
 
-      if (list.length === 0 && classId && !off) {
-        const dayKey = DAY_KEYS[dayIdx]
-        if (dayKey) {
-          try {
-            const { db } = await import('../lib/firebase')
-            const snap = await getDoc(doc(db, 'classes', classId, 'info', 'timetable'))
-            if (snap.exists()) {
-              const arr = (snap.data() as Record<string, unknown>)[dayKey]
-              if (Array.isArray(arr)) {
-                list = arr
-                  .map((subject, i) => ({ period: i + 1, subject: String(subject ?? '').trim() }))
-                  .filter((p) => p.subject.length > 0)
-              }
-            }
-          } catch {
-            // Firestore 조회 실패 시 빈 시간표로 표시
-          }
-        }
+      if (showTimetable && list.length === 0 && classId && !off) {
+        // Firestore 조회 실패 시 빈 시간표로 표시
+        list = await readClassTimetableDoc(classId, today)
       }
 
       // --- 오늘 시간표 변경(overrides) 오버레이: 있으면 해당 교시 과목을 덮어씀 ---
       // 쉬는 날에는 변경 문서가 있어도(공휴일로 잡힌 교환 등) 적용하지 않고 쉬는 날 안내를 보여 줍니다.
-      if (classId && !off) {
-        try {
-          const { db } = await import('../lib/firebase')
-          const ovSnap = await getDoc(doc(db, 'classes', classId, 'overrides', today))
-          if (ovSnap.exists()) {
-            const periodsObj = (ovSnap.data() as { periods?: Record<string, { subject?: unknown }> })
-              .periods
-            if (periodsObj && typeof periodsObj === 'object') {
-              for (const key of Object.keys(periodsObj)) {
-                const p = Number(key)
-                const subject = String(periodsObj[key]?.subject ?? '').trim()
-                if (!p || !subject) continue
-                const existing = list.find((item) => item.period === p)
-                if (existing) {
-                  existing.subject = subject
-                  existing.changed = true
-                } else {
-                  list.push({ period: p, subject, changed: true })
-                }
-              }
-              list.sort((a, b) => a.period - b.period)
-            }
-          }
-        } catch {
-          // 변경 정보 조회 실패 시 원래 시간표 그대로 표시
-        }
+      if (showTimetable && classId && !off) {
+        // 변경 정보 조회 실패 시 원래 시간표 그대로 표시
+        list = await applyClassOverrides(classId, today, list)
       }
 
       // --- 오늘 급식 (조식/석식이 함께 오면 중식 우선) ---
@@ -274,12 +224,12 @@ export default function TodayCard({
     return () => {
       cancelled = true
     }
-  }, [schoolCode, grade, classNm, classId, todayYmd])
+  }, [schoolCode, grade, classNm, classId, todayYmd, showTimetable])
 
   // 학급 교시 시각 (classes/{classId}/info/periodTimes — 시간표 엑셀 업로드 때 복사됨)
   useEffect(() => {
     setPeriodStarts(null)
-    if (!classId) return
+    if (!classId || !showTimetable) return
     let cancelled = false
     ;(async () => {
       try {
@@ -296,7 +246,7 @@ export default function TodayCard({
     return () => {
       cancelled = true
     }
-  }, [classId])
+  }, [classId, showTimetable])
 
   const ranges = useMemo(
     () => periodRanges(schoolLevelOf(schoolName), periodStarts ?? undefined),
@@ -326,7 +276,7 @@ export default function TodayCard({
       </div>
 
       {/* 시간표 변경 안내 배너 */}
-      {!loading && hasOverride && (
+      {showTimetable && !loading && hasOverride && (
         <div className="flex items-center gap-1.5 border-b border-amber-100 bg-amber-50 px-5 py-2 text-xs font-medium text-amber-800">
           <svg
             viewBox="0 0 24 24"
@@ -368,83 +318,85 @@ export default function TodayCard({
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2">
-        {/* 오늘 시간표 타임라인 */}
-        <div>
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-700">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-4 w-4 text-blue-600"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 7v5l3 3" />
-            </svg>
-            오늘 시간표
-          </h3>
-          {loading ? (
-            <SkeletonLines rows={4} />
-          ) : periods.length === 0 && offDay ? (
-            <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 break-keep">
-              오늘은 쉬는 날이에요
-              {offDay.name && (
-                <span className="mt-1 block text-xs font-semibold text-gray-700">{offDay.name}</span>
-              )}
-            </p>
-          ) : periods.length === 0 ? (
-            <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
-              오늘 시간표 정보가 없어요
-            </p>
-          ) : (
-            <ol className="mt-3 space-y-1.5">
-              {periods.map((p) => {
-                const isNow = p.period === currentPeriod
-                return (
-                  <li
-                    key={p.period}
-                    className={`flex items-center gap-3 rounded-lg px-3 py-2 ${
-                      isNow ? 'bg-blue-50 ring-2 ring-blue-500' : 'bg-gray-50'
-                    }`}
-                  >
-                    <span
-                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
-                        isNow ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 ring-1 ring-gray-200'
+      <div className={`grid grid-cols-1 gap-5 p-5 ${showTimetable ? 'sm:grid-cols-2' : ''}`}>
+        {/* 오늘 시간표 타임라인 (학생 홈에서는 개인 시간표를 따로 보여 주므로 숨김) */}
+        {showTimetable && (
+          <div>
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-700">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4 text-blue-600"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 3" />
+              </svg>
+              오늘 시간표
+            </h3>
+            {loading ? (
+              <SkeletonLines rows={4} />
+            ) : periods.length === 0 && offDay ? (
+              <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 break-keep">
+                오늘은 쉬는 날이에요
+                {offDay.name && (
+                  <span className="mt-1 block text-xs font-semibold text-gray-700">{offDay.name}</span>
+                )}
+              </p>
+            ) : periods.length === 0 ? (
+              <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
+                오늘 시간표 정보가 없어요
+              </p>
+            ) : (
+              <ol className="mt-3 space-y-1.5">
+                {periods.map((p) => {
+                  const isNow = p.period === currentPeriod
+                  return (
+                    <li
+                      key={p.period}
+                      className={`flex items-center gap-3 rounded-lg px-3 py-2 ${
+                        isNow ? 'bg-blue-50 ring-2 ring-blue-500' : 'bg-gray-50'
                       }`}
                     >
-                      {p.period}
-                    </span>
-                    <span
-                      className={`min-w-0 flex-1 truncate text-sm ${
-                        isNow
-                          ? 'font-semibold text-blue-900'
-                          : p.changed
-                            ? 'font-semibold text-gray-900'
-                            : 'text-gray-700'
-                      }`}
-                    >
-                      {p.subject}
-                    </span>
-                    {p.changed && (
-                      <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
-                        변경
+                      <span
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                          isNow ? 'bg-blue-600 text-white' : 'bg-white text-gray-500 ring-1 ring-gray-200'
+                        }`}
+                      >
+                        {p.period}
                       </span>
-                    )}
-                    {isNow && (
-                      <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">
-                        지금
+                      <span
+                        className={`min-w-0 flex-1 truncate text-sm ${
+                          isNow
+                            ? 'font-semibold text-blue-900'
+                            : p.changed
+                              ? 'font-semibold text-gray-900'
+                              : 'text-gray-700'
+                        }`}
+                      >
+                        {p.subject}
                       </span>
-                    )}
-                  </li>
-                )
-              })}
-            </ol>
-          )}
-        </div>
+                      {p.changed && (
+                        <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                          변경
+                        </span>
+                      )}
+                      {isNow && (
+                        <span className="shrink-0 rounded-full bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white">
+                          지금
+                        </span>
+                      )}
+                    </li>
+                  )
+                })}
+              </ol>
+            )}
+          </div>
+        )}
 
         {/* 오늘 급식 */}
         <div>

@@ -5,6 +5,7 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth } from '../../../lib/firebase'
 import { StudentTabBar } from '../today'
+import { awaitingHomeroomApproval } from '../../../lib/homeroomStatus'
 import {
   formatNoticeDate,
   getMyReceipts,
@@ -124,7 +125,8 @@ export default function StudentNotices(): JSX.Element {
         className="mx-auto max-w-2xl px-4 py-5"
         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 6.5rem)' }}
       >
-        {userData?.status === 'pending' && (
+        {/* 실제 학급(또는 예전 그룹) 신청을 기다릴 때만 — 수업 초대로만 가입한 소속 없는 학생에게는 보이지 않게 */}
+        {userData && awaitingHomeroomApproval(userData) && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 break-keep">
             선생님 승인을 기다리고 있어요
           </div>
