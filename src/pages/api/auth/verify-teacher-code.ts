@@ -13,20 +13,30 @@ function safeCompare(input: string, expected: string): boolean {
   return timingSafeEqual(a, b)
 }
 
-// 코드 무차별 대입 방지 (인스턴스별 best-effort) — complete-signup과 같은 규칙
-const attempts = new Map<string, { n: number; t: number }>()
+// 코드 무차별 대입 방지 (인스턴스별 best-effort) — complete-signup과 같은 규칙.
+// 틀린 코드 시도만 셉니다(같은 학교 교사들이 공인 IP 하나로 연달아 가입해도 막히지 않게).
+const failedAttempts = new Map<string, { n: number; t: number }>()
 const WINDOW_MS = 10 * 60 * 1000
 const MAX_ATTEMPTS = 10
 
 function limited(ip: string): boolean {
-  const now = Date.now()
-  const a = attempts.get(ip)
-  if (!a || now - a.t > WINDOW_MS) {
-    attempts.set(ip, { n: 1, t: now })
+  const a = failedAttempts.get(ip)
+  if (!a) return false
+  if (Date.now() - a.t > WINDOW_MS) {
+    failedAttempts.delete(ip)
     return false
   }
+  return a.n >= MAX_ATTEMPTS
+}
+
+function recordFailure(ip: string) {
+  const now = Date.now()
+  const a = failedAttempts.get(ip)
+  if (!a || now - a.t > WINDOW_MS) {
+    failedAttempts.set(ip, { n: 1, t: now })
+    return
+  }
   a.n += 1
-  return a.n > MAX_ATTEMPTS
 }
 
 // POST /api/auth/verify-teacher-code
@@ -62,5 +72,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return res.status(200).json({ ok: true })
   }
 
+  recordFailure(ip)
   return res.status(403).json({ ok: false })
 }
