@@ -104,11 +104,13 @@ export default function StudentNoticeDetail(): JSX.Element {
         setNotice(a)
         setReceipt(r)
         // 읽음 처리 — 이미 receipt가 있으면 내부에서 건너뜀. 실패(권한 등)해도 열람은 가능.
-        if (!r) {
+        // receipt가 없거나, 있어도 readAt이 비어 있으면(확인만 누른 예전 기록) 읽음 처리합니다.
+        if (!r?.readAt) {
           try {
             await markRead(classId, aid, uid, studentName)
             if (!cancelled) {
-              setReceipt({ readAt: Timestamp.now(), studentName })
+              // 기존 동의(consent) 값은 보존하고 readAt만 채웁니다.
+              setReceipt((prev) => ({ ...(prev ?? r ?? {}), readAt: Timestamp.now(), studentName }))
             }
           } catch (e) {
             // 승인 전 등 권한이 없으면 읽음 확인을 남기지 못함 — 열람은 계속 가능.

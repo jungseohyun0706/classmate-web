@@ -131,7 +131,8 @@ export async function getReceipt(
 ): Promise<Receipt | null> {
   const snap = await getDoc(doc(db, 'classes', classId, 'announcements', aid, 'receipts', uid))
   if (!snap.exists()) return null
-  return toReceipt(snap.data() as Record<string, unknown>)
+  // 전송 대기 중인 serverTimestamp는 기본값으로 null로 읽히므로 'estimate'로 읽는다.
+  return toReceipt(snap.data({ serverTimestamps: 'estimate' }) as Record<string, unknown>)
 }
 
 /**
@@ -178,7 +179,11 @@ export async function markRead(
   // 문서는 있는데 readAt이 없는 경우(확인 체크만 남긴 예전 기록)에는 읽음 시각을 채워 넣습니다.
   // 예전에는 여기서 무조건 return 해버려서, 한 번 확인을 누른 학생은 readAt이 영영 생기지 않았고
   // readAt으로 조회/정렬하는 교사 화면에서 통째로 빠졌습니다.
-  if (existing.exists() && existing.data()?.readAt) return
+  //
+  // 전송 대기 중인(아직 서버 확정 전) serverTimestamp는 기본값으로 null로 읽힙니다.
+  // 'estimate'로 읽지 않으면 같은 기기에서 연달아 호출될 때 readAt이 없다고 오판해
+  // readCount를 두 번 올리게 됩니다.
+  if (existing.exists() && existing.data({ serverTimestamps: 'estimate' })?.readAt) return
 
   await setDoc(receiptRef, { readAt: serverTimestamp(), studentName }, { merge: true })
 

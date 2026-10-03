@@ -6,6 +6,7 @@ import {
   addDoc,
   collection,
   doc,
+  getCountFromServer,
   getDoc,
   onSnapshot,
   serverTimestamp,
@@ -152,6 +153,7 @@ export default function ClassRoom(): JSX.Element {
     setReceipts({})
     setRosterFor(null)
     setRosterStudents(null)
+    setReadCounts({})
     setBannerOpen(false)
     setMemberCount(null)
     setRoomClassId(id)
@@ -277,6 +279,38 @@ export default function ClassRoom(): JSX.Element {
   // 공지 id 목록 — 자동 읽음 effect의 의존성으로 씁니다(개수만으로는 변화를 놓칩니다).
   const noticeIdsKey = useMemo(() => notices.map((n) => n.id).join(','), [notices])
 
+  // 교사용: 공지별 실제 읽음 수(receipts 문서 수).
+  // announcement.readCount는 비정규화 카운터라 예전 기록·동시 기록 때문에 실제와 어긋날 수 있어,
+  // 카드에는 명단 시트와 같은 기준(receipt 존재)의 수를 보여줍니다.
+  const [readCounts, setReadCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    if (!isTeacher || !classId || notices.length === 0) return
+    let cancelled = false
+    void Promise.all(
+      notices.map(async (n) => {
+        try {
+          const snap = await getCountFromServer(
+            collection(db, 'classes', classId, 'announcements', n.id, 'receipts')
+          )
+          return [n.id, snap.data().count] as const
+        } catch {
+          return null
+        }
+      })
+    ).then((entries) => {
+      if (cancelled) return
+      setReadCounts((prev) => {
+        const next = { ...prev }
+        for (const e of entries) if (e) next[e[0]] = e[1]
+        return next
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTeacher, classId, noticeIdsKey])
+
   // 학생: 읽음 확인 로드 + 자동 읽음 처리
   useEffect(() => {
     if (!classId || !uid || isTeacher || notices.length === 0) return
@@ -287,13 +321,16 @@ export default function ClassRoom(): JSX.Element {
         if (cancelled) return
         setReceipts(mine)
         for (const n of notices) {
-          if (!mine[n.id]) {
+          // receipt가 없거나, 있어도 readAt이 비어 있으면(확인만 누른 예전 기록) 읽음 처리합니다.
+          // 존재 여부만 보면 예전 기록은 markRead의 보정 로직까지 가지 못합니다.
+          if (!mine[n.id]?.readAt) {
             markRead(classId, n.id, uid, myName)
               .then(() => {
                 if (!cancelled) {
                   setReceipts((prev) => ({
                     ...prev,
-                    [n.id]: { readAt: Timestamp.now(), studentName: myName },
+                    // 기존 동의(consent) 값은 보존하고 readAt만 채웁니다.
+                    [n.id]: { ...prev[n.id], readAt: Timestamp.now(), studentName: myName },
                   }))
                 }
               })
@@ -483,6 +520,8 @@ export default function ClassRoom(): JSX.Element {
           }
         })
         setRosterChecked(map)
+        // 시트가 열려 있는 동안 카드의 읽음 수도 실시간으로 맞춥니다.
+        setReadCounts((prev) => ({ ...prev, [rosterFor.id]: snap.size }))
       },
       (e) => console.error('명단 구독 실패', e)
     )
@@ -698,7 +737,7 @@ export default function ClassRoom(): JSX.Element {
                             className="mt-2 flex w-full items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-left ring-1 ring-emerald-100 transition hover:bg-emerald-100"
                           >
                             <span className="text-[12px] font-bold text-emerald-700">
-                              👀 읽음 {item.notice.readCount}명
+                              👀 읽음 {readCounts[item.notice.id] ?? item.notice.readCount}명
                               {item.notice.requiresConsent && item.notice.checkCount > 0 && (
                                 <span className="ml-1.5 font-semibold text-emerald-600">
                                   · 동의 {item.notice.checkCount}
