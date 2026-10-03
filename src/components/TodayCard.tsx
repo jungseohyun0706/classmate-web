@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { doc, getDoc } from 'firebase/firestore'
 import { pickMainMeal } from '../lib/meals'
+import { currentPeriodAt, periodRanges, schoolLevelOf } from '../lib/periodTimes'
+import { offDayOn, type CalendarEventLike } from '../lib/schoolDay'
 
 export interface TodayCardProps {
   schoolCode: string
@@ -31,16 +33,10 @@ interface EventInfo {
   name: string
 }
 
-// 교시별 시작/종료 시각 — '지금' 교시 판별에만 사용
-const PERIOD_TIMES: ReadonlyArray<readonly [string, string]> = [
-  ['09:00', '09:40'],
-  ['09:50', '10:30'],
-  ['10:40', '11:20'],
-  ['11:30', '12:10'],
-  ['13:00', '13:40'],
-  ['13:50', '14:30'],
-  ['14:40', '15:20'],
-]
+interface OffDayInfo {
+  /** 학사일정의 쉬는 날 이름(예: '한글날'). 주말처럼 이름이 없으면 '' */
+  name: string
+}
 
 const WEEKDAY_LABELS = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'] as const
 // getUTCDay() 인덱스(0=일) → Firestore 시간표 문서의 요일 키
@@ -63,11 +59,6 @@ function parseYmd(ymd: string): Date {
   return new Date(
     Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(4, 6)) - 1, Number(ymd.slice(6, 8)))
   )
-}
-
-function toMinutes(hm: string): number {
-  const parts = hm.split(':')
-  return Number(parts[0]) * 60 + Number(parts[1])
 }
 
 /** '김치찌개 (5.9.13)' → 메뉴 이름과 알레르기 숫자 표기를 분리 */
@@ -104,6 +95,10 @@ export default function TodayCard({
   const [periods, setPeriods] = useState<PeriodItem[]>([])
   const [meal, setMeal] = useState<MealInfo | null>(null)
   const [nextEvent, setNextEvent] = useState<EventInfo | null>(null)
+  // 오늘이 쉬는 날(주말·휴업일·공휴일·방학)이면 시간표 대신 안내를 보여 줍니다.
+  const [offDay, setOffDay] = useState<OffDayInfo | null>(null)
+  // 업로드된 학교 시간표의 교시 시작 시각 (없으면 학교급 기본 시각)
+  const [periodStarts, setPeriodStarts] = useState<string[] | null>(null)
   const [nowMin, setNowMin] = useState<number>(() => {
     const n = kstNow()
     return n.getUTCHours() * 60 + n.getUTCMinutes()
@@ -183,7 +178,12 @@ export default function TodayCard({
       })
       list.sort((a, b) => a.period - b.period)
 
-      if (list.length === 0 && classId) {
+      // --- 쉬는 날: NEIS 시간표가 없고 주말이거나 학사일정상 휴업일·공휴일·방학이면 ---
+      // 일정 조회가 실패하면(calData 없음) 평일은 기존처럼 요일 시간표로 대체합니다.
+      const eventsArr = (calData?.events as CalendarEventLike[] | undefined) ?? []
+      const off: OffDayInfo | null = list.length === 0 ? offDayOn(today, eventsArr, grade) : null
+
+      if (list.length === 0 && classId && !off) {
         const dayKey = DAY_KEYS[dayIdx]
         if (dayKey) {
           try {
@@ -204,7 +204,8 @@ export default function TodayCard({
       }
 
       // --- 오늘 시간표 변경(overrides) 오버레이: 있으면 해당 교시 과목을 덮어씀 ---
-      if (classId) {
+      // 쉬는 날에는 변경 문서가 있어도(공휴일로 잡힌 교환 등) 적용하지 않고 쉬는 날 안내를 보여 줍니다.
+      if (classId && !off) {
         try {
           const { db } = await import('../lib/firebase')
           const ovSnap = await getDoc(doc(db, 'classes', classId, 'overrides', today))
@@ -253,8 +254,6 @@ export default function TodayCard({
 
       // --- 다가오는 학사일정 (오늘~+7일 중 가장 가까운 1건) ---
       // NEIS는 토요일마다 '토요휴업일'을 내려줘 실제 행사를 가리므로 제외합니다.
-      const eventsArr =
-        (calData?.events as Array<{ date?: string; name?: string }> | undefined) ?? []
       const upcoming =
         eventsArr
           .filter((e): e is { date: string; name: string } =>
@@ -264,6 +263,7 @@ export default function TodayCard({
 
       if (cancelled) return
       setPeriods(list)
+      setOffDay(off)
       setMeal(mealInfo)
       setNextEvent(upcoming)
       setLoading(false)
@@ -276,13 +276,37 @@ export default function TodayCard({
     }
   }, [schoolCode, grade, classNm, classId, todayYmd])
 
-  const currentPeriod = useMemo<number>(() => {
-    for (let i = 0; i < PERIOD_TIMES.length; i++) {
-      const range = PERIOD_TIMES[i]
-      if (nowMin >= toMinutes(range[0]) && nowMin < toMinutes(range[1])) return i + 1
+  // 학급 교시 시각 (classes/{classId}/info/periodTimes — 시간표 엑셀 업로드 때 복사됨)
+  useEffect(() => {
+    setPeriodStarts(null)
+    if (!classId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { db } = await import('../lib/firebase')
+        const snap = await getDoc(doc(db, 'classes', classId, 'info', 'periodTimes'))
+        const times = snap.exists() ? (snap.data() as { times?: unknown }).times : undefined
+        if (!cancelled && Array.isArray(times)) {
+          setPeriodStarts(times.map((t) => (typeof t === 'string' ? t : '')))
+        }
+      } catch {
+        // 못 읽으면 학교급 기본 시각으로 판별
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-    return 0
-  }, [nowMin])
+  }, [classId])
+
+  const ranges = useMemo(
+    () => periodRanges(schoolLevelOf(schoolName), periodStarts ?? undefined),
+    [schoolName, periodStarts]
+  )
+
+  const currentPeriod = useMemo<number>(
+    () => (offDay ? 0 : currentPeriodAt(nowMin, ranges)),
+    [nowMin, ranges, offDay]
+  )
 
   const hasOverride = useMemo<boolean>(() => periods.some((p) => p.changed === true), [periods])
 
@@ -365,6 +389,13 @@ export default function TodayCard({
           </h3>
           {loading ? (
             <SkeletonLines rows={4} />
+          ) : periods.length === 0 && offDay ? (
+            <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 break-keep">
+              오늘은 쉬는 날이에요
+              {offDay.name && (
+                <span className="mt-1 block text-xs font-semibold text-gray-700">{offDay.name}</span>
+              )}
+            </p>
           ) : periods.length === 0 ? (
             <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
               오늘 시간표 정보가 없어요

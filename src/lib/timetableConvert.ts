@@ -79,6 +79,30 @@ export const storedClassGridToInfoTimetable = (
   return out
 }
 
+/**
+ * 마스터의 교시 시각 맵({'1': '8:50', ...}) → classes/{classId}/info/periodTimes.times
+ * (1교시부터의 시작 'HH:MM' 배열. 시각이 없는 교시는 '', 뒤쪽 빈칸은 잘라 냄)
+ */
+export const periodTimesToStarts = (periodTimes: unknown): string[] => {
+  const starts: string[] = Array.from({ length: PERIOD_COUNT }, () => '')
+  if (periodTimes && typeof periodTimes === 'object') {
+    for (const [key, time] of Object.entries(periodTimes as Record<string, unknown>)) {
+      const p = Number(key)
+      if (
+        Number.isInteger(p) &&
+        p >= 1 &&
+        p <= PERIOD_COUNT &&
+        typeof time === 'string' &&
+        /^\d{1,2}:\d{2}$/.test(time)
+      ) {
+        starts[p - 1] = time.padStart(5, '0')
+      }
+    }
+  }
+  while (starts.length > 0 && starts[starts.length - 1] === '') starts.pop()
+  return starts
+}
+
 // ── 업로드 페이로드 검증 (서버에서 신뢰 경계로 사용) ─────────────
 
 // 파서(looksLikeTeacherName)가 받아들이는 원어민 교사 이름의 . ' - 도 허용 (예: Mary-Jane, O'Neil, J. Smith)

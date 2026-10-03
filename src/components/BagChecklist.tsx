@@ -4,6 +4,7 @@ import {
   formatBagDate,
   getStreak,
   loadCheck,
+  loadOffDays,
   nextSchoolDayYmd,
   saveCheck,
   type ChecklistItem,
@@ -25,7 +26,8 @@ export interface BagChecklistProps {
  * '내일 가방 싸기' 카드 — 다음 등교일 준비물 체크리스트.
  * 시간표 과목 + 최근 알림장 준비물을 합쳐 보여주고,
  * 체크 상태는 users/{uid}/bagChecks/{ymd}에 저장합니다.
- * 대상일은 마운트 시점에 정해지므로, 날짜가 바뀌면 부모가 key로 다시 마운트합니다.
+ * 대상일은 마운트 시점에 (학사일정의 쉬는 날을 건너뛰어) 정해지므로,
+ * 날짜가 바뀌면 부모가 key로 다시 마운트합니다.
  */
 export default function BagChecklist({
   classId,
@@ -36,25 +38,44 @@ export default function BagChecklist({
   classNm,
   officeCode,
 }: BagChecklistProps): JSX.Element {
-  const [ymd] = useState<string>(() => nextSchoolDayYmd())
+  // 대상 등교일 — 학사일정의 쉬는 날을 불러온 뒤 정합니다(그전엔 null).
+  const [ymd, setYmd] = useState<string | null>(null)
+  const [offDays, setOffDays] = useState<ReadonlySet<string> | undefined>(undefined)
   const [loading, setLoading] = useState<boolean>(true)
   const [loadError, setLoadError] = useState<boolean>(false)
   const [items, setItems] = useState<ChecklistItem[]>([])
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [streak, setStreak] = useState<number>(0)
 
+  // 주말과 학사일정상 쉬는 날(공휴일·휴업일·방학)을 건너뛰어 대상 등교일을 정합니다.
+  // 일정 조회에 실패하면 주말만 건너뜁니다.
   useEffect(() => {
+    let cancelled = false
+    void loadOffDays(schoolCode, grade)
+      .catch(() => new Set<string>())
+      .then((off) => {
+        if (cancelled) return
+        setOffDays(off)
+        setYmd(nextSchoolDayYmd(off))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [schoolCode, grade])
+
+  useEffect(() => {
+    if (!ymd) return
     let cancelled = false
     ;(async () => {
       try {
         // 저장된 체크·스트릭 조회가 실패해도(오프라인 등) 준비물 목록은 보여줍니다.
         const [list, saved, s] = await Promise.all([
-          buildChecklist({ classId, schoolCode, uid, ymd, grade, classNm, officeCode }),
+          buildChecklist({ classId, schoolCode, uid, ymd, offDays, grade, classNm, officeCode }),
           loadCheck(uid, ymd).catch((e: unknown) => {
             console.error(e)
             return null
           }),
-          getStreak(uid, ymd).catch(() => 0),
+          getStreak(uid, ymd, offDays).catch(() => 0),
         ])
         if (cancelled) return
         setItems(list)
@@ -75,7 +96,7 @@ export default function BagChecklist({
     return () => {
       cancelled = true
     }
-  }, [classId, schoolCode, uid, ymd, status, grade, classNm, officeCode])
+  }, [classId, schoolCode, uid, ymd, offDays, status, grade, classNm, officeCode])
 
   const checkedCount = useMemo<number>(
     () => items.filter((i) => checked[i.name] === true).length,
@@ -90,6 +111,7 @@ export default function BagChecklist({
   }, [allDone])
 
   const handleToggle = (name: string): void => {
+    if (!ymd) return
     const next = { ...checked, [name]: checked[name] !== true }
     setChecked(next)
     const nowDone = items.length > 0 && items.every((i) => next[i.name] === true)
@@ -97,7 +119,7 @@ export default function BagChecklist({
       .then(() => {
         if (nowDone) {
           // 방금 완료 도장을 찍었으면 스트릭을 새로 계산
-          getStreak(uid, ymd).then(setStreak).catch(() => {})
+          getStreak(uid, ymd, offDays).then(setStreak).catch(() => {})
         }
       })
       .catch((e) => console.error(e))
@@ -126,7 +148,9 @@ export default function BagChecklist({
           </span>
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-gray-700">내일 가방 싸기</h2>
-            <p className="truncate text-xs text-gray-400">{formatBagDate(ymd)} 준비물</p>
+            <p className="truncate text-xs text-gray-400">
+              {ymd ? `${formatBagDate(ymd)} 준비물` : '\u00a0'}
+            </p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">

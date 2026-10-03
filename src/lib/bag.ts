@@ -13,6 +13,7 @@ import {
   where,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import { isOffDayFor, type CalendarEventLike } from './schoolDay'
 
 /**
  * 가방 싸기(준비물 체크리스트) 유틸.
@@ -21,7 +22,8 @@ import { db } from './firebase'
  * 데이터 계약 (contract 3):
  * - users/{uid}/bagChecks/{YYYYMMDD}
  *   {items: {준비물이름: boolean}, done: boolean, updatedAt}
- *   → YYYYMMDD는 "가방을 싸는 대상 등교일"(보통 내일, 금/토요일엔 다음 월요일)입니다.
+ *   → YYYYMMDD는 "가방을 싸는 대상 등교일"(보통 내일, 금/토요일엔 다음 월요일,
+ *     학사일정상 쉬는 날(공휴일·휴업일·방학)은 건너뜀)입니다.
  */
 
 /** 과목명 → 대표 준비물 (초등 기준, 과목명이 포함되면 매칭) */
@@ -50,8 +52,10 @@ export interface BuildChecklistParams {
   classId: string
   schoolCode: string
   uid: string
-  /** 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd() */
+  /** 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd(offDays) */
   ymd?: string
+  /** 학사일정상 쉬는 날(YYYYMMDD) — loadOffDays()로 얻습니다 */
+  offDays?: ReadonlySet<string>
   /** 학급 시간표가 없을 때 NEIS 시간표로 대신 조회하는 데 씁니다 */
   grade?: string | number
   classNm?: string | number
@@ -80,22 +84,67 @@ function parseYmd(ymd: string): Date {
   )
 }
 
-/** 다음 등교일(YYYYMMDD). 기본은 내일이고, 토/일이면 다음 월요일까지 건너뜁니다. */
-export function nextSchoolDayYmd(): string {
+function isOffDay(d: Date, offDays?: ReadonlySet<string>): boolean {
+  return d.getUTCDay() === 0 || d.getUTCDay() === 6 || offDays?.has(ymdOf(d)) === true
+}
+
+/**
+ * 다음 등교일(YYYYMMDD). 기본은 내일이고, 주말과 offDays(학사일정상 쉬는 날)는 건너뜁니다.
+ * offDays가 없으면(일정 조회 실패 등) 주말만 건너뜁니다.
+ */
+export function nextSchoolDayYmd(offDays?: ReadonlySet<string>): string {
   let d = new Date(kstNow().getTime() + 86400000)
-  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+  while (isOffDay(d, offDays)) {
     d = new Date(d.getTime() + 86400000)
   }
   return ymdOf(d)
 }
 
-/** ymd 바로 이전 등교일(YYYYMMDD). 주말은 건너뜁니다. */
-function prevSchoolDayYmd(ymd: string): string {
+/** ymd 바로 이전 등교일(YYYYMMDD). 주말과 offDays는 건너뜁니다. */
+function prevSchoolDayYmd(ymd: string, offDays?: ReadonlySet<string>): string {
   let d = new Date(parseYmd(ymd).getTime() - 86400000)
-  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+  while (isOffDay(d, offDays)) {
     d = new Date(d.getTime() - 86400000)
   }
   return ymdOf(d)
+}
+
+/**
+ * 지난달·이번 달·다음 달 학사일정(/api/calendar)에서 쉬는 날(YYYYMMDD) 집합을 만듭니다.
+ * (다음 달: 연휴·방학 뒤 대상 등교일, 지난달: 월초에 연휴를 건너 스트릭을 이어 세기 위함)
+ * 일부 학년만 쉬는 날은 grade가 그 학년일 때만 넣습니다.
+ * 조회에 실패한 달은 비어 있어 그 달은 주말만 건너뜁니다. 예외를 던지지 않습니다.
+ */
+export async function loadOffDays(
+  schoolCode: string,
+  grade?: string | number
+): Promise<Set<string>> {
+  const off = new Set<string>()
+  if (!schoolCode) return off
+  const now = kstNow()
+  const base = now.getUTCFullYear() * 12 + now.getUTCMonth()
+  await Promise.all(
+    [-1, 0, 1].map(async (delta) => {
+      const y = Math.floor((base + delta) / 12)
+      const m = ((base + delta) % 12) + 1
+      const mm = String(m).padStart(2, '0')
+      const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate()
+      try {
+        // 학사일정 화면(/calendar)과 같은 달 단위 쿼리 — CDN 캐시를 함께 씁니다.
+        const res = await fetch(
+          `/api/calendar?schoolCode=${encodeURIComponent(schoolCode)}&from=${y}${mm}01&to=${y}${mm}${String(lastDay).padStart(2, '0')}`
+        )
+        if (!res.ok) return
+        const data = (await res.json()) as { events?: CalendarEventLike[] }
+        for (const e of data.events ?? []) {
+          if (e.date && isOffDayFor(e, grade)) off.add(e.date)
+        }
+      } catch {
+        // 이 달은 주말만 건너뜁니다.
+      }
+    })
+  )
+  return off
 }
 
 /** 'YYYYMMDD' → '8월 27일 목요일' */
@@ -116,7 +165,7 @@ export function formatBagDate(ymd: string): string {
  */
 export async function buildChecklist(params: BuildChecklistParams): Promise<ChecklistItem[]> {
   const { classId } = params
-  const ymd = params.ymd ?? nextSchoolDayYmd()
+  const ymd = params.ymd ?? nextSchoolDayYmd(params.offDays)
   const dayKey = DAY_KEYS[parseYmd(ymd).getUTCDay()]
 
   // 교시 → 과목 (시간표 + 변경 오버레이)
@@ -199,7 +248,7 @@ export async function buildChecklist(params: BuildChecklistParams): Promise<Chec
   // 최근 알림장의 준비물 칩 — 기본은 48시간이지만, 주말을 사이에 두면(일요일 밤 → 월요일)
   // 금요일에 올린 '월요일 준비물'이 빠지지 않도록 직전 등교일 0시(KST)까지 넓힙니다.
   try {
-    const prevDayStartMs = parseYmd(prevSchoolDayYmd(ymd)).getTime() - 9 * 60 * 60 * 1000
+    const prevDayStartMs = parseYmd(prevSchoolDayYmd(ymd, params.offDays)).getTime() - 9 * 60 * 60 * 1000
     const since = Timestamp.fromMillis(Math.min(Date.now() - 48 * 60 * 60 * 1000, prevDayStartMs))
     const snap = await getDocs(
       query(collection(db, 'classes', classId, 'announcements'), where('createdAt', '>=', since))
@@ -249,12 +298,17 @@ export async function saveCheck(
 
 /**
  * 연속 가방 싸기 일수(스트릭)를 계산합니다.
- * 최근 bagChecks 30건을 읽어, 현재 대상 등교일부터 주말을 건너뛰며
+ * 최근 bagChecks 30건을 읽어, 현재 대상 등교일부터 주말·쉬는 날을 건너뛰며
  * 거꾸로 걸으면서 done === true인 날을 셉니다.
  * 아직 안 싼 현재 대상일은 스트릭을 끊지 않고 건너뜁니다.
- * @param targetYmd 현재 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd()
+ * @param targetYmd 현재 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd(offDays)
+ * @param offDays 학사일정상 쉬는 날(YYYYMMDD) — loadOffDays()로 얻습니다
  */
-export async function getStreak(uid: string, targetYmd?: string): Promise<number> {
+export async function getStreak(
+  uid: string,
+  targetYmd?: string,
+  offDays?: ReadonlySet<string>
+): Promise<number> {
   const snap = await getDocs(
     query(collection(db, 'users', uid, 'bagChecks'), orderBy(documentId(), 'desc'), limit(30))
   )
@@ -264,7 +318,7 @@ export async function getStreak(uid: string, targetYmd?: string): Promise<number
   }
   if (doneByYmd.size === 0) return 0
 
-  let cursor = targetYmd ?? nextSchoolDayYmd()
+  let cursor = targetYmd ?? nextSchoolDayYmd(offDays)
   let streak = 0
   for (let i = 0; i < 40; i++) {
     if (doneByYmd.get(cursor) === true) {
@@ -272,7 +326,7 @@ export async function getStreak(uid: string, targetYmd?: string): Promise<number
     } else if (i > 0) {
       break
     }
-    cursor = prevSchoolDayYmd(cursor)
+    cursor = prevSchoolDayYmd(cursor, offDays)
   }
   return streak
 }

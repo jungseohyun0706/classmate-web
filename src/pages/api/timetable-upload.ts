@@ -6,6 +6,7 @@ import {
   DAY_KEYS,
   PERIOD_COUNT,
   normalizeName,
+  periodTimesToStarts,
   sanitizeUploadPayload,
   storedClassGridToInfoTimetable,
   storedTeacherGridToMySchedule,
@@ -30,6 +31,7 @@ import {
 //     - merge(기본): 파일에 있는 반·교사만 갱신하고, 파일에 없는 반·교사·교시 시각은 보존
 //     - replace('새 파일로 교체'): 마스터를 이 파일 내용으로 통째로 교체
 //  2) 존재하는 학급의 classes/{id}/info/timetable 을 갱신
+//     (마스터의 교시 시작 시각을 classes/{id}/info/periodTimes 에도 복사)
 //  3) displayName이 일치하는 교사 계정의 users/{uid}.mySchedule 을 자동 등록
 // firebase-admin으로 쓰므로 보안 규칙을 우회합니다. 대신 여기서 직접
 // 요청자가 이 학교의 교사인지 확인하고, 요청자의 학교에만 씁니다.
@@ -205,6 +207,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const prev = (snap.exists ? snap.data() : undefined) || {}
       const prevClasses = (prev.classes && typeof prev.classes === 'object' ? prev.classes : {}) as Record<string, unknown>
       const prevTeachers = (prev.teachers && typeof prev.teachers === 'object' ? prev.teachers : {}) as Record<string, unknown>
+      const prevPeriodTimes = (prev.periodTimes && typeof prev.periodTimes === 'object' ? prev.periodTimes : {}) as Record<string, unknown>
 
       // 파일에 직접 들어 있는 반·교사는 통째로 교체하고, 역산으로만 만들어진 반은
       // 이번 파일에 시간표가 있는 교사의 칸만, 역산 교사는 이번 파일에 있는 반의 칸만 바꾼다.
@@ -249,7 +252,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (Object.keys(data.periodTimes).length > 0) masterUpdate.periodTimes = data.periodTimes
         tx.set(masterRef, masterUpdate, { merge: true })
       }
-      return { classes, teachers, prevClasses, prevTeachers }
+      // 쓰고 난 뒤의 마스터 교시 시각 (merge:true는 맵을 키 단위로 합치므로 기존+파일)
+      const periodTimes = replaceAll ? data.periodTimes : { ...prevPeriodTimes, ...data.periodTimes }
+      return { classes, teachers, prevClasses, prevTeachers, periodTimes }
     })
 
     // 2) 학급 시간표: 존재하는 학급 문서만 갱신
@@ -285,6 +290,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (s.exists) prevInfo.set(partialClasses[i].label, s.data() || {})
     })
 
+    // 교시 시작 시각('HH:MM', 1교시부터) — 학생은 school_timetables를 읽을 수 없어 학급 info에 복사한다.
+    // 요일 키를 순회하는 info/timetable과 섞지 않도록 별도 문서로 두고, 마스터와 같은 값이 되도록
+    // 최종 마스터 시각(교체면 파일 값, 병합이면 기존+파일)으로 맞춘다.
+    // 교체 모드인데 시각이 없으면 예전 파일 시각을 지워 학교급 기본표로 돌아가게 하고,
+    // 병합 모드에서 마스터에도 시각이 없으면 건드리지 않는다.
+    const periodStarts = periodTimesToStarts(master.periodTimes)
+
     for (const { label, ref, legacy } of foundClasses) {
       const old = prevInfo.get(label)
       let info: Record<DayKey, string[]>
@@ -308,6 +320,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         info = storedClassGridToInfoTimetable(master.classes[label])
       }
       add((b) => b.set(ref.collection('info').doc('timetable'), info))
+      if (periodStarts.length > 0) {
+        add((b) =>
+          b.set(ref.collection('info').doc('periodTimes'), {
+            times: periodStarts,
+            updatedAt: FieldValue.serverTimestamp(),
+          })
+        )
+      } else if (replaceAll) {
+        add((b) => b.delete(ref.collection('info').doc('periodTimes')))
+      }
       // 모바일 앱이 남긴 구형 timetable 필드는 새 시간표를 가리므로 제거
       if (legacy) {
         add((b) => b.update(ref, { timetable: FieldValue.delete() }))
