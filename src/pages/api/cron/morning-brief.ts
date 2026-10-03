@@ -284,7 +284,9 @@ export default async function handler(
               MLSV_TO_YMD: today,
             })
           )
-          return summarizeMeal(mealRows[0]?.DDISH_NM || '')
+          // 조식·석식을 주는 학교도 있으므로 중식(MMEAL_SC_CODE '2')을 우선, 없으면 첫 끼니
+          const lunch = mealRows.find((r) => String(r.MMEAL_SC_CODE ?? '') === '2') ?? mealRows[0]
+          return summarizeMeal(lunch?.DDISH_NM || '')
         })
         if (mealSummary) {
           parts.push(mealSummary)

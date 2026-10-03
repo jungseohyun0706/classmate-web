@@ -15,6 +15,10 @@ export interface BagChecklistProps {
   uid: string
   /** 승인 상태 — 승인되면 (승인 전엔 읽을 수 없던) 알림장 준비물을 다시 불러옵니다. */
   status?: string
+  /** 학급 시간표가 없는 반은 이 학년·반의 NEIS 시간표로 준비물을 계산합니다. */
+  grade?: string | number
+  classNm?: string | number
+  officeCode?: string
 }
 
 /**
@@ -23,7 +27,15 @@ export interface BagChecklistProps {
  * 체크 상태는 users/{uid}/bagChecks/{ymd}에 저장합니다.
  * 대상일은 마운트 시점에 정해지므로, 날짜가 바뀌면 부모가 key로 다시 마운트합니다.
  */
-export default function BagChecklist({ classId, schoolCode, uid, status }: BagChecklistProps): JSX.Element {
+export default function BagChecklist({
+  classId,
+  schoolCode,
+  uid,
+  status,
+  grade,
+  classNm,
+  officeCode,
+}: BagChecklistProps): JSX.Element {
   const [ymd] = useState<string>(() => nextSchoolDayYmd())
   const [loading, setLoading] = useState<boolean>(true)
   const [loadError, setLoadError] = useState<boolean>(false)
@@ -37,7 +49,7 @@ export default function BagChecklist({ classId, schoolCode, uid, status }: BagCh
       try {
         // 저장된 체크·스트릭 조회가 실패해도(오프라인 등) 준비물 목록은 보여줍니다.
         const [list, saved, s] = await Promise.all([
-          buildChecklist({ classId, schoolCode, uid, ymd }),
+          buildChecklist({ classId, schoolCode, uid, ymd, grade, classNm, officeCode }),
           loadCheck(uid, ymd).catch((e: unknown) => {
             console.error(e)
             return null
@@ -63,7 +75,7 @@ export default function BagChecklist({ classId, schoolCode, uid, status }: BagCh
     return () => {
       cancelled = true
     }
-  }, [classId, schoolCode, uid, ymd, status])
+  }, [classId, schoolCode, uid, ymd, status, grade, classNm, officeCode])
 
   const checkedCount = useMemo<number>(
     () => items.filter((i) => checked[i.name] === true).length,

@@ -112,6 +112,7 @@ export default function MealsPage(): JSX.Element {
   const [searching, setSearching] = useState<boolean>(false)
   const [results, setResults] = useState<SchoolResult[]>([])
   const [searched, setSearched] = useState<boolean>(false)
+  const [searchFailed, setSearchFailed] = useState<boolean>(false)
 
   // 오늘 급식
   const [todayMeal, setTodayMeal] = useState<ApiMeal | null>(null)
@@ -269,12 +270,16 @@ export default function MealsPage(): JSX.Element {
     if (!q || searching) return
     setSearching(true)
     setSearched(false)
+    setSearchFailed(false)
     try {
       const res = await fetch(`/api/schools?q=${encodeURIComponent(q)}`)
+      // NEIS 장애(502 등)는 '검색 결과 없음'과 구분해서 안내합니다.
+      if (!res.ok) throw new Error(`schools ${res.status}`)
       const data = (await res.json()) as { schools?: SchoolResult[] }
       setResults(data.schools ?? [])
     } catch {
       setResults([])
+      setSearchFailed(true)
     } finally {
       setSearching(false)
       setSearched(true)
@@ -370,7 +375,9 @@ export default function MealsPage(): JSX.Element {
                 </form>
                 {searched && results.length === 0 && (
                   <p className="mt-3 text-center text-sm text-gray-400 break-keep">
-                    검색 결과가 없어요. 학교 이름을 다시 확인해 주세요.
+                    {searchFailed
+                      ? '학교 검색이 잠시 안 돼요. 잠시 후 다시 시도해 주세요.'
+                      : '검색 결과가 없어요. 학교 이름을 다시 확인해 주세요.'}
                   </p>
                 )}
                 {results.length > 0 && (

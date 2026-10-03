@@ -52,6 +52,10 @@ export interface BuildChecklistParams {
   uid: string
   /** 대상 등교일(YYYYMMDD) — 생략 시 nextSchoolDayYmd() */
   ymd?: string
+  /** 학급 시간표가 없을 때 NEIS 시간표로 대신 조회하는 데 씁니다 */
+  grade?: string | number
+  classNm?: string | number
+  officeCode?: string
 }
 
 // getUTCDay() 인덱스(0=일) → Firestore 시간표 문서의 요일 키
@@ -104,6 +108,7 @@ export function formatBagDate(ymd: string): string {
 /**
  * 다음 등교일 준비물 체크리스트를 만듭니다.
  * 1) 학급 시간표(classes/{classId}/info/timetable)의 해당 요일 과목
+ *    (학급 시간표가 없으면 오늘 화면 시간표와 같은 NEIS 시간표(/api/timetable)로 대신)
  * 2) 시간표 변경(classes/{classId}/overrides/{ymd})을 덮어쓴 뒤
  *    SUBJECT_SUPPLIES로 과목 → 준비물 변환 (중복 제거)
  * 3) 최근 48시간(주말·연휴가 끼면 직전 등교일 0시부터) 알림장(announcements)의
@@ -130,6 +135,31 @@ export async function buildChecklist(params: BuildChecklistParams): Promise<Chec
     }
   } catch {
     // 시간표 조회 실패 시 알림장 준비물만 표시
+  }
+
+  // 담임이 학급 시간표를 등록하지 않은 반: 오늘 화면과 같은 NEIS 시간표로 과목을 가져옴
+  if (subjectByPeriod.size === 0 && params.schoolCode && params.grade && params.classNm) {
+    try {
+      const qs = new URLSearchParams({
+        schoolCode: params.schoolCode,
+        grade: String(params.grade),
+        classNm: String(params.classNm),
+        from: ymd,
+        to: ymd,
+      })
+      if (params.officeCode) qs.set('officeCode', params.officeCode)
+      const res = await fetch(`/api/timetable?${qs.toString()}`)
+      if (res.ok) {
+        const data = (await res.json()) as { timetable?: { date?: string; period?: number; subject?: string }[] }
+        for (const row of data.timetable ?? []) {
+          const p = Number(row.period)
+          const subject = String(row.subject ?? '').trim()
+          if (row.date === ymd && p && subject) subjectByPeriod.set(p, subject)
+        }
+      }
+    } catch {
+      // NEIS 조회 실패 시 알림장 준비물만 표시
+    }
   }
 
   try {
