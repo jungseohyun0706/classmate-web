@@ -3,6 +3,7 @@
  *  - 대상 학년을 모르는 수업은 언제나 보임, 내 학년을 모르면 거르지 않음
  *  - 칸: 월~금 + 토·일은 차시가 있을 때만, 교시는 있는 것 중 가장 큰 교시까지(0교시는 있을 때만)
  *  - 칸에 이미 내 시간표에 있는 수업(참여·시작 예정·승인 대기·반 공통)이 표시됨
+ *  - 수업별 내 상태(myCourseStates): 차시가 아직 없는 수업·끝낸(뺀) 수강도 포함 — 카드 상태·'빼기' 표시 기준
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,6 +12,7 @@ import {
   cellKey,
   cleanGrades,
   filterByGrade,
+  myCourseStates,
   myLessonsFrom,
   normalizeCatalog,
   normalizeCatalogCourse,
@@ -226,5 +228,46 @@ describe('이미 내 시간표에 있는 수업(myLessonsFrom)', () => {
 
   test('다른 학생의 수강은 내 것으로 보지 않음', () => {
     assert.deepEqual(myLessonsFrom(payload, 'someone', TODAY).map((x) => x.courseId), ['lit'])
+  })
+
+  describe('수업별 내 상태(myCourseStates)', () => {
+    // 차시가 아직 없는 수업(slotless)에 담은 수강·승인 대기, 오늘 뺀 수강(to=오늘), 끝낸 뒤 반 공통으로 다시 내 것인 수업
+    const p2: PayloadLike = {
+      ...payload,
+      courses: payload.courses.concat([course('noSlot'), course('noSlotP'), course('leftToday'), course('lit2', { commonForHomerooms: ['S1_3_4'] })]),
+      enrollments: payload.enrollments.concat([
+        { courseId: 'noSlot', uid: 'me', status: 'active', source: 'request', from: '20261002' },
+        { courseId: 'noSlotP', uid: 'me', status: 'pending', source: 'request' },
+        { courseId: 'leftToday', uid: 'me', status: 'ended', source: 'request', from: '20261001', to: TODAY },
+        { courseId: 'lit2', uid: 'me', status: 'ended', source: 'roster', from: '20260901', to: '20260915' },
+        { courseId: 'noSlot', uid: 'someone', status: 'ended', source: 'request' },
+      ]),
+    }
+    const st = myCourseStates(p2, 'me', TODAY)
+    const brief = (id: string) => {
+      const x = st.get(id)
+      return x ? `${x.status}:${x.source}` : null
+    }
+
+    test('차시가 없는 수업도 참여 중·승인 대기(칸 목록 myLessonsFrom에는 없음) — 출처 그대로라 빼기 가능', () => {
+      assert.equal(brief('noSlot'), 'active:request')
+      assert.equal(brief('noSlotP'), 'pending:request')
+      assert.ok(!myLessonsFrom(p2, 'me', TODAY).some((m) => m.courseId === 'noSlot' || m.courseId === 'noSlotP'))
+    })
+
+    test('끝낸·뺀 수강(오늘 뺀 수업 포함)은 ended(다시 담기), 시작 예정은 active, 반 공통은 active·common', () => {
+      assert.equal(brief('leftToday'), 'ended:request')
+      assert.equal(brief('math'), 'ended:roster')
+      assert.equal(brief('hist'), 'active:invite')
+      assert.equal(brief('lit'), 'active:common')
+      assert.equal(brief('lit2'), 'active:common', '끝낸 수강보다 지금 소속 학급의 공통 수업이 우선')
+    })
+
+    test('다른 학생 수강·다른 반 공통 수업·관련 없는 수업은 없음', () => {
+      assert.equal(brief('other'), null)
+      assert.equal(brief('nope'), null)
+      assert.equal(myCourseStates(p2, 'someone', TODAY).get('noSlot')?.status, 'ended')
+      assert.equal(myCourseStates(p2, 'someone', TODAY).get('noSlotP'), undefined)
+    })
   })
 })

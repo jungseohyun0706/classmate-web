@@ -34,7 +34,7 @@ const WDL = ['', '월요일', '화요일', '수요일', '목요일', '금요일'
 const S1 = { schoolCode: 'S1', schoolName: '테스트고등학교', officeCode: 'B10' }
 
 const U = { pk: 'stuPk7q', ot: 'stuOt7w', ty: 'tchTy7r' }
-const C = { lit: 'e2eU7Lit', sci: 'e2eU7Sci', art: 'e2eU7Art', phys: 'e2eU7Phys', g1: 'e2eU7G1', chem: 'e2eU7Chem', hidden: 'e2eU7Hidden' }
+const C = { lit: 'e2eU7Lit', sci: 'e2eU7Sci', art: 'e2eU7Art', phys: 'e2eU7Phys', g1: 'e2eU7G1', chem: 'e2eU7Chem', hidden: 'e2eU7Hidden', career: 'e2eU7Career' }
 const INTERNAL_IDS = [...Object.values(U), ...Object.values(C)]
 
 async function seed() {
@@ -68,6 +68,7 @@ async function seed() {
   await course(C.g1, '1학년 수학 보충', '수학', null, '오수학', { grades: [1] })
   await course(C.chem, '화학 실험', '화학', null, '정화학', { grades: [2, 3] })
   await course(C.hidden, '비공개 동아리', '동아리', null, '한비밀', { catalogVisible: false })
+  await course(C.career, '진로 탐색', '진로', null, '진로쌤', { grades: [3] }) // 요일·교시(차시)가 아직 없는 공개 수업
   const series = (id, courseId, weekday, period, roomName) =>
     db.doc(`schools/S1/series/${id}`).set({ courseId, termId: TERM.id, weekday, period, start: null, end: null, roomName, validFrom: TERM.start, validTo: null, status: 'active', createdBy: 'seed', createdAt: now })
   await series('u7SerLit', C.lit, D, 1, '3학년 4반 교실')
@@ -262,6 +263,45 @@ async function studentFlow(browser, errors) {
   check('U7.15', "승인 필요 수업 담기 → '선생님 승인 대기' · 수강 pending", sheet2.includes('승인이 필요한 수업 1개') && waitOk && ePhys?.status === 'pending', `${sheet2.slice(0, 120)} ${ePhys?.status}`)
   const minePhys = await articleText(mine, '물리 D', 15000)
   check('U7.16', "참여 중인 수업에 물리 D '승인 대기' + 신청 취소(빼기) 가능", !!minePhys && minePhys.includes('승인 대기') && (await visible(mine.getByRole('button', { name: '물리 D 빼기' }), 3000)), minePhys)
+
+  // ── 같은 화면에서: 방금 담은 수업을 빼면 카드도 '다시 담기'(방금 담은 결과가 남아 '승인 대기'로 굳지 않음) ──
+  await mine.getByRole('button', { name: '물리 D 빼기' }).click()
+  const sheetP = await confirmSheet(page, '빼기')
+  const ePhysEnded = await until(async () => {
+    const e = await enrollmentOf(C.phys)
+    return e && e.status === 'ended' ? e : null
+  })
+  const physAgain = await visible(pick.getByRole('button', { name: '물리 D 다시 담기' }), 15000)
+  const physCard2 = (await articleText(pick, '물리 D', 3000)) || ''
+  check('U7.16b', "방금 담은 승인 대기 수업을 신청 취소 → 수업 담기 카드가 '다시 담기'(승인 대기 표시 없음)",
+    sheetP.includes('신청을 취소할까요?') && !!ePhysEnded && physAgain && !physCard2.includes('승인 대기') && !physCard2.includes('선생님 승인을 기다려요'),
+    `${physCard2} | ${ePhysEnded?.status}`)
+  await pick.getByRole('button', { name: '물리 D 다시 담기' }).click()
+  await region(page, '담은 수업').getByRole('button', { name: /내 시간표에 담기 \(1\)/ }).click()
+  await confirmSheet(page, '담기')
+  const waitAgain = await visible(region(page, '담은 수업').getByText(/물리 D — 선생님 승인 대기/), 15000)
+  const ePhys3 = await until(async () => {
+    const e = await enrollmentOf(C.phys)
+    return e && e.status === 'pending' ? e : null
+  })
+  check('U7.16c', "다시 담기 → 다시 '선생님 승인 대기'(수강 pending)", waitAgain && !!ePhys3, ePhys3?.status)
+
+  // ── 요일·교시가 아직 없는 수업: 담으면 '참여 중' + '빼기'(칸에는 없지만 내 수업으로 보임) ──
+  await pick.getByLabel('과목명으로 찾기').fill('진로')
+  const careerCard = (await articleText(pick, '진로 탐색', 5000)) || ''
+  await pick.getByRole('button', { name: '진로 탐색 담기' }).click()
+  await region(page, '담은 수업').getByRole('button', { name: /내 시간표에 담기 \(1\)/ }).click()
+  await confirmSheet(page, '담기')
+  const careerAdded = await visible(region(page, '담은 수업').getByText(/진로 탐색 — 추가됨/), 15000)
+  const eCareer = await until(() => enrollmentOf(C.career))
+  // 내 시간표 자료가 다시 온 뒤에도(차시가 없어 칸 목록에는 없음) 카드가 '참여 중' + '빼기'
+  const careerLeave = await visible(pick.getByRole('button', { name: '진로 탐색 빼기' }), 15000)
+  await sleep(1500)
+  const careerCard2 = (await articleText(pick, '진로 탐색', 3000)) || ''
+  const careerLeave2 = await visible(pick.getByRole('button', { name: '진로 탐색 빼기' }), 3000)
+  check('U7.16d', "차시가 없는 수업('아직 등록된 시간표가 없어요') 담기 → 카드 '참여 중' + '빼기'(다시 받아도 '담기'로 돌아가지 않음)",
+    careerCard.includes('아직 등록된 시간표가 없어요') && careerAdded && eCareer?.status === 'active' && careerLeave && careerLeave2 && careerCard2.includes('참여 중') && !(await visible(pick.getByRole('button', { name: '진로 탐색 담기' }), 500)),
+    `${careerCard2} | ${eCareer?.status}`)
   await pick.getByLabel('과목명으로 찾기').fill('')
 
   // ── 홈 '오늘의 내 시간표'에 반영 ──

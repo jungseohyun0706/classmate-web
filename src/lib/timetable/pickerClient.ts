@@ -133,6 +133,8 @@ export function leaveErrorText(f: ApiFailure): string {
       return '학교에서 넣어 준 수업은 직접 뺄 수 없어요. 선생님께 문의해 주세요.'
     case 'enrollment-not-found':
       return '내가 담은 수업이 아니에요. 목록을 새로 고쳐 주세요.'
+    case 'left-today':
+      return '오늘은 이미 뺀 수업이에요. 내일 다시 시도해 주세요.'
     case 'network':
       return '인터넷 연결을 확인해 주세요. 빼지 못했어요.'
     case 'rate-limited':

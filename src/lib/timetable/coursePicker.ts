@@ -6,6 +6,7 @@
  *  - normalizeCatalog: 공개 목록 응답 정리(대상 학년 grades 포함)
  *  - filterByGrade: 내 학년 수업 + 학년 미상 수업(기본), '다른 학년 수업도 보기'면 전부
  *  - myLessonsFrom: 내 시간표 자료(/api/timetable/me)에서 이미 내 것인 수업의 요일·교시(참여·시작 예정·승인 대기·반 공통)
+ *  - myCourseStates: 수업별 내 상태·출처(차시 없는 수업·끝낸 수강 포함) — 카드 상태와 '빼기' 표시
  *  - buildPickerGrid: 요일 × 교시 칸(월~금, 토·일은 차시가 있을 때만, 교시는 있는 것 중 가장 큰 교시까지)
  *  - cartConflicts: 담은 수업끼리 같은 요일·교시 / 담은 수업과 이미 듣는 수업이 같은 요일·교시 — 경고일 뿐 막지 않음
  *  - mapRequestResults: requestMany 응답 → 수업마다 '추가됨 / 선생님 승인 대기 / 이미 있음 / 담지 못함(이유)'
@@ -216,6 +217,41 @@ export function myLessonsFrom(p: PayloadLike, uid: string, today: Ymd): MyLesson
 /** 이미 내 것(참여·시작 예정·승인 대기·반 공통)인 수업 id */
 export function myCourseIds(mine: MyLesson[]): Set<string> {
   return new Set(mine.map((m) => m.courseId))
+}
+
+/** 수업 하나에 대한 내 상태(내 시간표 자료 기준) */
+export interface MyCourseState {
+  /** active: 참여 중·시작 예정·반 공통 / pending: 승인 대기 / ended: 끝냄·뺌·거절(다시 담을 수 있음) */
+  status: PickStatus
+  /** 수강 출처(반 공통 수업은 'common') — '빼기'는 'request'만 */
+  source: EnrollmentSource | 'common'
+}
+
+/**
+ * 수업별 내 상태 — 수업 담기 카드의 상태·'빼기' 표시용. myLessonsFrom(요일·교시가 있는 수업만)과 달리
+ * 차시가 아직 없는 수업도 포함하고, 끝낸·뺀 수강도 'ended'로 남김(목록 응답의 myStatus보다 최신일 수 있는 내 시간표 자료 기준).
+ * 본인 수강: pending → pending, active(끝나는 날이 오늘 뒤이거나 없음 — 시작 예정 포함) → active, 그 밖 → ended.
+ * 반 공통 수업(지금 소속 학급에 명시, 운영 중)은 수강이 active·pending이 아니면 active(출처 common)
+ */
+export function myCourseStates(p: PayloadLike, uid: string, today: Ymd): Map<string, MyCourseState> {
+  const out = new Map<string, MyCourseState>()
+  const put = (courseId: string, st: MyCourseState) => {
+    const prev = out.get(courseId)
+    if (prev && prev.status !== 'ended') return
+    out.set(courseId, st)
+  }
+  p.enrollments
+    .filter((e) => e.uid === uid && !!e.courseId)
+    .forEach((e) => {
+      const status: PickStatus = e.status === 'pending' ? 'pending' : e.status === 'active' && (!e.to || e.to > today) ? 'active' : 'ended'
+      put(e.courseId, { status, source: e.source })
+    })
+  const hrs = p.homerooms.filter((h) => inRange(today, h.from, h.to)).map((h) => h.homeroomId)
+  p.courses.forEach((c) => {
+    if (!courseActiveOn(c, today) || !c.commonForHomerooms.some((h) => hrs.indexOf(h) >= 0)) return
+    put(c.courseId, { status: 'active', source: 'common' })
+  })
+  return out
 }
 
 // ───────────────────────── 시간표 칸 보기 ─────────────────────────

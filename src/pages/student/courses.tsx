@@ -31,6 +31,7 @@ import { courseActiveOn } from '../../lib/timetable/engine'
 import {
   cartConflicts,
   entryOverlapsSchool,
+  myCourseStates,
   myLessonsFrom,
   pickerTitle,
   pickSummaryText,
@@ -557,6 +558,8 @@ export default function StudentCoursesPage(): JSX.Element {
   const mine = useMemo(() => (payload && uid ? mineRows(payload, uid, today) : null), [payload, uid, today])
   // 수업 담기·직접 입력 안내용: 이미 내 시간표에 있는 수업의 요일·교시
   const myLessons = useMemo(() => (payload && uid ? myLessonsFrom(payload, uid, today) : null), [payload, uid, today])
+  // 수업 담기 카드의 내 상태·출처(차시 없는 수업·끝낸 수강 포함)
+  const myStates = useMemo(() => (payload && uid ? myCourseStates(payload, uid, today) : null), [payload, uid, today])
   const catalogCourses = useMemo(() => (catalog.state.status === 'ready' ? catalog.state.courses : null), [catalog.state])
   const studentGrade = studentGradeOf(profile?.grade)
   const activeIds = useMemo(() => (payload ? new Set(activeCoursesOn(payload, today, uid).map((c) => c.courseId)) : null), [payload, today, uid])
@@ -974,10 +977,11 @@ export default function StudentCoursesPage(): JSX.Element {
             refreshing={catalog.refreshing}
             onReloadCatalog={catalog.reload}
             mine={myLessons}
+            myStates={myStates}
             studentGrade={studentGrade}
             busy={!!leaving}
             onSubmit={pickCourses}
-            onLeave={(courseId, title) => leavePicked(courseId, title, myLessons?.find((m) => m.courseId === courseId)?.status === 'pending')}
+            onLeave={leavePicked}
           />
         )}
       </Section>

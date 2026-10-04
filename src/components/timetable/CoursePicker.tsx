@@ -8,6 +8,7 @@ import {
   pickerTitle,
   type CartConflict,
   type GridCell,
+  type MyCourseState,
   type MyLesson,
   type PickerCourse,
   type PickerSlot,
@@ -40,8 +41,13 @@ export interface CoursePickerProps {
   /** 이전 목록을 보이며 다시 받는 중 */
   refreshing?: boolean
   onReloadCatalog: () => void
-  /** 내 시간표 자료로 계산한 이미 있는 수업(아직 못 받았으면 null — 목록의 myStatus를 씀) */
+  /** 내 시간표 자료로 계산한 이미 있는 수업의 요일·교시(칸 표시·겹침 경고 — 아직 못 받았으면 null) */
   mine: MyLesson[] | null
+  /**
+   * 내 시간표 자료로 계산한 수업별 내 상태·출처(myCourseStates — 차시 없는 수업·끝낸 수강 포함).
+   * 아직 못 받았으면 null — 목록 응답의 myStatus를 씀
+   */
+  myStates: Map<string, MyCourseState> | null
   /** 학생 학년(users.grade) — 모르면 null(학년 거르기 없음) */
   studentGrade: number | null
   /**
@@ -49,8 +55,8 @@ export interface CoursePickerProps {
    * 수업마다 결과 / 요청 전체 실패면 { error } / 취소면 null
    */
   onSubmit: (picks: PickerCourse[], conflicts: CartConflict[]) => Promise<PickResult[] | { error: string } | null>
-  /** 내가 직접 담은 수업 빼기(부모: 확인 시트 → leave) */
-  onLeave: (courseId: string, title: string) => Promise<void>
+  /** 내가 직접 담은 수업 빼기(부모: 확인 시트 → leave). pending이면 '신청 취소' 문구 */
+  onLeave: (courseId: string, title: string, pending: boolean) => Promise<void>
   /** 다른 요청(빼기 등) 중 */
   busy?: boolean
 }
@@ -87,9 +93,9 @@ function Pill({ tone, children }: { tone: 'emerald' | 'amber' | 'sky' | 'gray' |
   return <span className={`inline-flex max-w-full items-center rounded-full px-2 py-0.5 text-[11px] ring-1 break-keep ${cls}`}>{children}</span>
 }
 
-function sourceNote(m: MyLesson): string {
-  if (m.source === 'common') return '반 공통 수업 · 바꾸려면 선생님께 문의'
-  if (m.source === 'request') return '내가 담은 수업'
+function sourceNote(source: MyCourseState['source']): string {
+  if (source === 'common') return '반 공통 수업 · 바꾸려면 선생님께 문의'
+  if (source === 'request') return '내가 담은 수업'
   return '학교에서 넣어 준 수업 · 빼려면 선생님께 문의'
 }
 
@@ -97,18 +103,20 @@ function sourceNote(m: MyLesson): string {
 function CourseCard({
   c,
   status,
-  mineOf,
+  source,
   inCart,
-  recent,
+  notice,
   disabled,
   onToggle,
   onLeave,
 }: {
   c: PickerCourse
   status: ShownStatus
-  mineOf: MyLesson | null
+  /** 지금 내 수업이면 출처(모르면 null) — '빼기'는 'request'만 */
+  source: MyCourseState['source'] | null
   inCart: boolean
-  recent: 'active' | 'pending' | null
+  /** 방금 담은 결과 — 지금 상태와 같을 때만 안내 */
+  notice: 'active' | 'pending' | null
   disabled: boolean
   onToggle: () => void
   onLeave: () => void
@@ -133,14 +141,12 @@ function CourseCard({
             {status === 'pending' && <Pill tone="amber">승인 대기</Pill>}
             {inCart && <Pill tone="sky">담음</Pill>}
           </div>
-          {recent && status === recent && (
-            <p role="status" className={`mt-2 rounded-lg px-3 py-2 text-xs font-semibold break-keep ${recent === 'active' ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-900'}`}>
-              {recent === 'active' ? '내 시간표에 추가됐어요' : '선생님 승인을 기다려요'}
+          {notice && status === notice && (
+            <p role="status" className={`mt-2 rounded-lg px-3 py-2 text-xs font-semibold break-keep ${notice === 'active' ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-900'}`}>
+              {notice === 'active' ? '내 시간표에 추가됐어요' : '선생님 승인을 기다려요'}
             </p>
           )}
-          {mineOf && status !== null && status !== 'ended' && mineOf.source !== 'request' && (
-            <p className="mt-1.5 text-xs text-gray-500 break-keep">{sourceNote(mineOf)}</p>
-          )}
+          {source && status !== null && status !== 'ended' && source !== 'request' && <p className="mt-1.5 text-xs text-gray-500 break-keep">{sourceNote(source)}</p>}
         </div>
         <div className="flex shrink-0 flex-col gap-1">
           {canPick && (
@@ -155,7 +161,7 @@ function CourseCard({
               {inCart ? '담기 취소' : status === 'ended' ? '다시 담기' : '담기'}
             </button>
           )}
-          {!canPick && mineOf && mineOf.source === 'request' && (
+          {!canPick && source === 'request' && (
             <button type="button" onClick={onLeave} disabled={disabled} aria-label={`${title} 빼기`} className={btnSmall}>
               빼기
             </button>
@@ -166,7 +172,7 @@ function CourseCard({
   )
 }
 
-export default function CoursePicker({ catalog, refreshing, onReloadCatalog, mine, studentGrade, onSubmit, onLeave, busy }: CoursePickerProps): JSX.Element {
+export default function CoursePicker({ catalog, refreshing, onReloadCatalog, mine, myStates, studentGrade, onSubmit, onLeave, busy }: CoursePickerProps): JSX.Element {
   const searchId = useId()
   const hintId = useId()
   const panelId = useId()
@@ -180,8 +186,13 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
   const [submitting, setSubmitting] = useState(false)
   const [results, setResults] = useState<Array<PickResult & { title: string }> | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  /** 방금 담은 결과(내 시간표 자료가 다시 오기 전까지 상태 표시) */
+  /**
+   * 방금 담은 결과 — 내 시간표 자료(myStates)가 그 수업을 다시 알려 줄 때까지만 상태로 씀(아래 effect가 지움).
+   * 그 뒤로는 내 시간표 자료가 기준이라, 이번에 담았다가 빼거나 선생님이 거절해도 상태가 남지 않음
+   */
   const [recent, setRecent] = useState<Record<string, 'active' | 'pending'>>({})
+  /** 방금 담은 결과 안내('내 시간표에 추가됐어요' 등) — 지금 상태와 같을 때만 보임(빼면 자연히 사라짐) */
+  const [notice, setNotice] = useState<Record<string, 'active' | 'pending'>>({})
   const panelRef = useRef<HTMLDivElement | null>(null)
 
   const all = useMemo(() => (catalog.status === 'ready' ? catalog.courses : []), [catalog])
@@ -189,13 +200,6 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
   const { shown, hidden } = useMemo(() => filterByGrade(all, studentGrade, showAllGrades), [all, studentGrade, showAllGrades])
   const mineList = useMemo(() => mine || [], [mine])
   const mineIds = useMemo(() => myCourseIds(mineList), [mineList])
-  const mineById = useMemo(() => {
-    const m = new Map<string, MyLesson>()
-    mineList.forEach((x) => {
-      if (!m.has(x.courseId)) m.set(x.courseId, x)
-    })
-    return m
-  }, [mineList])
   const grid = useMemo(() => buildPickerGrid(shown, mineList), [shown, mineList])
   const picks = useMemo(() => cart.map((id) => byId.get(id)).filter((c): c is PickerCourse => !!c), [cart, byId])
   const conflicts = useMemo(() => cartConflicts(picks, mineList), [picks, mineList])
@@ -212,13 +216,35 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
     })
   }, [catalog.status, byId])
 
-  /** 화면 상태: 내 시간표 자료(최신) → 방금 담은 결과 → 목록 응답의 myStatus */
+  // 내 시간표 자료가 새로 와서 그 수업을 알려 주면(어떤 상태든) 방금 담은 결과 대신 그 자료를 씀
+  useEffect(() => {
+    if (!myStates) return
+    setRecent((prev) => {
+      const ids = Object.keys(prev)
+      const keep = ids.filter((id) => !myStates.has(id))
+      if (keep.length === ids.length) return prev
+      const next: Record<string, 'active' | 'pending'> = {}
+      keep.forEach((id) => (next[id] = prev[id]))
+      return next
+    })
+  }, [myStates])
+
+  /**
+   * 화면 상태: 방금 담은 결과(내 시간표 자료가 아직 모를 때만) → 내 시간표 자료(차시 없는 수업·끝낸 수강 포함) →
+   * 목록 응답의 myStatus(내 시간표 자료를 아직 못 받았거나, 그 자료에 이 수업 기록이 없을 때 — 목록이 더 최신)
+   */
   const statusOf = (c: PickerCourse): ShownStatus => {
-    const m = mineById.get(c.courseId)
-    if (m) return m.status === 'pending' ? 'pending' : 'active'
-    if (recent[c.courseId]) return recent[c.courseId]
-    if (mine) return c.myStatus === 'ended' ? 'ended' : null
+    const r = recent[c.courseId]
+    if (r) return r
+    const s = myStates ? myStates.get(c.courseId) : undefined
+    if (s) return s.status
     return c.myStatus
+  }
+  /** '빼기'·출처 안내용 출처: 방금 담은 수업은 'request', 아니면 내 시간표 자료(지금 내 수업일 때만) */
+  const sourceOf = (c: PickerCourse): MyCourseState['source'] | null => {
+    if (recent[c.courseId]) return 'request'
+    const s = myStates ? myStates.get(c.courseId) : undefined
+    return s && s.status !== 'ended' ? s.source : null
   }
 
   const toggle = (c: PickerCourse): void => {
@@ -257,6 +283,7 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
       if (r.kind === 'pending') nextRecent[r.courseId] = 'pending'
     })
     setRecent((prev) => ({ ...prev, ...nextRecent }))
+    setNotice((prev) => ({ ...prev, ...nextRecent }))
     // 담긴(또는 이미 있던) 수업은 장바구니에서 빼고, 담지 못한 수업만 남김(다시 시도하거나 뺄 수 있게)
     const failed = new Set(out.filter((r) => r.kind === 'failed').map((r) => r.courseId))
     setCart((prev) => prev.filter((id) => failed.has(id)))
@@ -279,12 +306,12 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
     <CourseCard
       c={c}
       status={statusOf(c)}
-      mineOf={mineById.get(c.courseId) ?? null}
+      source={sourceOf(c)}
       inCart={cart.includes(c.courseId)}
-      recent={recent[c.courseId] ?? null}
+      notice={notice[c.courseId] ?? null}
       disabled={disabled}
       onToggle={() => toggle(c)}
-      onLeave={() => void onLeave(c.courseId, pickerTitle(c))}
+      onLeave={() => void onLeave(c.courseId, pickerTitle(c), statusOf(c) === 'pending')}
     />
   )
 
@@ -502,7 +529,7 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
                     <span className="font-semibold text-gray-900">내 수업 · {m.title}</span>
                     {m.status === 'pending' ? ' (승인 대기)' : ''}
                     {m.roomName ? ` · ${m.roomName}` : ''}
-                    <span className="block text-gray-500">{sourceNote(m)}</span>
+                    <span className="block text-gray-500">{sourceNote(m.source)}</span>
                   </p>
                 ))}
               {selCell.offered.length === 0 ? (
