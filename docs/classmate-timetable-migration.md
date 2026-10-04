@@ -60,6 +60,9 @@ vercel --prod
 # Application Default Credentials(ADC)를 씁니다. firebase login·gcloud auth login 만으로는 ADC가 생기지 않습니다.
 # (권장) 운영 Firestore 읽기·쓰기 권한(예: Cloud Datastore 사용자 역할)이 있는 계정으로:
 gcloud auth application-default login
+# 이어서 할당량 프로젝트 지정 — 없으면 Firestore가 최종 사용자 자격 증명을 'end user credentials ... not supported'
+# (PERMISSION_DENIED)로 거부할 수 있습니다(gcloud 기본 프로젝트가 없거나 다른 프로젝트일 때).
+gcloud auth application-default set-quota-project classmate-mvp-9f855
 # (또는) 서비스 계정 키 파일 — 반드시 저장소 밖에 두고(저장소 안이면 스크립트가 경고) 작업이 끝나면 지웁니다:
 #   export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/classmate/classmate-mvp-9f855-migration.json"
 
@@ -85,10 +88,11 @@ node "$REPO/scripts/migrate-timetable.mjs" --project classmate-mvp-9f855 --confi
 ```
 
 - **복구가 지우는 것**: 주어진 로그의 실행이 만들고 이후 아무도 고치지 않은 문서만 지웁니다. 수업(`lg_`)마다 먼저 남길지 정합니다. 이후 수정됐거나(`modified`, 다른 실행이 다시 만든 것은 `other-run`) 그 뒤 생긴 차시·변경·수강·명단·변경 묶음·초대가 가리키면 수업을 남기고 `skippedCourses`로 보고합니다. 이때 그 수업의 수강도 지우지 않습니다(`keptEnrollments`, 학생 uid는 보고하지 않음). 지우면 원래 그룹 학생의 시간표에서 그 수업이 사라지기 때문입니다. 남은 수업은 담당 교사가 정리합니다('수업 끝내기'). 지운 문서가 있는 학교는 `scheduleRevision` +1.
+- **수업은 주지 않은 로그에 있을 때**: 예를 들어 그룹에 학생이 늘어 5)~6)을 다시 실행한 실행만 되돌리면, 그 로그에는 새 수강만 있고 수업은 앞 실행 로그에 있습니다. 이때 수업은 지우지 않습니다. 같은 기준으로 남는 수업이면(이후 수정됐거나 차시·다른 수강 등이 가리킴) 그 수강도 남기고 `skippedCourses`에 `not-in-logs`로 보고합니다. 수업이 없거나 이 로그의 수강 말고 가리키는 것이 없을 때만 수강을 지웁니다.
 - **로그가 여러 개일 때**: 수업은 앞 실행 로그에, 그 수업의 수강 일부는 다음 실행 로그에 있을 수 있습니다. 로그를 하나만 주면 다른 로그가 만든 수강 때문에 수업이 남습니다. 그래서 위처럼 `migration-log-*.json`을 한 번에 줍니다. 하나만 주면 스크립트가 같은 폴더의 다른 로그를 `notIncludedLogs`와 경고로 알려 줍니다. 다른 프로젝트의 로그는 거부합니다.
 - **`--school <학교 코드>`**: dry-run·적용은 그 학교만, 복구는 로그 중 그 학교 문서만 처리합니다. 값이 비었거나(빈 셸 변수 등) 바로 다음 옵션이 오거나 모르는 인자가 있으면 실행하지 않습니다(전체 학교로 넓어지지 않음). 복구할 때 로그에 그 학교가 없으면 거부합니다.
 - **운영 쓰기 확인**: 적용과 복구 모두 `--confirm-production <같은 project id>`가 없으면 아무것도 쓰지 않고 끝납니다(종료 코드 2). 에뮬레이터는 `FIRESTORE_EMULATOR_HOST`만 있으면 되고 자격 증명이 필요 없습니다.
-- **자격 증명 오류**: `Could not load the default credentials`, `PERMISSION_DENIED`가 나면 스크립트가 위 설정 방법을 다시 알려 줍니다. 자격 증명이 없으면 첫 읽기에서 멈추므로 아무것도 쓰지 않습니다. `GOOGLE_APPLICATION_CREDENTIALS`가 없는 파일을 가리키면 시작 전에 거부합니다.
+- **자격 증명 오류**: `Could not load the default credentials`, `PERMISSION_DENIED`(할당량 프로젝트가 없을 때의 `end user credentials ... not supported` 포함)가 나면 스크립트가 위 설정 방법을 다시 알려 줍니다. 자격 증명이 없으면 첫 읽기에서 멈추므로 아무것도 쓰지 않습니다. `GOOGLE_APPLICATION_CREDENTIALS`가 없는 파일을 가리키면 시작 전에 거부합니다.
 - **교사가 목록에서 뺀 그룹**: 예전 '목록에서 빼기'는 교사 `users.teachingClassIds`에서만 지우고 그룹 문서와 학생 `extraClassIds`는 남겼습니다. 담당 교사 목록에 없는 그룹과 교사 계정이 없는 그룹은 수업·수강을 만들지 않고 `issues`(`group-not-in-teacher-list`, `removed-from-list`·`teacher-missing`)로 보고만 합니다. 교사가 수업 반 목록에 다시 넣으면 다음 실행 때 전환됩니다.
 - **지난 학기 그룹**: 예전 그룹에는 학기 정보가 없어 지난 학기 그룹을 따로 가려낼 수 없습니다. 교사 목록에 남은 그룹은 오늘이 속한 학기의 수업(`needsReview`)으로 만들어지므로 7)에서 담당 교사가 확인합니다. 지난 학년도 학생이 그룹에 남아 있으면 교사가 명단에서 정리합니다.
 - 학기: `schools/{s}/terms`에서 오늘을 포함하는 문서, 없으면 기본 규칙(1학기 3/1~8/16, 2학기 8/16~다음 해 3/1).
@@ -134,4 +138,4 @@ node "$REPO/scripts/migrate-timetable.mjs" --project classmate-mvp-9f855 --confi
 
 로컬 에뮬레이터 fixture에서 dry-run → 적용 → 중단 후 재실행 → 복구를 실행합니다(`tests/e2e/migration.test.mjs`). 결과는 `docs/classmate-timetable-qa.md`.
 
-인자 검사(`--school` 빈 값, 운영 복구의 `--confirm-production`, 자격 증명 파일), 목록에서 뺀 그룹 제외, 남기는 수업의 수강 보존, 여러 로그 한 번에 복구는 에뮬레이터 없이 `npm run test:unit`(`tests/unit/prod-b-migrate-script.test.ts`, 가짜 firebase-admin)으로도 확인합니다.
+인자 검사(`--school` 빈 값, 운영 복구의 `--confirm-production`, 자격 증명 파일·할당량 프로젝트 안내), 목록에서 뺀 그룹 제외, 남기는 수업의 수강 보존(수업이 주지 않은 로그에 있을 때 포함), 여러 로그 한 번에 복구는 에뮬레이터 없이 `npm run test:unit`(`tests/unit/prod-b-migrate-script.test.ts`, 가짜 firebase-admin)으로도 확인합니다.

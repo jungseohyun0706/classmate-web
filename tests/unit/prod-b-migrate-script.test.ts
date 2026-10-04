@@ -1,8 +1,9 @@
 // 데이터 전환 스크립트(scripts/migrate-timetable.mjs) 회귀 테스트 — 에뮬레이터·네트워크 없이
 //  [10] 복구가 남기는 수업(has-dependents·modified)의 수강까지 지워 원래 그룹 학생 시간표에서 수업이 사라짐 → 수강도 남기고 keptEnrollments로 보고
+//       수업이 주지 않은 로그(앞선 실행)에 있어도 같은 기준으로 남는 수업이면 수강을 남김(not-in-logs)
 //  [11] 교사가 수업 반 목록에서 뺀 그룹·교사 계정이 없는 그룹이 이번 학기 운영 중 수업·수강으로 만들어짐 → 만들지 않고 issues로 보고
 //  [13] --school 값이 비면 조용히 전체 학교로 넓어지고, 복구는 --school 을 무시 → 거부·학교 범위만 복구
-//  [14] 운영 복구도 --confirm-production 필요, 자격 증명 안내
+//  [14] 운영 복구도 --confirm-production 필요, 자격 증명 안내(할당량 프로젝트 포함)
 //  [15] 실패 뒤 다시 실행하면 문서가 여러 실행 로그에 나뉨 → 여러 로그를 한 번에 복구, 빠진 로그 안내, 로그는 커밋 전에 기록
 // 스크립트를 임시 폴더에 복사하고 firebase-admin 자리에 메모리(JSON 파일) 가짜를 둬 실제 프로세스로 실행합니다.
 // 가짜 initializeApp은 표시 파일을 남겨, 인자 거부가 Firestore 초기화 전에 일어나는지도 확인합니다.
@@ -77,7 +78,11 @@ class Query {
       .slice(0, this.lim)
       .map(([p, d]) => new DocSnap(new DocRef(p), d))
   }
-  async get() { const docs = this._match(); return { docs, empty: !docs.length, size: docs.length, forEach: (fn) => docs.forEach(fn) } }
+  async get() {
+    if (process.env.FAKE_FAIL_READ) throw new Error(process.env.FAKE_FAIL_READ)
+    const docs = this._match()
+    return { docs, empty: !docs.length, size: docs.length, forEach: (fn) => docs.forEach(fn) }
+  }
   count() { return { get: async () => ({ data: () => ({ count: this._match().length }) }) } }
 }
 const db = {
@@ -199,7 +204,7 @@ describe('[13][14] 인자 검사 — Firestore 초기화 전에 거부', () => {
     [
       'GOOGLE_APPLICATION_CREDENTIALS가 없는 파일을 가리킴 → ADC 설정 안내',
       ['--project', 'classmate-prod-x'],
-      /GOOGLE_APPLICATION_CREDENTIALS 파일이 없습니다[\s\S]*FIREBASE_SERVICE_ACCOUNT_JSON[\s\S]*application-default login/,
+      /GOOGLE_APPLICATION_CREDENTIALS 파일이 없습니다[\s\S]*FIREBASE_SERVICE_ACCOUNT_JSON[\s\S]*application-default login[\s\S]*set-quota-project classmate-prod-x/,
       { emulator: false, env: { GOOGLE_APPLICATION_CREDENTIALS: '/nonexistent/prod-b-key.json' } },
     ],
     ['--homeroom-common 은 계속 거부', ['--project', P, '--apply', '--homeroom-common', 'S1_3_4'], /--homeroom-common/],
@@ -214,6 +219,19 @@ describe('[13][14] 인자 검사 — Firestore 초기화 전에 거부', () => {
       assert.equal(Object.keys(s.db()).filter((p) => p.startsWith('schools/')).length, 0)
     })
   }
+
+  test('할당량 프로젝트 없는 최종 사용자 자격 증명 오류(코드 없이 메시지만)에도 설정 안내 — set-quota-project 포함', () => {
+    const s = scenario({ ...teacher('eng', ['S1_3_5_g_eng001']), ...group('S1_3_5_g_eng001', 'eng') })
+    const r = s.run(['--project', 'classmate-prod-x'], {
+      emulator: false,
+      env: {
+        FAKE_FAIL_READ:
+          'Your application has authenticated using end user credentials from the Google Cloud SDK or Google Cloud Shell which are not supported by the firestore.googleapis.com. We recommend configuring the billing/quota_project setting in gcloud',
+      },
+    })
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.stderr, /migration failed:[\s\S]*application-default login[\s\S]*set-quota-project classmate-prod-x/)
+  })
 
   test('다른 프로젝트의 실행 로그, 로그에 없는 --school 은 거부', () => {
     const s = scenario({ ...teacher('eng', ['S1_3_5_g_eng001']), ...group('S1_3_5_g_eng001', 'eng'), ...student('stuA', ['S1_3_5_g_eng001']) })
@@ -325,6 +343,97 @@ describe('[10] 복구는 남기는 수업의 수강을 지우지 않음', () => 
     assert.ok(db['schools/S1/enrollments/lg_S1_3_5_g_eng001__stuA'])
     assert.ok(db['schools/S1/enrollments/lg_S1_3_5_g_eng001__stuB'])
     assert.equal(rb.json.deleted, 0)
+  })
+
+  test('수업은 앞선 실행(주지 않은 로그)이 만들고 수강만 이 로그에 있음 — 남는 수업(차시)의 수강은 남기고, 두 로그를 함께 줘도 아무것도 지우지 않음', () => {
+    const gid = 'S1_3_5_g_eng001'
+    const course = `schools/S1/courses/lg_${gid}`
+    const s = scenario({ ...teacher('eng', [gid]), ...group(gid, 'eng'), ...student('stuA', [gid]) })
+    const a = s.run(['--project', P, '--apply'])
+    assert.equal(a.status, 0, a.stderr)
+    const logA = path.basename(a.json.logFile)
+    // 그룹에 학생이 늘어 다시 적용(7)) — 이 실행은 stuB 수강만 만듦
+    s.patch('users/stuB', { role: 'student', status: 'approved', name: 'stuB', classId: 'S1_3_4', extraClassIds: [gid], ...S1 })
+    const b = s.run(['--project', P, '--apply'])
+    assert.equal(b.status, 0, b.stderr)
+    const logB = path.basename(b.json.logFile)
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(s.dir, logB), 'utf8')).created.map((w: any) => w.path),
+      [`schools/S1/enrollments/lg_${gid}__stuB`]
+    )
+    // 전환 뒤 담당 교사가 차시 등록(수업 문서는 그대로)
+    s.patch('schools/S1/series/ser1', { courseId: `lg_${gid}`, weekday: 1, period: 2, status: 'active' })
+    const revBefore = Number((s.db()['schools/S1'] || {}).scheduleRevision || 0)
+
+    const onlyB = s.run(['--project', P, '--rollback', logB])
+    assert.equal(onlyB.status, 0, onlyB.stderr)
+    let db = s.db()
+    assert.ok(db[`schools/S1/enrollments/lg_${gid}__stuB`], '남는 수업의 수강은 이 로그만 되돌려도 남김(stuB 시간표에서 차시가 사라지지 않게)')
+    assert.ok(db[course])
+    assert.ok(db[`schools/S1/enrollments/lg_${gid}__stuA`])
+    assert.ok(db['schools/S1/series/ser1'])
+    assert.equal(onlyB.json.deleted, 0)
+    assert.equal(onlyB.json.keptEnrollments, 1)
+    const kept = onlyB.json.skippedCourses.find((c: any) => c.path === course)
+    assert.equal(kept.reason, 'not-in-logs')
+    assert.deepEqual(kept.dependents, ['series', 'enrollments'])
+    assert.equal(kept.keptEnrollments, 1)
+    assert.deepEqual(onlyB.json.revisionBumped, [])
+    assert.equal(Number((db['schools/S1'] || {}).scheduleRevision || 0), revBefore)
+    assert.doesNotMatch(JSON.stringify(onlyB.json), /stu[A-Z]/)
+
+    const both = s.run(['--project', P, '--rollback', logB, logA])
+    assert.equal(both.status, 0, both.stderr)
+    db = s.db()
+    assert.equal(both.json.deleted, 0, '차시가 있는 동안에는 둘 다 줘도 지우지 않음')
+    assert.equal(both.json.keptEnrollments, 2)
+    const keptBoth = both.json.skippedCourses.find((c: any) => c.path === course)
+    assert.equal(keptBoth.reason, 'has-dependents')
+    assert.deepEqual(keptBoth.dependents, ['series'])
+    assert.ok(db[course] && db[`schools/S1/enrollments/lg_${gid}__stuA`] && db[`schools/S1/enrollments/lg_${gid}__stuB`])
+  })
+
+  test('수업이 주지 않은 로그에 있을 때 — 수정된 수업이면 수강을 남기고, 아무것도 가리키지 않거나 수업이 없으면 수강만 지우며 수업은 지우지 않음', () => {
+    const gid = 'S1_3_5_g_eng001'
+    const course = `schools/S1/courses/lg_${gid}`
+    const enrB = `schools/S1/enrollments/lg_${gid}__stuB`
+    // 학생 없는 그룹 → 첫 실행은 수업만, 학생이 들어온 뒤 다시 적용한 실행은 수강만
+    const s = scenario({ ...teacher('eng', [gid]), ...group(gid, 'eng') })
+    assert.equal(s.run(['--project', P, '--apply']).status, 0)
+    s.patch('users/stuB', { role: 'student', status: 'approved', name: 'stuB', classId: 'S1_3_4', extraClassIds: [gid], ...S1 })
+    const b = s.run(['--project', P, '--apply'])
+    assert.equal(b.status, 0, b.stderr)
+    const logB = path.basename(b.json.logFile)
+
+    // 교사가 수업을 고침(updatedAt) → 수업·수강 모두 남김
+    s.patch(course, { updatedAt: '2026-10-04T00:00:00Z', title: '영어(수정)' })
+    const modified = s.run(['--project', P, '--rollback', logB])
+    assert.equal(modified.status, 0, modified.stderr)
+    assert.ok(s.db()[enrB])
+    assert.deepEqual(modified.json.skippedCourses, [{ path: course, reason: 'not-in-logs', modified: true, keptEnrollments: 1 }])
+    assert.equal(modified.json.deleted, 0)
+
+    // 수정 전으로 돌리면 수업을 가리키는 것이 이 로그의 수강뿐 → 수강만 지우고 수업은 로그 밖이라 그대로(이 실행 전 상태)
+    const cur = s.db()
+    delete cur[course].updatedAt
+    fs.writeFileSync(path.join(s.dir, 'fake-db.json'), JSON.stringify(cur))
+    const plain = s.run(['--project', P, '--rollback', logB])
+    assert.equal(plain.status, 0, plain.stderr)
+    assert.equal(s.db()[enrB], undefined)
+    assert.ok(s.db()[course], '주지 않은 로그의 수업은 지우지 않음')
+    assert.equal(plain.json.deleted, 1)
+    assert.equal(plain.json.keptEnrollments, 0)
+    assert.deepEqual(plain.json.skippedCourses, [])
+    assert.deepEqual(plain.json.revisionBumped, ['S1'])
+
+    // 수업이 이미 없으면 그 수강은 없는 수업을 가리키므로 지움
+    const c = s.run(['--project', P, '--apply'])
+    assert.equal(c.status, 0, c.stderr)
+    s.patch(course, null)
+    const gone = s.run(['--project', P, '--rollback', path.basename(c.json.logFile)])
+    assert.equal(gone.status, 0, gone.stderr)
+    assert.equal(s.db()[enrB], undefined)
+    assert.equal(gone.json.deleted, 1)
   })
 })
 

@@ -184,4 +184,30 @@ check('T41.22', '같은 로그를 --school 없이 다시 복구하면 남은 S1 
   !(await MUS.get()).exists && !(await db.doc('schools/S1/enrollments/lg_S1_3_11_g_mus001__stuP').get()).exists && (rb4.revisionBumped || []).join(',') === 'S1',
   JSON.stringify({ deleted: rb4.deleted, skipped: rb4.skipped }))
 
+// 8) 수업은 앞선 실행이, 수강 일부는 나중 실행이 만든 경우(그룹에 학생이 늘어 다시 적용) — 나중 실행만 되돌려도
+//    남는 수업(차시)의 수강은 지우지 않음[10]. 두 로그를 함께 줘도 차시가 있는 동안에는 지우지 않음
+await createUsers([{ uid: 'stuQ', email: 'q@m.kr', doc: { role: 'student', status: 'approved', name: '학생Q', classId: 'S1_3_4', grade: 3, classNm: 4, extraClassIds: ['S1_3_12_g_his001'], ...school } }])
+await db.doc('classes/S1_3_12_g_his001').set({ classId: 'S1_3_12_g_his001', isGroup: true, grade: 3, classNm: 12, teacherId: 'eng', teacherName: '이영어', ...school })
+await db.doc('users/eng').update({ teachingClassIds: FieldValue.arrayUnion('S1_3_12_g_his001') })
+const HIS = db.doc('schools/S1/courses/lg_S1_3_12_g_his001')
+const HQ = db.doc('schools/S1/enrollments/lg_S1_3_12_g_his001__stuQ')
+const HT = db.doc('schools/S1/enrollments/lg_S1_3_12_g_his001__stuT')
+const rep5 = lastJson(run('--apply'))
+await createUsers([{ uid: 'stuT', email: 't@m.kr', doc: { role: 'student', status: 'approved', name: '학생T', classId: 'S1_3_4', grade: 3, classNm: 4, extraClassIds: ['S1_3_12_g_his001'], ...school } }])
+const rep6 = lastJson(run('--apply'))
+const log6 = JSON.parse(fs.readFileSync(rep6.logFile, 'utf8'))
+await db.doc('schools/S1/series/ser_his1').set({ courseId: 'lg_S1_3_12_g_his001', termId: '2026-2', weekday: 4, period: 1, status: 'active', createdAt: Timestamp.now() })
+const rb5 = lastJson(run('--rollback', rep6.logFile))
+const hisSkip5 = (rb5.skippedCourses || []).find((c) => c.path === HIS.path)
+check('T41.23', '복구: 수강만 이 로그에 있고 수업은 앞선 실행이 만들었어도, 남는 수업(차시)의 수강은 지우지 않고 not-in-logs로 보고',
+  log6.created.map((w) => w.path).join(',') === HT.path && (await HIS.get()).exists && (await HQ.get()).exists && (await HT.get()).exists &&
+    rb5.deleted === 0 && rb5.keptEnrollments === 1 && hisSkip5?.reason === 'not-in-logs' && hisSkip5.dependents.includes('series') && hisSkip5.keptEnrollments === 1 &&
+    !/stu[A-Z]/.test(JSON.stringify(rb5)),
+  JSON.stringify({ created: log6.created.length, deleted: rb5.deleted, keptEnrollments: rb5.keptEnrollments, hisSkip5 }))
+const rb6 = lastJson(run('--rollback', rep6.logFile, rep5.logFile))
+const hisSkip6 = (rb6.skippedCourses || []).find((c) => c.path === HIS.path)
+check('T41.24', '두 로그를 함께 복구해도 차시가 있는 수업과 그 수강(두 실행 것 모두)은 남김',
+  (await HIS.get()).exists && (await HQ.get()).exists && (await HT.get()).exists && hisSkip6?.reason === 'has-dependents' && hisSkip6.keptEnrollments === 2,
+  JSON.stringify({ deleted: rb6.deleted, keptEnrollments: rb6.keptEnrollments, hisSkip6 }))
+
 process.exit(finish() ? 1 : 0)

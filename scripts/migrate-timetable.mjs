@@ -6,6 +6,7 @@
 //
 // 자격 증명(운영): 앱의 .env(FIREBASE_SERVICE_ACCOUNT_JSON*)를 읽지 않고 Application Default Credentials를 씁니다.
 //   gcloud auth application-default login                      # 프로젝트 권한이 있는 계정(권장)
+//   gcloud auth application-default set-quota-project <id>     # 이어서 — 없으면 Firestore가 최종 사용자 자격 증명을 거부할 수 있음
 //   export GOOGLE_APPLICATION_CREDENTIALS=<저장소 밖의 키 파일>   # 또는 서비스 계정 키
 //
 // 사용 예 (로컬 에뮬레이터):
@@ -29,6 +30,8 @@
 // 복구(--rollback 로그 [로그 ...]): 주어진 실행들이 만든 문서 중 이후 수정되지 않은 것만 지웁니다.
 //  수업마다 먼저 남길지 정합니다 — 이후 수정됐거나(modified·other-run) 그 뒤 생긴 차시·변경·수강·명단 연결·초대가 가리키면
 //  남기고 skippedCourses로 보고하며, 남기는 수업의 수강도 지우지 않습니다(keptEnrollments). 그다음 수강, 마지막에 수업을 지웁니다.
+//  수강만 주어진 로그에 있고 수업은 주지 않은 실행이 만든 경우(그룹에 학생이 늘어 다시 적용한 실행만 되돌릴 때 등) 수업은 지우지 않고,
+//  같은 기준으로 남는 수업이면 그 수강도 남깁니다(not-in-logs).
 //  실패 뒤 다시 실행하면 실행마다 runId·로그가 따로 생기므로 되돌릴 때는 그 로그를 모두 한 번에 줍니다(migration-log-*.json).
 //  --school 을 주면 로그 중 그 학교 문서만 되돌립니다(로그에 그 학교가 없으면 거부).
 //  지운 문서가 있는 학교는 scheduleRevision +1(열려 있는 학생 화면이 다시 받음).
@@ -90,13 +93,14 @@ const credHelp = () =>
     '이 스크립트는 앱의 .env(FIREBASE_SERVICE_ACCOUNT_JSON, FIREBASE_SERVICE_ACCOUNT_JSON_PATH)를 읽지 않고 Application Default Credentials를 씁니다.',
     '다음 중 하나를 한 뒤 다시 실행하세요(docs/classmate-timetable-migration.md 2절). firebase login·gcloud auth login 만으로는 생기지 않습니다.',
     '  gcloud auth application-default login                                   # 프로젝트 권한이 있는 계정으로',
+    `  gcloud auth application-default set-quota-project ${project}            # 이어서(할당량 프로젝트 — 'end user credentials ... not supported' 오류 방지)`,
     '  export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/classmate/<키 파일>.json"  # 저장소 밖에 둔 서비스 계정 키',
     `계정에는 ${project}의 Firestore 읽기·쓰기 권한(예: Cloud Datastore 사용자 역할)이 있어야 합니다.`,
   ].join('\n')
 const isCredentialError = (e) =>
   e?.code === 16 ||
   e?.code === 7 ||
-  /default credentials|invalid_grant|invalid_rapt|refresh access token|UNAUTHENTICATED|PERMISSION_DENIED|insufficient permissions/i.test(String(e?.message || e))
+  /default credentials|invalid_grant|invalid_rapt|refresh access token|UNAUTHENTICATED|PERMISSION_DENIED|insufficient permissions|quota.?project|end user credentials/i.test(String(e?.message || e))
 
 if (!emulator && process.env.GOOGLE_APPLICATION_CREDENTIALS) {
   const keyFile = path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS)
@@ -236,20 +240,21 @@ async function rollback(logs) {
     got.forEach((s, j) => snaps.set(chunk[j], s))
   }
   // 이 실행들이 만들고 이후 아무도 고치지 않은 문서인지(서버 API는 고칠 때 updatedAt·revision을 남김)
+  const isModified = (s) => s.get('updatedAt') != null || Number(s.get('revision') || 0) > 0
   const stateOf = (p, s) => {
     if (!runIdsByPath.get(p).has(s.get('migrationRunId'))) return 'other-run'
-    if (s.get('updatedAt') != null || Number(s.get('revision') || 0) > 0) return 'modified'
+    if (isModified(s)) return 'modified'
     return 'own'
   }
   let deleted = 0
   let skipped = 0
   let keptEnrollments = 0
-  const skippedCourses = [] // {path, reason, dependents?, keptEnrollments?} — 수업 경로만(수강 경로에는 학생 uid가 들어 있어 보고하지 않음)
+  const skippedCourses = [] // {path, reason, dependents?, modified?, keptEnrollments?} — 수업 경로만(수강 경로에는 학생 uid가 들어 있어 보고하지 않음)
   const changedSchools = new Set()
 
   // 1) 지울 수 있는 수강(수업이 아닌 문서)을 수업별로 모음 — 수업의 '다른 참조'로 세지 않기 위해
   const ownDocs = []
-  const ownByCourse = new Map() // '{school}/{courseId}' → Set(path)
+  const ownByCourse = new Map() // 수업 경로 → Set(수강 경로)
   for (const p of paths) {
     const s = snaps.get(p)
     if (COURSE_PATH_RE.test(p) || !s.exists) continue
@@ -257,35 +262,58 @@ async function rollback(logs) {
       skipped++
       continue
     }
-    const key = `${schoolOf(p)}/${String(s.get('courseId') || '')}`
-    ownDocs.push({ p, key })
-    if (!ownByCourse.has(key)) ownByCourse.set(key, new Set())
-    ownByCourse.get(key).add(p)
+    const coursePath = `schools/${schoolOf(p)}/courses/${String(s.get('courseId') || '')}`
+    ownDocs.push({ p, coursePath })
+    if (!ownByCourse.has(coursePath)) ownByCourse.set(coursePath, new Set())
+    ownByCourse.get(coursePath).add(p)
   }
   // 2) 수업마다 먼저 남길지 정함 — 남기는 수업이면 그 수업의 수강도 남김(지우면 원래 그룹 학생 시간표에서 수업이 사라짐)
-  const keptCourses = new Map() // key → skippedCourses 항목
+  const keptCourses = new Map() // 수업 경로 → skippedCourses 항목
   const courseDeletes = []
   for (const p of paths) {
     const m = COURSE_PATH_RE.exec(p)
     const s = snaps.get(p)
     if (!m || !s.exists) continue
-    const key = `${m[1]}/${m[2]}`
     const state = stateOf(p, s)
     let entry = null
     if (state !== 'own') entry = { path: p, reason: state }
     else {
-      const dependents = await courseDependents(m[1], m[2], ownByCourse.get(key))
+      const dependents = await courseDependents(m[1], m[2], ownByCourse.get(p))
       if (dependents.length) entry = { path: p, reason: 'has-dependents', dependents }
     }
     if (entry) {
       skipped++
       skippedCourses.push(entry)
-      keptCourses.set(key, entry)
+      keptCourses.set(p, entry)
     } else courseDeletes.push(p)
   }
+  // 2-1) 수강은 주어진 로그에 있는데 수업은 주지 않은 실행이 만든 경우(그룹에 학생이 늘어 다시 적용한 실행만 되돌릴 때 등).
+  //  수업은 로그 밖이라 지우지 않고, 같은 기준(이후 수정됐거나 차시·다른 수강 등이 가리킴)으로 남는 수업이면 그 수강도 남김.
+  //  수업이 없거나 아무것도 가리키지 않으면 수강만 지움(그 실행 전 상태). 로그 밖 문서라 skipped에는 세지 않음.
+  const outside = Array.from(ownByCourse.keys()).filter((cp) => COURSE_PATH_RE.test(cp) && !runIdsByPath.has(cp))
+  for (let i = 0; i < outside.length; i += 300) {
+    const chunk = outside.slice(i, i + 300)
+    const got = await db.getAll(...chunk.map((p) => db.doc(p)))
+    for (let j = 0; j < got.length; j++) {
+      const cp = chunk[j]
+      const s = got[j]
+      if (!s.exists) continue
+      const [, schoolCode, courseId] = COURSE_PATH_RE.exec(cp)
+      let entry = null
+      if (isModified(s)) entry = { path: cp, reason: 'not-in-logs', modified: true }
+      else {
+        const dependents = await courseDependents(schoolCode, courseId, ownByCourse.get(cp))
+        if (dependents.length) entry = { path: cp, reason: 'not-in-logs', dependents }
+      }
+      if (entry) {
+        skippedCourses.push(entry)
+        keptCourses.set(cp, entry)
+      }
+    }
+  }
   // 3) 수강 먼저, 4) 수업은 나중에(중간에 멈춰도 없는 수업을 가리키는 수강이 남지 않게)
-  for (const { p, key } of ownDocs) {
-    const kept = keptCourses.get(key)
+  for (const { p, coursePath } of ownDocs) {
+    const kept = keptCourses.get(coursePath)
     if (kept) {
       skipped++
       keptEnrollments++
