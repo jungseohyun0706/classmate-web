@@ -216,8 +216,11 @@ export async function boundCalendarLookup(lookup: Promise<OffDaysResult>, dates:
   }
 }
 
-/** NEIS 학사일정 → 날짜별 쉬는 날. 실패하면 모든 날짜를 calendarErrors로(쉬는 날 아님으로 단정하지 않음) */
-async function loadOffDays(
+/**
+ * NEIS 학사일정 → 날짜별 쉬는 날. 실패하면 모든 날짜를 calendarErrors로(쉬는 날 아님으로 단정하지 않음).
+ * 교사 '내 시간표'(teacherData.ts)도 같은 규칙으로 씀(학년 = 담임 학년, 없으면 학년별 쉬는 날도 쉬는 날)
+ */
+export async function loadOffDays(
   schoolCode: string,
   officeCodeHint: string,
   dates: Ymd[],

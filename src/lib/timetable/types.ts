@@ -220,6 +220,11 @@ export interface LessonView {
   end: string | null
   roomName: string | null
   teacherNames: string[]
+  /**
+   * 변경 후 최종 담당 교사 uid(공식 수업만 — 개인 일정은 없음). 교사 '내 수업' 판정(teacherDay.ts)이 uid로만 비교하는 근거.
+   * 학생 자료(/api/timetable/me)에 이미 있는 courses·series·overrides의 값이라 새 정보가 아님
+   */
+  teacherUids?: string[]
   source: LessonSource
   /** 공식 수업과 연결되어 학교 변경이 자동 반영되는지 */
   synced: boolean

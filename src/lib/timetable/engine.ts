@@ -364,6 +364,7 @@ export function buildDayTimetable(input: StudentTimetableInput): DayTimetable {
       end: state.end ?? null,
       roomName: state.roomName ?? null,
       teacherNames: state.teacherNames ?? [],
+      teacherUids: state.teacherUids ?? [],
       source,
       synced: true,
       change,
