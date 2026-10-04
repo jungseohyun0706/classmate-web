@@ -34,6 +34,7 @@ node tests/e2e/u4-teacher-courses.e2e.mjs     # 교사 수업 관리·초대
 node tests/e2e/u5-schedule-changes.e2e.mjs    # 교사 시간표 변경
 node tests/e2e/u6-teacher-home.e2e.mjs        # 교사 메인 '오늘의 내 수업'
 node tests/e2e/u7-course-picker.e2e.mjs       # 학생 수업 담기(가짜 xlsx 환경은 webpack 빌드 + XLSX_FULL_JS)
+node tests/e2e/u8-teacher-week.e2e.mjs        # 교사 내 시간표 주간 보기
 node tests/e2e/regression.e2e.mjs             # 기존 기능 회귀(F1–F13)
 ```
 
@@ -75,6 +76,7 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 | R18 | 급식·공지·이야기방·학생 관리·푸시 토큰 등 기존 기능 | `tests/e2e/regression.e2e.mjs`(F1–F13, 158 체크) |
 | R19 | 교사 메인 = 교사 본인 시간표(공식 수업 uid 기준 + 직접 등록 주간 시간표 + 품앗이·보결 표시), 반 시간표는 링크만 | 단위 teacher-home-*, sa5, u6 |
 | R20 | 학생 '수업 담기' — 학교 공식 수업을 시간표 칸·과목으로 골라 담기(이름 입력·이름 연결 없음), 반별 수업은 그 반 학생에게만, 겹침 경고, 내가 담은 수업만 빼기(다시 승인 우회 차단), 가져오기 공개·대상 학년·대상 반, 직접 입력은 학교 밖 일정으로 안내 | 단위 course-picker-*, sa6, u7, u2 |
+| R21 | 교사 내 시간표 주간 보기(`/teacher/timetable`, 주간·하루 탭) — 요일×교시 표, 변경·대신·취소·옮김 빨간 표시, 교시 밖 줄, 쉬는 날 열, 직접 등록 주간 시간표·혼합 주, 주 이동, 실시간 갱신. 홈 카드 '주간 시간표 →'·대시보드 '내 시간표 (주간)' | 단위 teacher-week-*, u8 |
 
 ## 5. 인수 시나리오(T) → 테스트
 
@@ -142,8 +144,8 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 |---|---|---|
 | 타입 검사 | `npx tsc --noEmit -p .` | 오류 0 |
 | 프로덕션 빌드 | `next build`(로컬 E2E 설정) | 성공 |
-| 커밋본 빌드 | 커밋본을 따로 꺼내(로컬 전용 연결 코드 없음) `tsc` · `npm run test:unit` · `next build --webpack`(가짜 공개 설정) | 오류 0 · 517/517 · 성공, 번들에 에뮬레이터 주소·서버 비밀값 없음 |
-| 단위 | `npm run test:unit` | **517/517** |
+| 커밋본 빌드 | 커밋본을 따로 꺼내(로컬 전용 연결 코드 없음) `tsc` · `npm run test:unit` · `next build --webpack`(가짜 공개 설정) | 오류 0 · 554/554 · 성공, 번들에 에뮬레이터 주소·서버 비밀값 없음 |
+| 단위 | `npm run test:unit` | **554/554** |
 | 보안 규칙 | `node --test tests/rules/` | **27/27** |
 | 수업·수강·개인 시간표 API | `tests/api/sa1-student-courses.test.mjs` | **82/82** |
 | 변경 발행 API | `tests/api/sa2-schedule-changes.test.mjs` | **99/99** |
@@ -161,6 +163,7 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 | 교사 수업 관리·초대 | `tests/e2e/u4-teacher-courses.e2e.mjs` | **55/55** |
 | 교사 시간표 변경 | `tests/e2e/u5-schedule-changes.e2e.mjs` | **29/29** |
 | 교사 메인 '오늘의 내 수업' | `tests/e2e/u6-teacher-home.e2e.mjs` | **30/30** |
+| 교사 내 시간표 주간 보기 | `tests/e2e/u8-teacher-week.e2e.mjs` | **48/48** |
 | 학생 수업 담기(골라 담기) | `tests/e2e/u7-course-picker.e2e.mjs` | **48/48** (`next build --webpack` — 이 환경의 가짜 xlsx를 실제 SheetJS로 바꿔 끼우는 테스트 장치가 webpack 조각 형식만 알아봄. 다른 묶음은 기본 Turbopack 빌드) |
 | 기존 기능 회귀(F1–F13) | `tests/e2e/regression.e2e.mjs` (이야기방·공지 읽음·명단·푸시 요청 검증·규칙·주요 화면 스모크) | **158/158** |
 | 앱 번들 비밀값 검사(T46) | `.next/static`에서 서비스 계정 키·private_key·CRON_SECRET·firebase-admin·서버 전용 함수 이름 검색 | 0건 |
