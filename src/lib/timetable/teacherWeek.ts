@@ -7,12 +7,13 @@
  *   둘 다 없으면 빈 상태. 한 주 안에서 날짜마다 방식이 달라도(학기 중 다음 주부터 공식 수업) 그 날 규칙 그대로(혼합 주)
  * - buildTeacherWeek: 요일 열 × 교시 행 칸으로 펼침
  *   · 월~금은 늘, 토·일은 그 날 수업·교환·보결·안내가 있을 때만 열
- *   · 교시 행: 1 ~ (있는 교시 중 가장 큰 것), 최소 6 — 직접 등록 주간 시간표 열이 있으면 최소 7(예전 시간표가 7교시 고정)
+ *   · 교시 행: 1 ~ (있는 교시 중 가장 큰 것), 최소 6 — 직접 등록 주간 시간표 열(월~금)이 있으면 최소 7(예전 시간표가 7교시 고정)
  *   · 교시가 없거나(명시 시각만) 1보다 작은 교시는 '교시 밖' 줄로 — 조용히 빠뜨리지 않음
  *   · 한 칸에 여러 수업이면 모두(하루 목록 순서 그대로) + 그 칸에서 다른 날로 옮겨 간 내 수업('옮김 · → 목 5교시'),
  *     쉬는 날이라 열리지 않는 수업(회색)
  *   · 학교 전체 쉬는 날·학기 밖이고 보일 것이 없는 날은 열 전체가 상태(쉬는 날 이름 / 학기 밖)
  *   · 일부 학년만 쉬는 날은 열 머리 짧은 표시('3학년 쉼') + 표 아래 안내 줄 + 그 학년 수업은 회색 '쉬는 날'
+ *   · 시간표는 있는데 열린 날에 보일 수업이 없으면 noLessons('이 주에는 내 수업이 없어요')
  * - 주 계산·이동·한국어 라벨(이번 주·지난주·다음 주, '10월 5일 ~ 10월 9일')
  */
 import { addDays, toUtcDate, weekdayOf } from './dates'
@@ -25,6 +26,7 @@ import {
   gradesLabel,
   LEGACY_PERIOD_COUNT,
   parseScheduleCell,
+  weekdayKeyOf,
   type TeacherDayMode,
   type TeacherDayView,
   type TeacherNotice,
@@ -181,11 +183,20 @@ export interface TeacherWeekColumn {
 }
 
 /**
- * 주 방식: 열린 열(쉬는 날·학기 밖 아님)의 방식으로 정함(모두 닫혔으면 모든 열)
+ * 열이 실제로 직접 등록 주간 시간표를 보이는지(주 방식·'직접 등록' 표시·최소 7교시 판단용).
+ * 그 날 방식이 legacy여도 토·일은 주간 시간표 칸이 없어(월~금만) 교환·보결만 보임 — 공식 주에 끼어도 혼합 주가 아님
+ */
+export function isLegacyColumn(c: Pick<TeacherWeekColumn, 'source' | 'date'>): boolean {
+  return c.source === 'legacy' && weekdayKeyOf(c.date) !== null
+}
+
+/**
+ * 주 방식: 열린 열(쉬는 날·학기 밖 아님)의 방식으로 정함. 직접 등록은 주간 시간표 칸이 있는 월~금 열만 셈(isLegacyColumn)
  * - official: 모두 공식(빈 날 섞임 포함 — 공식 수업이 다음 주부터인 날 등)
  * - legacy: 모두 직접 등록 주간 시간표 → '내가 등록한 주간 시간표예요 — 수업 변경은 반영되지 않아요'
  * - mixed: 공식 날과 직접 등록 날이 섞임 → 열마다 '직접 등록' 표시 + 안내
  * - empty: 공식 수업도 직접 등록 주간 시간표도 없음
+ * 모든 열이 닫힌 주(방학·학기 밖)는 공식 수업이 있으면 official, 아니면 empty — 쉬는 날뿐인 표 위에 직접 등록 안내를 띄우지 않음
  */
 export type TeacherWeekMode = 'official' | 'legacy' | 'mixed' | 'empty'
 
@@ -207,6 +218,8 @@ export interface TeacherWeekModel {
   state: 'grid' | 'empty'
   /** 보일 열의 칸·교시 밖 수업 수 */
   itemCount: number
+  /** 시간표는 있는데(공식·직접 등록) 열린 날에 보일 수업이 하나도 없음(시험 주·다음 주부터 시작 등) → '이 주에는 내 수업이 없어요' */
+  noLessons: boolean
   /** 변경 묶음 일부를 받지 못한 날이 있음 */
   incomplete: boolean
   /** 쉬는 날 여부를 확인하지 못한 날 */
@@ -235,12 +248,16 @@ function rowBadgeSets(row: TeacherRow): { short: TeacherWeekBadge[]; full: strin
     short.push({ label: names.length ? `→${names[0]}${names.length > 1 ? ' 외' : ''}` : '다른 선생님', tone: 'red' })
     full.push(names.length ? `${names.join(', ')} 선생님이 맡아요` : '다른 선생님이 맡아요')
   }
-  // 엔진 변경 배지(보강·시간·날짜·교실·교사 변경) — 대신 들어감·넘김은 위 배지가 이미 말함
-  if (l.change && row.role !== 'substitute' && row.role !== 'changed-away') {
+  // 엔진 변경 배지(보강·시간·날짜·교실·교사 변경) — 하루 보기 LessonCard와 같은 내용을 이름에 모두.
+  // 대신 들어감·넘김은 칸 배지가 이미 '대신'·'→이름'이라 짧은 배지는 더하지 않고, 이름에서도 '교사 변경'만 뺌(위 문구와 같은 말)
+  if (l.change) {
     const labels = changeBadgeLabels(l.change)
-    if (labels.includes('보강')) short.push({ label: '보강', tone: 'red' })
-    if (labels.some((x) => x !== '보강')) short.push({ label: '변경', tone: 'red' })
-    full.push(...labels)
+    const handover = row.role === 'substitute' || row.role === 'changed-away'
+    if (!handover) {
+      if (labels.includes('보강')) short.push({ label: '보강', tone: 'red' })
+      if (labels.some((x) => x !== '보강')) short.push({ label: '변경', tone: 'red' })
+    }
+    full.push(...(handover ? labels.filter((x) => x !== '교사 변경') : labels))
   }
   if (row.kind === 'covering' && row.cover) {
     // 칸 과목이 없으면 제목이 '보결 수업'·'품앗이 수업'이라 종류 배지는 과목이 있을 때만
@@ -423,18 +440,23 @@ export function buildTeacherWeek(p: TeacherTimetablePayload, anyDateInWeek: Ymd)
     byDate.set(date, closed ? [] : items)
   }
 
-  // 주 방식 — 열린 열 기준(모두 닫혔으면 모든 열)
+  // 주 방식 — 열린 열 기준. 직접 등록은 주간 시간표 칸이 있는 월~금 열만(토·일 legacy 열은 교환·보결뿐)
   const open = columns.filter((c) => !c.closed)
-  const basis = open.length ? open : columns
-  const hasOfficial = basis.some((c) => c.source === 'official')
-  const hasLegacy = basis.some((c) => c.source === 'legacy')
-  const mode: TeacherWeekMode = hasOfficial && hasLegacy ? 'mixed' : hasOfficial ? 'official' : hasLegacy ? 'legacy' : 'empty'
-  if (mode === 'mixed') for (const c of columns) c.legacyTag = !c.closed && c.source === 'legacy'
+  let mode: TeacherWeekMode
+  if (open.length) {
+    const hasOfficial = open.some((c) => c.source === 'official')
+    const hasLegacy = open.some(isLegacyColumn)
+    mode = hasOfficial && hasLegacy ? 'mixed' : hasOfficial ? 'official' : hasLegacy ? 'legacy' : 'empty'
+  } else {
+    // 모두 쉬는 날·학기 밖: 방식 안내 없이 열 상태만(직접 등록 안내를 쉬는 날 표 위에 띄우지 않음)
+    mode = columns.some((c) => c.source === 'official') ? 'official' : 'empty'
+  }
+  if (mode === 'mixed') for (const c of columns) c.legacyTag = !c.closed && isLegacyColumn(c)
 
   // 칸·교시 밖
   const cells: Record<string, TeacherWeekItem[]> = {}
   const outside: Record<Ymd, TeacherWeekItem[]> = {}
-  let maxPeriod = open.some((c) => c.source === 'legacy') ? LEGACY_PERIOD_COUNT : MIN_WEEK_PERIODS
+  let maxPeriod = open.some(isLegacyColumn) ? LEGACY_PERIOD_COUNT : MIN_WEEK_PERIODS
   let itemCount = 0
   for (const c of columns) {
     for (const it of byDate.get(c.date) ?? []) {
@@ -451,6 +473,7 @@ export function buildTeacherWeek(p: TeacherTimetablePayload, anyDateInWeek: Ymd)
   const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1)
 
   const state: TeacherWeekModel['state'] = mode === 'empty' && itemCount === 0 && columns.some((c) => c.view.state === 'not-registered') ? 'empty' : 'grid'
+  const noLessons = state === 'grid' && mode !== 'empty' && itemCount === 0 && open.length > 0
 
   return {
     start,
@@ -463,6 +486,7 @@ export function buildTeacherWeek(p: TeacherTimetablePayload, anyDateInWeek: Ymd)
     mode,
     state,
     itemCount,
+    noLessons,
     incomplete: columns.some((c) => c.view.incomplete),
     calendarFailed: columns.filter((c) => c.view.calendarFailed).map((c) => c.date),
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import DayNav from '../../components/timetable/DayNav'
@@ -12,7 +12,7 @@ import { addDays, formatYmdKo, isYmd, schoolYmdAt } from '../../lib/timetable/da
 import { errorText, useTeacherProfile } from '../../lib/timetable/teacherClient'
 import { buildTeacherDay } from '../../lib/timetable/teacherDay'
 import { useTeacherTimetable } from '../../lib/timetable/teacherHomeClient'
-import { buildTeacherWeek, weekModelRangeLabel, weekRangeLabel, weekStartOf, WEEK_WINDOW_POLICY } from '../../lib/timetable/teacherWeek'
+import { buildTeacherWeek, shiftWeek, weekModelRangeLabel, weekRangeLabel, weekStartOf, WEEK_WINDOW_POLICY } from '../../lib/timetable/teacherWeek'
 import type { Ymd } from '../../lib/timetable/types'
 
 /**
@@ -22,11 +22,18 @@ import type { Ymd } from '../../lib/timetable/types'
  * - 주간: 그 주(월~일) 요일 × 교시 표(TeacherWeekGrid, 순수 모델 buildTeacherWeek). 하루: 홈 카드와 같은 하루 화면(TeacherDayPanel)
  * - 자료: 홈 카드와 같은 GET /api/timetable/teacher를 그 주 7일로(WEEK_WINDOW_POLICY) — 시간표 버전 구독·화면 복귀 때 다시 받기도 같음.
  *   두 탭이 같은 자료라 탭을 바꿔도 다시 받지 않음. 주를 빨리 넘겨도 마지막 주 응답만 씀(이전 요청 응답은 버림)
+ * - 주소 바꾸기는 비동기라, 반영 전에 또 누르면(다음 주 두 번·다음 주 뒤 바로 '하루') 아직 반영 안 된 목적지에서 이어 계산(pendingRef)
  * - 학생 계정은 학생 홈으로, 교사가 아니면 대시보드로(useTeacherProfile — 다른 교사 화면과 같음)
  * - '오늘'은 화면에 붙은 뒤 정함(서버 렌더와 맞춤 — 하이드레이션 안전)
  */
 
 type View = 'week' | 'day'
+interface QueryTarget {
+  view: View
+  date: Ymd
+}
+const viewOfQuery = (q: { view?: string | string[] }): View => (q.view === 'day' ? 'day' : 'week')
+const dateOfQuery = (q: { date?: string | string[] }): Ymd | null => (typeof q.date === 'string' && isYmd(q.date) ? q.date : null)
 const TABS: Array<{ key: View; label: string }> = [
   { key: 'week', label: '주간' },
   { key: 'day', label: '하루' },
@@ -52,8 +59,8 @@ export default function TeacherTimetablePage(): JSX.Element {
     }
   }, [])
 
-  const view: View = router.query.view === 'day' ? 'day' : 'week'
-  const queryDate = typeof router.query.date === 'string' && isYmd(router.query.date) ? router.query.date : null
+  const view: View = viewOfQuery(router.query)
+  const queryDate = dateOfQuery(router.query)
   const date: Ymd | null = router.isReady && today ? (queryDate ?? today) : null
 
   const tt = useTeacherTimetable(profile?.uid ?? null, date, profile?.schoolCode ?? null, WEEK_WINDOW_POLICY)
@@ -64,27 +71,42 @@ export default function TeacherTimetablePage(): JSX.Element {
   const dayView = useMemo(() => (payload && covered && date ? buildTeacherDay(payload, date) : null), [payload, covered, date])
 
   // 주소(?view&date)로 상태를 둠 — 뒤로 가기·새로 고침·공유 링크가 같은 화면
+  // routerRef는 레이아웃 효과로 갱신: Next는 화면 반영(커밋) 뒤에 replace를 끝내므로, 끝난 뒤의 클릭은 늘 새 주소를 읽음
   const routerRef = useRef(router)
-  useEffect(() => {
+  useLayoutEffect(() => {
     routerRef.current = router
   }, [router])
+  // 아직 주소에 반영되지 않은 마지막 목적지 — 그동안의 클릭은 여기서 이어 계산(다음 주 두 번 = 2주 뒤, 다음 주 → '하루' = 그 주의 하루)
+  const pendingRef = useRef<QueryTarget | null>(null)
   const setQuery = useCallback(
     (next: { view?: View; date?: Ymd }) => {
       const r = routerRef.current
-      const cur = typeof r.query.date === 'string' && isYmd(r.query.date) ? r.query.date : null
-      const v = next.view ?? (r.query.view === 'day' ? 'day' : 'week')
-      const d = next.date ?? cur ?? today
-      void r.replace({ pathname: '/teacher/timetable', query: d ? { view: v, date: d } : { view: v } }, undefined, { shallow: true, scroll: false })
+      const base: QueryTarget | null = pendingRef.current ?? (today ? { view: viewOfQuery(r.query), date: dateOfQuery(r.query) ?? today } : null)
+      if (!base) return
+      const target: QueryTarget = { view: next.view ?? base.view, date: next.date ?? base.date }
+      pendingRef.current = target
+      const settle = (): void => {
+        if (pendingRef.current === target) pendingRef.current = null
+      }
+      r.replace({ pathname: '/teacher/timetable', query: { view: target.view, date: target.date } }, undefined, { shallow: true, scroll: false }).then(settle, settle)
     },
     [today]
   )
   const openDay = useCallback((d: Ymd) => setQuery({ view: 'day', date: d }), [setQuery])
+  const shiftBy = useCallback(
+    (n: number) => {
+      const base = pendingRef.current?.date ?? date
+      if (base) setQuery({ date: shiftWeek(base, n) })
+    },
+    [date, setQuery]
+  )
 
   const tabRefs = useRef<Record<View, HTMLButtonElement | null>>({ week: null, day: null })
   const onTabKey = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return
     e.preventDefault()
-    const next: View = e.key === 'Home' ? 'week' : e.key === 'End' ? 'day' : view === 'week' ? 'day' : 'week'
+    const cur = pendingRef.current?.view ?? view
+    const next: View = e.key === 'Home' ? 'week' : e.key === 'End' ? 'day' : cur === 'week' ? 'day' : 'week'
     setQuery({ view: next })
     tabRefs.current[next]?.focus()
   }
@@ -138,6 +160,12 @@ export default function TeacherTimetablePage(): JSX.Element {
           <TimetableStateCard kind="teacher-empty" compact />
         ) : (
           <TeacherWeekGrid key={week.start} model={week} periodTimes={payload.periodTimes} today={today} nowMinutes={nowMinutes} onOpenDay={openDay} />
+        )}
+        {/* 시간표는 있는데 이 주 열린 날에 수업이 없음(시험 주·다음 주부터 시작 등) — 빈 칸만 있는 표로 두지 않음(하루 보기 '이 날은 수업이 없어요'와 같은 뜻) */}
+        {week.noLessons && (
+          <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 ring-1 ring-gray-200 break-keep" role="note">
+            이 주에는 내 수업이 없어요
+          </p>
         )}
         {/* 등록된 시간표는 없지만 교환·보결 등 일정이 있는 주: 등록 안내를 함께 */}
         {week.state === 'grid' && week.mode === 'empty' && week.itemCount > 0 && <TimetableStateCard kind="teacher-empty" compact />}
@@ -212,7 +240,7 @@ export default function TeacherTimetablePage(): JSX.Element {
         <section id="tt-panel" role="tabpanel" aria-labelledby={`tt-tab-${view}`} className="space-y-4 rounded-xl border border-gray-100 bg-white p-3 shadow-lg sm:p-5">
           {view === 'week' ? (
             <>
-              <WeekNav date={date} today={today} rangeLabel={rangeLabel} onChange={(d) => setQuery({ date: d })} />
+              <WeekNav date={date} today={today} rangeLabel={rangeLabel} onChange={(d) => setQuery({ date: d })} onShift={shiftBy} />
               {weekBody}
             </>
           ) : (

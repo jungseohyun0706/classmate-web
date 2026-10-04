@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type JSX } from 'react'
+import Link from 'next/link'
 import { classRefNowPeriod } from '../../lib/timetable/classRefPolicy'
 import { formatYmdKo } from '../../lib/timetable/dates'
 import { lessonTimeRange } from '../../lib/timetable/lessonText'
@@ -21,6 +22,8 @@ import { TeacherRowCard, teacherNoticeText } from './TeacherDayBody'
  * - 변경 표시는 하루 보기·학생 화면과 같은 기준: 빨간 테두리·배지(변경·대신·보강·→○○·보결/품앗이·옮겨 감), 취소는 취소선,
  *   직접 등록 칸은 회색 점선, 쉬는 날이라 열리지 않는 수업은 회색
  * - 칸을 누르면 상세 시트(하루 보기와 같은 수업 카드 — 공식 수업은 수업 상세 링크) + '이 날 전체 보기'
+ *   · 시트는 연 칸(날짜·교시)만 기억하고 내용은 늘 지금 모델에서 읽음 — 열어 둔 사이 변경이 와도(시간표 버전 구독·화면 복귀) 새 내용,
+ *     그 칸이 비거나 열이 닫히면 시트도 닫힘. Tab은 시트 안에서만 돎(aria-modal)
  * - 오늘 열 강조, 이번 주를 볼 때 지금 교시 표시
  * - 화면은 주마다 key(model.start)로 새로 그려 다른 주로 넘어가면 열린 시트가 닫힘
  */
@@ -71,30 +74,78 @@ function ItemChip({ item, periodTimes }: { item: TeacherWeekItem; periodTimes: P
   )
 }
 
+/** 시트가 연 칸 — 내용(수업)은 담지 않고 그릴 때마다 지금 모델에서 찾음 */
 interface SheetTarget {
-  col: TeacherWeekColumn
+  date: Ymd
+  /** null = 교시 밖 줄 */
   period: number | null
-  items: TeacherWeekItem[]
 }
 
-/** 칸 상세 시트(모달) — Esc·바깥 누르기·닫기로 닫고, 연 칸으로 초점을 돌려줌 */
+/** 칸의 지금 수업(열이 없거나 닫혔으면 null) */
+function resolveSheet(model: TeacherWeekModel, t: SheetTarget): { col: TeacherWeekColumn; items: TeacherWeekItem[] } | null {
+  const col = model.columns.find((c) => c.date === t.date)
+  if (!col || col.closed) return null
+  const items = t.period == null ? (model.outside[t.date] ?? []) : (model.cells[weekCellKey(t.date, t.period)] ?? [])
+  return items.length ? { col, items } : null
+}
+
+const FOCUSABLE = 'a[href],button:not([disabled]),summary,input:not([disabled]),[tabindex]:not([tabindex="-1"])'
+
+/** 수업 상세 링크(옮겨 감·쉬는 날 안내 줄 — 공식 수업 행은 LessonCard 제목이 링크) */
+function CourseLink({ href }: { href: string | null }): JSX.Element | null {
+  if (!href) return null
+  return (
+    <>
+      {' '}
+      <Link href={href} className="inline-flex min-h-11 items-center font-semibold text-blue-700 underline underline-offset-2 hover:text-blue-800">
+        수업 상세
+      </Link>
+    </>
+  )
+}
+
+/** 칸 상세 시트(모달) — Esc·바깥 누르기·닫기로 닫고, 연 칸으로 초점을 돌려줌. Tab·Shift+Tab은 시트 안에서만 */
 function CellSheet({
-  target,
+  col,
+  period,
+  items,
   periodTimes,
   onClose,
   onOpenDay,
 }: {
-  target: SheetTarget
+  col: TeacherWeekColumn
+  period: number | null
+  items: TeacherWeekItem[]
   periodTimes: PeriodTime[]
   onClose: () => void
   onOpenDay: (date: Ymd) => void
 }): JSX.Element {
   const titleId = useId()
   const closeRef = useRef<HTMLButtonElement | null>(null)
+  const dialogRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (e.key !== 'Tab') return
+      const box = dialogRef.current
+      if (!box) return
+      const els = Array.from(box.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.getClientRects().length > 0)
+      if (!els.length) return
+      const first = els[0]
+      const last = els[els.length - 1]
+      const active = document.activeElement
+      const inside = !!active && box.contains(active)
+      if (e.shiftKey && (!inside || active === first)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (!inside || active === last)) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     document.addEventListener('keydown', onKey)
     const prevOverflow = document.body.style.overflow
@@ -104,11 +155,11 @@ function CellSheet({
       document.body.style.overflow = prevOverflow
     }
   }, [onClose])
-  const { col, period, items } = target
   const when = period == null ? '교시 밖' : `${period}교시`
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -143,10 +194,12 @@ function CellSheet({
               <InfoLine key={it.key} tone="red" icon="move">
                 <span className="font-semibold">{teacherNoticeText(it.notice)}</span>
                 {it.notice.reason ? <span className="text-red-700/80"> · {it.notice.reason}</span> : null}
+                <CourseLink href={it.href} />
               </InfoLine>
             ) : (
               <InfoLine key={it.key} tone="gray" icon="info">
                 쉬는 날이라 열리지 않아요: {it.notice ? teacherNoticeText(it.notice) : `${it.title}${it.classLabel ? `(${it.classLabel})` : ''} ${it.period ?? ''}교시`}
+                <CourseLink href={it.href} />
               </InfoLine>
             )
           )}
@@ -180,6 +233,10 @@ export default function TeacherWeekGrid({ model, periodTimes, today, nowMinutes,
     const el = openerRef.current
     if (el && el.isConnected) el.focus()
   }, [])
+  // 시트 내용은 지금 모델에서 — 새로 받은 자료로 칸이 비거나 열이 닫히면 시트를 닫음(연 칸 버튼도 사라져 초점을 돌려줄 곳이 없음).
+  // 그리는 중에 바로 비움(React 권장 '이전 렌더 정보로 상태 맞추기') — 나중에 그 칸이 다시 생겨도 시트가 저절로 열리지 않게
+  const live = sheet ? resolveSheet(model, sheet) : null
+  if (sheet && !live) setSheet(null)
   const todayCol = model.columns.find((c) => c.date === today && !c.closed) ?? null
   const nowPeriod = todayCol
     ? classRefNowPeriod({ date: today, today, offDay: false, nowMinutes, periods: model.periods, periodTimes })
@@ -206,7 +263,7 @@ export default function TeacherWeekGrid({ model, periodTimes, today, nowMinutes,
       <td key={col.date} className="p-0 align-top">
         <button
           type="button"
-          onClick={(e) => open(e, { col, period, items })}
+          onClick={(e) => open(e, { date: col.date, period })}
           aria-haspopup="dialog"
           aria-label={weekCellLabel(col, period, items)}
           data-cell={period == null ? `${col.date}|out` : weekCellKey(col.date, period)}
@@ -246,6 +303,7 @@ export default function TeacherWeekGrid({ model, periodTimes, today, nowMinutes,
                     <button
                       type="button"
                       onClick={() => onOpenDay(c.date)}
+                      aria-label={`${c.dayLabel} ${c.dateLabel}${isToday ? ' 오늘' : ''} 하루 보기`}
                       title={`${formatYmdKo(c.date)} 하루 보기`}
                       className={`flex min-h-11 w-full flex-col items-center justify-center rounded-md px-0.5 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                         isToday ? 'text-emerald-700 hover:bg-emerald-100' : 'text-gray-700 hover:bg-gray-50'
@@ -328,7 +386,9 @@ export default function TeacherWeekGrid({ model, periodTimes, today, nowMinutes,
             ))}
         </ul>
       )}
-      {sheet && <CellSheet target={sheet} periodTimes={periodTimes} onClose={closeSheet} onOpenDay={onOpenDay} />}
+      {sheet && live && (
+        <CellSheet col={live.col} period={sheet.period} items={live.items} periodTimes={periodTimes} onClose={closeSheet} onOpenDay={onOpenDay} />
+      )}
     </>
   )
 }

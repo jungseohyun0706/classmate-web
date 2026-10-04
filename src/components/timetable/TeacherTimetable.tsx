@@ -63,12 +63,23 @@ export default function TeacherTimetable({ uid, schoolCode, homeroom }: TeacherT
   return (
     <section aria-labelledby="teacher-today-title" className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-gray-100 px-4 py-3 sm:px-5">
-        {/* 제목 자체도 주간 시간표로(요구: '내 시간표'를 누르면 주간 시간표도) */}
+        {/* 제목 자체도 주간 시간표로(요구: '내 시간표'를 누르면 주간 시간표도). 제목 글자는 그대로(카드 이름 aria-labelledby) —
+            어디로 가는지는 설명(aria-describedby)과 꺾쇠(터치 화면에서도 누를 수 있어 보이게)로 */}
         <h2 id="teacher-today-title" className="text-lg font-bold text-gray-900 break-keep">
-          <Link href={weekHref} className="inline-flex min-h-11 items-center rounded underline-offset-4 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400">
+          <Link
+            href={weekHref}
+            aria-describedby="teacher-week-hint"
+            className="inline-flex min-h-11 items-center gap-0.5 rounded underline-offset-4 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          >
             {isToday || !date ? '오늘의 내 수업' : '내 수업'}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0 text-gray-400" aria-hidden="true">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
           </Link>
         </h2>
+        <span id="teacher-week-hint" hidden>
+          주간 시간표 보기
+        </span>
         <div className="flex flex-wrap items-center gap-x-3">
           <Link href={weekHref} className={linkCls}>
             주간 시간표

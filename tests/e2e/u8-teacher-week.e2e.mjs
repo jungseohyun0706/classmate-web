@@ -4,6 +4,8 @@
 //           변경 발행 → 새로 고침 없이 빨간 표시(교실 변경·대신 들어가는 수업), 보결 겹침, 칸 누르기 → 상세 시트(수업 상세 링크)·'이 날 전체 보기',
 //           다음 주·지난주·날짜 선택·이번 주(주소 갱신), 토요일 수업이 있는 주만 토 열, 다른 날로 옮긴 수업(새 칸 + 원래 칸 '옮겨 감'),
 //           주간/하루 탭, 공식 수업 없는 교사의 직접 등록 주간 시간표(라벨·7교시), 빈 상태, 학생은 학생 홈으로,
+//           주소 반영 전 연달아 누름(다음 주 두 번·다음 주 + 하루), 시트 안 Tab 순환·열어 둔 시트에 변경 반영,
+//           토·일 7열 주(일요일 보결)는 표 상자 안에서만 옆으로 밀리고 교시 열 고정, 다른 주를 받지 못함(500·오프라인) → 오류 카드(빈 표 없음) → 다시 시도,
 //           390px 화면 가로 스크롤 없음(표가 넓으면 표 상자 안에서만), 콘솔 오류·페이지 오류 0, 스크린숏
 // 실행 전제: 실제 서버(BASE) + Firebase 에뮬레이터(Firestore 8080, Auth 9099) + NEIS mock + NEXT_PUBLIC_USE_EMULATORS=1 빌드 (u6과 같음)
 // 사용: BASE=http://127.0.0.1:3200 node tests/e2e/u8-teacher-week.e2e.mjs
@@ -19,6 +21,7 @@ const FRI = '20261009'
 const NEXT_WED = '20261014'
 const NEXT_THU = '20261015'
 const NEXT_SAT = '20261017'
+const NEXT_SUN = '20261018'
 const S1 = { schoolCode: 'S1', schoolName: '테스트고등학교', officeCode: 'B10' }
 const LEGACY = {
   mon: ['', '', '', '', '', '', ''],
@@ -73,6 +76,11 @@ async function seed() {
   // 보결 SOS: 박주간 화1 → 이영어가 맡음
   await db.collection('school_sos').doc('S1').collection('requests').doc('sos1').set({
     date: TUE, period: 1, reason: '병원 진료', requesterId: 'tleg', requesterName: '박주간', requesterClass: '2학년 1반', schoolCode: 'S1',
+    status: 'assigned', assignedTo: 'ty', assignedName: '이영어', createdAt: now,
+  })
+  // 다음 주 일요일 보결(김과학 일3 → 이영어) — 그 주는 토(수업)·일(보결) 열이 모두 있어 7열
+  await db.collection('school_sos').doc('S1').collection('requests').doc('sos2').set({
+    date: NEXT_SUN, period: 3, reason: '주말 행사', requesterId: 'tx', requesterName: '김과학', requesterClass: '1학년 2반', schoolCode: 'S1',
     status: 'assigned', assignedTo: 'ty', assignedName: '이영어', createdAt: now,
   })
 }
@@ -212,10 +220,32 @@ try {
     check('U8.sheet', "칸 → 상세 시트('10월 6일 (화) 3교시', 교실 변경 전후, 수업 상세 링크)",
       dlgOk && dlgText.includes('10월 6일 (화) 3교시') && dlgText.includes('3학년 5반 교실 → 시청각실') && dlgHref === '/teacher/courses/engB', `${dlgText.slice(0, 160)} / ${dlgHref}`)
     await shot(page, '3-sheet')
+    // 시트 안 Tab 순환: 처음 초점은 닫기 → Shift+Tab은 마지막('이 날 전체 보기'), Tab은 다시 닫기(뒤 화면으로 나가지 않음)
+    await page.keyboard.press('Shift+Tab')
+    const trapLast = await page.evaluate(() => ({ t: document.activeElement?.textContent?.trim() || '', inside: !!document.activeElement?.closest('[role="dialog"]') }))
+    await page.keyboard.press('Tab')
+    const trapFirst = await page.evaluate(() => ({ t: document.activeElement?.getAttribute('aria-label') || '', inside: !!document.activeElement?.closest('[role="dialog"]') }))
+    check('U8.sheet-trap', "시트 안 Tab 순환(Shift+Tab → '이 날 전체 보기', Tab → '닫기')", trapLast.inside && trapLast.t === '이 날 전체 보기' && trapFirst.inside && trapFirst.t === '닫기', JSON.stringify([trapLast, trapFirst]))
     await page.keyboard.press('Escape')
     const closed = await dialog.waitFor({ state: 'hidden', timeout: 5000 }).then(() => true, () => false)
     const focusBack = await page.evaluate(() => document.activeElement?.getAttribute('data-cell') || '')
     check('U8.sheet-close', 'Esc로 닫힘 + 연 칸으로 초점', closed && focusBack === `${TUE}|3`, focusBack)
+    // 시트를 열어 둔 채 변경 발행 → 시트 내용도 새로(닫고 다시 열지 않아도)
+    await cellBtn(page, WED, 2).click()
+    await dialog.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+    const wedBefore = (await dialog.innerText().catch(() => '')).replace(/\s+/g, ' ')
+    rev = await revNow()
+    const wedRoom = await api('/api/schedule-changes', await token('ty@u8.e2e.kr'), {
+      action: 'publish', mutationId: 'u8-wedr-000001', expectedRevision: rev, reason: '교실 공사',
+      items: [{ op: 'reschedule', courseId: 'engB', occurrenceKey: `sr_engB_wed2@${WED}`, target: { roomName: '어학실' } }],
+    })
+    const sheetLive = await page
+      .waitForFunction(() => /3학년 5반 교실 → 어학실/.test(document.querySelector('[role="dialog"]')?.textContent || ''), null, { timeout: 20000 })
+      .then(() => true, () => false)
+    check('U8.sheet-live', "열어 둔 시트(수 2교시)에 변경 발행이 바로 반영('3학년 5반 교실 → 어학실')", wedRoom.status === 200 && !wedBefore.includes('어학실') && sheetLive,
+      `${wedRoom.status} ${wedRoom.j.code || ''} live=${sheetLive}`)
+    await page.keyboard.press('Escape')
+    await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
     await cellBtn(page, TUE, 4).click()
     await page.getByRole('dialog').getByRole('button', { name: '이 날 전체 보기' }).click()
     const toDay = await waitUrl(page, /view=day&date=20261006/)
@@ -241,17 +271,36 @@ try {
     await cellBtn(page, NEXT_SAT, 2).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
     const nextRange = await weekRange(page)
     const nextHeads = await colHeaders(page)
-    check('U8.next-week', "다음 주 → 주소 date=20261013, '다음 주 · 10월 12일 ~ 10월 17일', 토 열(토 2교시 영어 B)",
-      nextUrl && nextRange === '10월 12일 ~ 10월 17일' && nextHeads.length === 6 && nextHeads[5].startsWith('토') && /^토 2교시 영어 B/.test((await cellLabel(page, NEXT_SAT, 2)) || ''),
-      `${page.url().replace(BASE, '')} ${nextRange} ${JSON.stringify(nextHeads)}`)
+    const sunLabel = (await cellLabel(page, NEXT_SUN, 3)) || ''
+    check('U8.next-week', "다음 주 → 주소 date=20261013, '다음 주 · 10월 12일 ~ 10월 18일', 토 열(토 2교시 영어 B)·일 열(일 3교시 보결)",
+      nextUrl && nextRange === '10월 12일 ~ 10월 18일' && nextHeads.length === 7 && nextHeads[5].startsWith('토') && nextHeads[6].startsWith('일') &&
+        /^토 2교시 영어 B/.test((await cellLabel(page, NEXT_SAT, 2)) || '') && /^일 3교시 대신 들어가는 수업 · 1학년 2반 \(김과학 선생님\) \(보결\)/.test(sunLabel),
+      `${page.url().replace(BASE, '')} ${nextRange} ${JSON.stringify(nextHeads)} ${sunLabel}`)
     const movedIn = await cellLabel(page, NEXT_THU, 5)
     const movedOut = await cellLabel(page, NEXT_WED, 2)
     const movedNote = await cellBtn(page, NEXT_WED, 2).innerText().catch(() => '')
     check('U8.moved', "옮긴 수업: 목 5교시에 영어 B(날짜 변경), 수 2교시에 '옮김 · → 목 5교시'",
       /영어 B .*날짜 변경/.test(movedIn || '') && /10월 15일\(목\) 5교시로 옮겨졌어요/.test(movedOut || '') && movedNote.includes('옮김') && movedNote.replace(/\s+/g, ' ').includes('→ 목 5교시'),
       JSON.stringify([movedIn, movedOut, movedNote.replace(/\s+/g, ' ')]))
-    const scroll = await page.getByTestId('teacher-week-scroll').evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth })).catch(() => null)
-    check('U8.width3', '390px 화면 가로 스크롤 없음(월~토 6열도 표 상자 안에 — 7열이면 상자 안에서만 밀림)', (await noHorizontalScroll(page)) && !!scroll && scroll.sw <= scroll.cw + 1, JSON.stringify(scroll))
+    // 7열(월~일)은 390px 표 상자보다 넓음 → 상자 안에서만 옆으로 밀리고(화면은 그대로) 교시 열은 제자리(sticky)
+    const scroll = await page
+      .getByTestId('teacher-week-scroll')
+      .evaluate((el) => {
+        const th = el.querySelector('tbody th[scope="row"]')
+        const td = el.querySelector('tbody td')
+        const th0 = th.getBoundingClientRect().left
+        const td0 = td.getBoundingClientRect().left
+        el.scrollLeft = 200
+        const moved = el.scrollLeft
+        const thShift = Math.round(th.getBoundingClientRect().left - th0)
+        const tdShift = Math.round(td.getBoundingClientRect().left - td0)
+        el.scrollLeft = 0
+        return { sw: el.scrollWidth, cw: el.clientWidth, pos: getComputedStyle(th).position, moved, thShift, tdShift }
+      })
+      .catch(() => null)
+    check('U8.width3', '390px 7열 주: 화면 가로 스크롤 없음, 표는 상자 안에서만 밀림 + 교시 열 고정(sticky)',
+      (await noHorizontalScroll(page)) && !!scroll && scroll.sw > scroll.cw + 1 && scroll.pos === 'sticky' && scroll.moved > 0 && Math.abs(scroll.thShift) <= 5 && scroll.tdShift < -10,
+      JSON.stringify(scroll))
     await shot(page, '5-next-week')
     await page.getByRole('button', { name: '지난주' }).click()
     const prevUrl = await waitUrl(page, /view=week&date=20261006/)
@@ -265,6 +314,20 @@ try {
     check('U8.picker', "날짜 선택(10/21) → '2주 뒤 · 10월 19일 ~ 10월 23일'", picked && (await weekRange(page)) === '10월 19일 ~ 10월 23일' && (await panel(page).getByText('2주 뒤').count()) === 1)
     await page.getByRole('button', { name: '이번 주' }).click()
     check('U8.this-week', "'이번 주' → 오늘(date=20261006)", await waitUrl(page, /date=20261006/))
+    await cellBtn(page, TUE, 3).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
+    // 주소가 바뀌기 전에 연달아 누름(같은 틱에 두 번) → 두 주 뒤 / '다음 주' 바로 뒤 '하루' → 옮긴 주의 하루(앞 이동을 잃지 않음)
+    const nextWeekBtn = () => [...document.querySelectorAll('nav[aria-label="주 이동"] button')].find((x) => x.textContent.trim() === '다음 주')
+    await page.evaluate(`(${nextWeekBtn})().click(); (${nextWeekBtn})().click()`)
+    const dbl = await waitUrl(page, /view=week&date=20261020/)
+    await page.waitForFunction(() => document.querySelector('[data-testid="week-range"]')?.textContent === '10월 19일 ~ 10월 23일', null, { timeout: 15000 }).catch(() => {})
+    await page.evaluate(`(${nextWeekBtn})().click(); document.getElementById('tt-tab-day').click()`)
+    const dblTab = await waitUrl(page, /view=day&date=20261027/)
+    check('U8.rapid-nav', "주소 반영 전 연달아 누름: '다음 주' 두 번 → 2주 뒤(10/20), '다음 주' + '하루' → 그 주의 하루(10/27)", dbl && dblTab, page.url().replace(BASE, ''))
+    await page.getByRole('tab', { name: '주간' }).click()
+    await waitUrl(page, /view=week&date=20261027/)
+    await page.getByRole('button', { name: '이번 주' }).click()
+    await waitUrl(page, /view=week&date=20261006/)
+    await cellBtn(page, TUE, 3).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
     // 빠르게 여러 주 넘김(응답을 기다리지 않고 주소만 바뀌면 다음 클릭) → 마지막 주만(앞 응답이 덮어쓰지 않음)
     let fastUrl = true
     for (const d of ['20261013', '20261020', '20261027']) {
@@ -277,6 +340,42 @@ try {
     const fastLabel = await cellLabel(page, '20261027', 3)
     const staleCell = await cellBtn(page, NEXT_SAT, 2).count()
     check('U8.fast-nav', '다음 주를 빠르게 세 번 → 3주 뒤(10/26~) 자료만(앞 주 칸이 남지 않음)', fastUrl && /^화 3교시 영어 B/.test(fastLabel || '') && staleCell === 0, `${fastLabel} stale=${staleCell}`)
+    await ctx.close()
+  }
+
+  // ───────── 5b. 다른 주를 받지 못함 → 오류 카드(빈 표로 위장하지 않음) → 다시 시도 ─────────
+  // 막은 요청의 브라우저 'Failed to load resource' 콘솔 줄은 예상된 것이라 따로 모음(아래 전체 콘솔 오류 0 검사와 분리)
+  {
+    const netErrors = []
+    const { ctx, page } = await newPage(browser, { fixedTime: FIXED, errors: netErrors, who: 'ty-net' })
+    await uiLogin(page, 'ty@u8.e2e.kr')
+    await page.goto(BASE + `/teacher/timetable?view=week&date=${TUE}`, { waitUntil: 'load' })
+    await cellBtn(page, TUE, 3).waitFor({ state: 'visible', timeout: 20000 }).catch(() => {})
+    let fail = 'server'
+    await page.route('**/api/timetable/teacher**', (route) =>
+      fail === 'server'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '테스트 오류', code: 'u8-test' }) })
+        : route.abort('internetdisconnected')
+    )
+    await page.getByRole('button', { name: '다음 주' }).click()
+    const srv = await seen(page, '시간표를 불러오지 못했어요 (u8-test)', 15000)
+    const srvTables = await page.locator('#tt-panel table').count()
+    const srvRetry = await panel(page).getByRole('button', { name: '다시 시도' }).count()
+    check('U8.error', "다른 주를 받지 못함(500) → '시간표를 불러오지 못했어요 (u8-test)' + 다시 시도, 빈 표·지난 주 표 없음",
+      srv && srvTables === 0 && srvRetry >= 1 && /date=20261013/.test(page.url()), `tables=${srvTables} retry=${srvRetry} ${page.url().replace(BASE, '')}`)
+    check('U8.width-error', '390px 가로 스크롤 없음(오류 카드)', await noHorizontalScroll(page))
+    await shot(page, '5b-error')
+    fail = 'offline'
+    await panel(page).getByRole('button', { name: '다시 시도' }).first().click()
+    const off = await seen(page, '인터넷 연결을 확인해 주세요', 15000)
+    check('U8.offline', "연결 끊김 → '인터넷 연결을 확인해 주세요' + 다시 시도, 빈 표 없음",
+      off && (await page.locator('#tt-panel table').count()) === 0 && (await panel(page).getByRole('button', { name: '다시 시도' }).count()) >= 1)
+    await page.unroute('**/api/timetable/teacher**')
+    await panel(page).getByRole('button', { name: '다시 시도' }).first().click()
+    const recovered = await cellBtn(page, NEXT_SAT, 2).waitFor({ state: 'visible', timeout: 20000 }).then(() => true, () => false)
+    check('U8.error-retry', '연결 복구 뒤 다시 시도 → 그 주 표(토 2교시 영어 B)', recovered && !(await panel(page).getByText('인터넷 연결을 확인해 주세요').count()))
+    const unexpected = netErrors.filter((e) => e.kind === 'pageerror' || !/Failed to load resource/.test(e.msg))
+    check('U8.error-console', "오류 시나리오: 페이지 오류 0, 콘솔 오류는 막은 요청의 'Failed to load resource'뿐", unexpected.length === 0, JSON.stringify(unexpected.slice(0, 3)))
     await ctx.close()
   }
 

@@ -41,7 +41,7 @@
     },
     {
       "name": "내 시간표",
-      "url": "/teacher/my-schedule",
+      "url": "/teacher/timetable?view=week",
       "icons": [
         {
           "src": "/icons/icon-192.png",

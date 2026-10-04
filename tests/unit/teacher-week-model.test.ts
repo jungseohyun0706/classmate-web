@@ -218,6 +218,28 @@ describe('변경 표시(하루 보기·학생 화면과 같은 기준)', () => {
     assert.deepEqual(it.badges.map((b) => [b.label, b.tone]), [['대신', 'red']])
     assert.equal(it.href, null)
     assert.ok(it.label.includes('대신 들어가는 수업'))
+    assert.ok(!it.label.includes('교사 변경'), '담당 변경은 대신 들어가는 수업 문구가 이미 말함')
+  })
+
+  test('대신 들어가는 수업이 교실도 바뀜: 이름에 교실 변경까지(하루 보기 LessonCard 배지와 같은 내용), 칸 배지는 대신 하나', () => {
+    const p = weekPayload({
+      courses: COURSES,
+      series: BASE_SERIES,
+      overrides: [ov('sciA', `sr_sciA_tue4@${TUE}`, 'reschedule', { date: TUE, period: 4, roomName: '어학실', teacherUids: [ME], teacherNames: ['이영어'] })],
+    })
+    const [it] = buildTeacherWeek(p, MON).cells[weekCellKey(TUE, 4)]
+    assert.equal(it.row?.role, 'substitute')
+    assert.deepEqual(it.badges.map((b) => b.label), ['대신'])
+    assert.equal(it.label, '생활과 과학 A 어학실 (대신 들어가는 수업, 교실 변경)')
+    // 다른 선생님이 맡고 교실도 바뀜: 누가 맡는지 + 교실 변경
+    const away = weekPayload({
+      courses: COURSES,
+      series: BASE_SERIES,
+      overrides: [ov('engB', `sr_engB_tue3@${TUE}`, 'reschedule', { date: TUE, period: 3, roomName: '시청각실', teacherUids: ['tz'], teacherNames: ['정대체'] })],
+    })
+    const [a] = buildTeacherWeek(away, MON).cells[weekCellKey(TUE, 3)]
+    assert.equal(a.row?.role, 'changed-away')
+    assert.equal(a.label, '영어 B 시청각실 (정대체 선생님이 맡아요, 교실 변경)')
   })
 
   test('다른 선생님이 맡음(changed-away): 누가 맡는지', () => {
@@ -308,6 +330,25 @@ describe('직접 등록 주간 시간표·혼합 주', () => {
     assert.deepEqual(cellTitles(m, WED, 7), [], '공식 날에는 주간 시간표 칸(수 7교시 동아리)을 보이지 않음')
     assert.deepEqual(m.periods, [1, 2, 3, 4, 5, 6, 7], '직접 등록 열이 있으면 7교시까지')
   })
+
+  test('공식 주의 토·일 보결 열은 그 날 방식이 직접 등록이어도 혼합 주가 아님(주간 시간표 칸은 월~금만)', () => {
+    // 공식 차시가 금요일까지(validTo 토, 끝 제외) → 토·일은 공식 수업 없음 + 주간 시간표 있음 = 그 날 방식 legacy
+    const p = weekPayload({
+      courses: [engB],
+      series: [series('sr_engB_tue3', 'engB', 2, 3, { validTo: SAT }), series('sr_engB_wed2', 'engB', 3, 2, { validTo: SAT })],
+      mySchedule: LEGACY,
+      covers: [cover({ id: 'sos:sun', date: SUN, period: 2 })],
+    })
+    const m = buildTeacherWeek(p, MON)
+    const sun = m.columns[m.columns.length - 1]
+    assert.equal(sun.date, SUN)
+    assert.equal(sun.source, 'legacy', '하루 보기와 같은 그 날 규칙')
+    assert.equal(m.mode, 'official')
+    assert.equal(sun.legacyTag, false)
+    assert.equal(m.columns.some((c) => c.legacyTag), false)
+    assert.deepEqual(m.periods, [1, 2, 3, 4, 5, 6], '직접 등록 칸이 없으니 7교시 행을 억지로 만들지 않음')
+    assert.deepEqual(m.cells[weekCellKey(SUN, 2)].map((i) => i.kind), ['covering'])
+  })
 })
 
 describe('쉬는 날·빈 상태', () => {
@@ -368,5 +409,38 @@ describe('쉬는 날·빈 상태', () => {
     const vacation = buildTeacherWeek(weekPayload({ offDays: allOff }), MON)
     assert.equal(vacation.state, 'grid')
     assert.deepEqual(vacation.columns.map((c) => c.closed), ['holiday', 'holiday', 'holiday', 'holiday', 'holiday'])
+    assert.equal(vacation.noLessons, false, '쉬는 날 열이 상태를 말하므로 수업 없음 안내는 띄우지 않음')
+  })
+
+  test('모두 쉬는 주(방학): 직접 등록 교사도 직접 등록 안내 없이 쉬는 날 열만, 공식 교사는 official', () => {
+    const allOff: Record<Ymd, { name: string }> = {}
+    for (const d of [MON, TUE, WED, THU, FRI]) allOff[d] = { name: '가을 방학' }
+    const legacy = buildTeacherWeek(weekPayload({ mySchedule: LEGACY, offDays: allOff }), MON)
+    assert.deepEqual(legacy.columns.map((c) => [c.source, c.closed]), Array(5).fill(['legacy', 'holiday']))
+    assert.notEqual(legacy.mode, 'legacy')
+    assert.notEqual(legacy.mode, 'mixed')
+    assert.deepEqual(legacy.periods, [1, 2, 3, 4, 5, 6])
+    assert.equal(legacy.state, 'grid')
+    const official = buildTeacherWeek(weekPayload({ courses: [engB], series: BASE_SERIES.slice(0, 2), mySchedule: LEGACY, offDays: allOff }), MON)
+    assert.equal(official.mode, 'official')
+  })
+
+  test("시간표는 있는데 이 주에 수업이 하나도 없음 → noLessons('이 주에는 내 수업이 없어요'), 빈 상태 교사는 아님", () => {
+    // 공식: 운영 중 차시는 있지만(공식 방식) 이 주 열린 날에 보일 수업이 없음
+    const quiet = buildTeacherWeek(weekPayload({ courses: [engB], series: BASE_SERIES.slice(0, 2), patchDay: (_d, d) => ({ ...d, lessons: [], notices: [] }) }), MON)
+    assert.equal(quiet.mode, 'official')
+    assert.equal(quiet.state, 'grid')
+    assert.equal(quiet.itemCount, 0)
+    assert.equal(quiet.noLessons, true)
+    // 직접 등록: 주간 시간표가 모두 빈 칸
+    const blank: MySchedule = { mon: Array(7).fill(''), tue: Array(7).fill(''), wed: Array(7).fill(''), thu: Array(7).fill(''), fri: Array(7).fill('') }
+    const legacy = buildTeacherWeek(weekPayload({ mySchedule: blank }), MON)
+    assert.equal(legacy.mode, 'legacy')
+    assert.equal(legacy.noLessons, true)
+    // 수업이 있으면 아님, 아무것도 등록 안 한 교사는 빈 상태 카드(noLessons 아님)
+    assert.equal(buildTeacherWeek(weekPayload({ courses: [engB], series: BASE_SERIES.slice(0, 2) }), MON).noLessons, false)
+    const empty = buildTeacherWeek(weekPayload(), MON)
+    assert.equal(empty.state, 'empty')
+    assert.equal(empty.noLessons, false)
   })
 })
