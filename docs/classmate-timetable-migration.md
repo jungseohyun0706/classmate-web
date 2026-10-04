@@ -35,8 +35,8 @@
 BACKUP_BUCKET=gs://<운영 백업 버킷>
 gcloud firestore export "$BACKUP_BUCKET/before-timetable-$(date +%Y%m%d-%H%M)" --project classmate-mvp-9f855
 
-# 1) 운영 인덱스 확인 → firestore.indexes.json과 비교. 운영에만 있는 인덱스(콘솔에서 만든 것,
-#    예: classes (schoolCode, grade, classNm) — 교사 '전체 시간표'(teacher/view-timetables)가 씀)를 적어 둡니다.
+# 1) 운영 인덱스 확인 → firestore.indexes.json과 비교. 운영에만 있는 인덱스(콘솔 오류 링크로 만든 것 등)를 적어 둡니다.
+#    교사 '전체 시간표'(teacher/view-timetables)가 쓰는 classes (schoolCode, grade, classNm)은 이제 파일에 들어 있습니다.
 firebase firestore:indexes --project classmate-mvp-9f855
 
 # 2) 인덱스 먼저(추가만 하고 앱 동작은 바꾸지 않음). 파일에 없는 인덱스를 지울지 물으면 반드시 No. --force 금지
@@ -111,7 +111,7 @@ node "$REPO/scripts/migrate-timetable.mjs" --project classmate-mvp-9f855 --confi
 앱을 먼저 배포하면 '새 앱 + 예전 규칙' 기간이 생깁니다.
 
 - **보안 틈**: 예전 규칙은 학생이 자기 `studentId`·`joinSeq`를 바꾸는 것을 막지 않고, 같은 학교 사용자가 알림 문서를 아무 id로나 만들 수 있게 둡니다. 새 서버는 정해진 id(`join_…`, `schedreq_no_…` 등)의 알림 문서가 이미 있으면 '이미 보냄'으로 보고 건너뜁니다. 그래서 이 기간에 미리 만들어 둔 문서로 신청·승인 알림과 푸시를 막을 수 있고, 이때 써 둔 값과 문서는 규칙을 배포한 뒤에도 남습니다.
-- **새 기능 깨짐**: 예전 규칙에는 `schools/**`·`users/{uid}/personalEntries` 경로가 없어 모두 거부됩니다. 교사 '시간표 변경' 화면은 수업마다 오류가 나고, '수업 관리'의 공통 수업 후보도 오류가 납니다. 학생은 '직접 입력한 일정을 불러오지 못했어요'가 보이고, 저장하면 '다시 로그인해 주세요'라는 잘못된 안내가 나옵니다. 학생 화면 실시간 갱신도 끊깁니다. 직접 입력 구독은 오류 뒤 다시 붙지 않아, 규칙을 배포한 뒤에도 그 화면을 새로 열 때까지 남습니다.
+- **새 기능 깨짐**: 예전 규칙에는 `schools/**`·`users/{uid}/personalEntries` 경로가 없어 모두 거부됩니다. 교사 '시간표 변경' 화면은 수업마다 오류가 나고, '수업 관리'의 공통 수업 후보도 오류가 납니다. 학생은 '직접 입력한 일정을 불러오지 못했어요'가 보이고 저장도 실패합니다. 학생 화면 실시간 갱신도 끊깁니다(화면으로 돌아올 때 API로 다시 받음). 직접 입력 구독은 오류 뒤 화면으로 돌아오거나 앱이 다시 보일 때 다시 붙고(횟수 제한), 저장 실패 문구도 '지금은 저장할 수 없어요'로 바꿨지만, 그 기간에는 여전히 쓸 수 없습니다.
 - **인덱스**: 수업별 변경 기록 조회는 changeSets 복합 인덱스가 READY가 되기 전에는 500 `index-required`입니다. `firebase deploy`는 인덱스 빌드를 기다리지 않으므로 인덱스는 앱보다 먼저 배포하고 READY를 확인합니다.
 
 반대로 '예전 앱(b7d6c46) + 새 규칙'은 안전합니다. 새 규칙은 새 경로를 더하고, 예전 앱이 쓰지 않는 필드만 조입니다(예전 앱의 알림은 `addDoc` 자동 id 20자, `studentId`·`joinSeq`·권한 필드는 서버만 씀).
