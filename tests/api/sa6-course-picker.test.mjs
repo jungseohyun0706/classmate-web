@@ -1,6 +1,9 @@
 // 학생 '수업 담기(골라 담기)' API 통합 테스트 — 요구 R20
 // 대상: /api/courses(catalog 대상 학년·create/update grades), /api/enrollments(requestMany·leave·request 같은 학기),
-//       /api/timetable/me(빼도 지난 날짜 기록 유지), /api/timetable-import(학생 수업 담기 공개 선택·대상 학년)
+//       /api/timetable/me(빼도·빼고 다시 담아도 지난 날짜 기록 유지), /api/timetable-import(학생 수업 담기 공개 선택·대상 학년)
+// 리뷰 반영: 선생님이 끝낸 수강은 빼고 다시 담아도 승인 대기(reapproval), 같은 수업 하루 한 번 빼기(left-today),
+//           요청 수 제한(정확히 max번까지), 교사가 정한 대상 학년(gradesBy)·수업 그룹 연결 수업은 가져오기가 덮어쓰지 않음,
+//           가져오기가 정리한 수업(importRetiredOn)은 공개 목록·담기에서 빠짐
 // 실행 전제: 실제 서버(BASE) + Firebase 에뮬레이터(Firestore 8080, Auth 9099) + NEIS mock
 // 사용: BASE=http://127.0.0.1:3200 node tests/api/sa6-course-picker.test.mjs
 // 모든 데이터는 에뮬레이터의 테스트용 가상 데이터이며 실제 학생 정보가 아닙니다.
@@ -58,6 +61,8 @@ async function seed() {
     { uid: 'stu3', email: 'stu3@sa6.kr', doc: St('김학생', 'S1_3_4', 3, 4, 7) },
     { uid: 'stuB', email: 'stub@sa6.kr', doc: St('이학생', 'S1_3_4', 3, 4, 8) },
     { uid: 'stu1', email: 'stu1@sa6.kr', doc: St('박학생', 'S1_1_2', 1, 2, 3) },
+    { uid: 'stuR', email: 'stur@sa6.kr', doc: St('정학생', 'S1_3_4', 3, 4, 9) }, // 요청 수 제한 확인용
+    { uid: 'stuL', email: 'stul@sa6.kr', doc: St('한학생', 'S1_3_4', 3, 4, 10) }, // 빼기 요청 수 제한 확인용
   ])
   const now = Timestamp.now()
   await db.doc('classes/S1_3_4').set({ classId: 'S1_3_4', grade: 3, classNm: 4, teacherId: 'hr4', teacherName: '박담임', createdAt: now, ...S1 })
@@ -72,13 +77,17 @@ const courses = async (email, body) => api('/api/courses', await tok(email), bod
 const enroll = async (email, body) => api('/api/enrollments', await tok(email), body)
 const me = async (email, q) => api('/api/timetable/me' + q, await tok(email), null, 'GET')
 
-/** 엔진 1~2단계와 같은 규칙: 그 날짜에 들은 수업(활성 수강 [from,to) + 끝낸 수강도 [from,to) 동안) */
+/** 엔진 1~2단계와 같은 규칙: 그 날짜에 들은 수업(활성 수강 [from,to) + 끝낸 수강도 [from,to) 동안 + 이전에 들은 기간 past) */
 function lessonsOn(p, ymd) {
   const wd = weekdayOf(ymd)
   const inR = (d, f, t) => (!f || d >= f) && (!t || d < t)
   const active = new Set(
     p.enrollments
-      .filter((e) => (e.status === 'active' || (e.status === 'ended' && e.to && !e.rejected)) && inR(ymd, e.from, e.to))
+      .filter(
+        (e) =>
+          ((e.status === 'active' || (e.status === 'ended' && e.to && !e.rejected)) && inR(ymd, e.from, e.to)) ||
+          (e.past || []).some((r) => inR(ymd, r.from, r.to))
+      )
       .map((e) => e.courseId)
   )
   return p.series
@@ -222,7 +231,7 @@ async function main() {
   const eSci2 = (await db.doc(`schools/S1/enrollments/${sci}__stu3`).get()).data() || {}
   const revL1 = await revNow()
   check('L2', '내가 담은 수업 빼기 → ended·to=오늘·decidedBy 없음, scheduleRevision +1, 감사 로그',
-    lv.status === 200 && lv.j.status === 'ended' && eSci2.status === 'ended' && eSci2.to === TODAY && !eSci2.decidedBy && eSci2.leftBy === 'stu3' && revL1 === revL0 + 1 && (await auditCount('enrollment.leave')) === auditL0 + 1,
+    lv.status === 200 && lv.j.status === 'ended' && eSci2.status === 'ended' && eSci2.to === TODAY && !eSci2.decidedBy && eSci2.leftBy === 'stu3' && eSci2.leftOn === TODAY && revL1 === revL0 + 1 && (await auditCount('enrollment.leave')) === auditL0 + 1,
     `${lv.status} ${JSON.stringify({ st: eSci2.status, to: eSci2.to, rev: [revL0, revL1] })}`)
   const lvP = await enroll('stu3@sa6.kr', { action: 'leave', courseId: phys })
   const ePhys2 = (await db.doc(`schools/S1/enrollments/${phys}__stu3`).get()).data() || {}
@@ -252,6 +261,15 @@ async function main() {
     lvPast.status === 200 && p.status === 200 && ePast?.status === 'ended' && ePast?.to === TODAY && pastHas && !nextHas,
     JSON.stringify({ ePast, pastHas, nextHas }))
   check('L8', '/api/timetable/me에 본인 수강만(다른 학생 없음)', (p.j.enrollments || []).every((e) => e.uid === 'stu3') && !JSON.stringify(p.j).includes('stuB'), '')
+  // 빼고 다시 담기: 수강 문서 id가 같아 from/to가 바뀌어도 이전에 들은 기간(history)은 지난 날짜에 그대로
+  const rePast = await enroll('stu3@sa6.kr', { action: 'requestMany', courseIds: ['sa6Past'] })
+  const p2 = await me('stu3@sa6.kr', `?from=${addDays(TODAY, -8)}&to=${addDays(TODAY, 7)}`)
+  const ePast2 = (p2.j.enrollments || []).find((e) => e.courseId === 'sa6Past')
+  check('L8b', '빼고 다시 담은 수업: 지금 기간은 오늘부터(active), 이전 기간 [2주 전, 오늘)은 past로 — 지난주에도 그대로, 다음 주에도 있음',
+    rePast.j.results?.[0]?.status === 'active' && ePast2?.status === 'active' && ePast2?.from === TODAY &&
+      JSON.stringify(ePast2?.past) === JSON.stringify([{ from: addDays(TODAY, -14), to: TODAY }]) &&
+      lessonsOn(p2.j, PAST).includes('sa6Past') && lessonsOn(p2.j, addDays(TODAY, 7)).includes('sa6Past'),
+    JSON.stringify({ r: rePast.j.results, ePast2 }))
 
   // 뺀 뒤 다시 담기 → 처음처럼(바로 담기 수업은 바로, 이력 남김)
   const re = await enroll('stu3@sa6.kr', { action: 'requestMany', courseIds: [sci] })
@@ -265,6 +283,28 @@ async function main() {
   check('L10', '선생님이 끝낸 수강을 다시 담으면 승인 대기(기존 request 규칙 그대로)', reB.j.results?.[0]?.status === 'pending', JSON.stringify(reB.j.results))
   const lvTeacherEnded = await enroll('stub@sa6.kr', { action: 'leave', courseId: sci })
   check('L11', '내가 다시 신청한 승인 대기는 뺄 수 있음(출처 request)', lvTeacherEnded.status === 200, `${lvTeacherEnded.status} ${lvTeacherEnded.j.code || ''}`)
+  // 빼기로 '선생님이 끝낸 수강은 다시 승인' 규칙을 건너뛰지 못함: 다시 담아도 승인 대기(reapproval 표시가 빼기 뒤에도 남음)
+  const reB2 = await enroll('stub@sa6.kr', { action: 'requestMany', courseIds: [sci] })
+  const eB2 = (await db.doc(`schools/S1/enrollments/${sci}__stuB`).get()).data() || {}
+  const reB3 = await enroll('stub@sa6.kr', { action: 'request', courseId: sci })
+  check('L12', '선생님이 끝냄 → 다시 담기(대기) → 빼기 → 다시 담기 → 여전히 승인 대기(바로 담기 수업이어도), 한 개 request도 같음',
+    reB2.j.results?.[0]?.status === 'pending' && eB2.status === 'pending' && eB2.reapproval === true && !eB2.decidedBy && reB3.status === 200 && reB3.j.status === 'pending',
+    JSON.stringify({ r: reB2.j.results, st: eB2.status, reapproval: eB2.reapproval, single: reB3.j }))
+  const apB = await enroll('tx@sa6.kr', { action: 'approve', courseId: sci, uid: 'stuB' })
+  const eB3 = (await db.doc(`schools/S1/enrollments/${sci}__stuB`).get()).data() || {}
+  const lvB2 = await enroll('stub@sa6.kr', { action: 'leave', courseId: sci })
+  const eB4 = (await db.doc(`schools/S1/enrollments/${sci}__stuB`).get()).data() || {}
+  check('L13', '선생님 승인 → active·표시 해제, 같은 날 같은 수업 두 번째 빼기 → 429 left-today(수강 그대로)',
+    apB.status === 200 && eB3.status === 'active' && eB3.reapproval === false && lvB2.status === 429 && lvB2.j.code === 'left-today' && eB4.status === 'active',
+    `${apB.status} ${eB3.status}/${eB3.reapproval} leave ${lvB2.status} ${lvB2.j.code} → ${eB4.status}`)
+
+  // 요청 수 제한: 10분에 정확히 20번까지(21번째 429), 빼기는 따로 1시간에 10번까지(11번째 429)
+  const rl = []
+  for (let i = 0; i < 21; i++) rl.push((await enroll('stur@sa6.kr', { action: 'requestMany', courseIds: [`nope${i}`] })).status)
+  check('L14', '학생 담기 요청 20번까지 200, 21번째 429 rate-limited(묶음 하나가 한 번)', rl.slice(0, 20).every((x) => x === 200) && rl[20] === 429, rl.join(','))
+  const ll = []
+  for (let i = 0; i < 11; i++) ll.push((await enroll('stul@sa6.kr', { action: 'leave', courseId: `nope${i}` })).status)
+  check('L15', '빼기 요청 10번까지 처리(없는 수강 404), 11번째 429', ll.slice(0, 10).every((x) => x === 404) && ll[10] === 429, ll.join(','))
 
   // ───── 5. 시간표 가져오기: 학생 수업 담기 공개 선택 ─────
   const API = '/api/timetable-import'
@@ -350,6 +390,49 @@ async function main() {
   check('I11', '마지막 발행 원복 → 공개 설정도 이전 값(영어 A 공개·승인 후)', rb.status === 200 && E5['sec|영어|A|이영희'].catalogVisible === true && E5['sec|영어|A|이영희'].invitePolicy === 'approval', `${rb.status} ${rb.j.code || ''} ${JSON.stringify([E5['sec|영어|A|이영희']?.catalogVisible, E5['sec|영어|A|이영희']?.invitePolicy])}`)
   const auditImp = (await db.collection('schools/S1/audit').where('action', '==', 'timetable-import.commit').get()).docs.map((d) => d.data().meta?.catalogOption)
   check('I12', '가져오기 감사 로그에 공개 선택 기록(학생 정보 없음)', auditImp.some((c) => c && c.visible === true && c.policy === 'auto') && auditImp.some((c) => c === null), JSON.stringify(auditImp))
+
+  // ───── 6. 교사가 정한 값은 가져오기가 덮어쓰지 않음(대상 학년·수업 그룹), 다른 교사의 가져오기도 같음 ─────
+  const K_ENG = 'sec|영어|A|이영희'
+  const K_CLUB = 'sec|동아리|A|박동아'
+  const K_MATH = 'hr|1-2|수학|오수학'
+  const K_MUSIC = 'hr|2-1|음악|최유나'
+  await db.doc('classes/S1_grpkim').set({ classId: 'S1_grpkim', isGroup: true, teacherId: 'kim', schoolCode: 'S1', name: '수학 보충 그룹', createdAt: now })
+  const gEng = await courses('kim@sa6.kr', { action: 'update', courseId: E5[K_ENG].id, grades: [2, 3] })
+  const gClub = await courses('kim@sa6.kr', { action: 'update', courseId: E5[K_CLUB].id, grades: [1] })
+  const gMath = await courses('kim@sa6.kr', { action: 'update', courseId: E5[K_MATH].id, legacyGroupId: 'S1_grpkim' })
+  // 예전 자료(마이그레이션 등)로 수업 그룹이 연결된 가져오기 수업 — 공개 표시는 가져오기 그대로
+  await db.doc(`schools/S1/courses/${E5[K_MUSIC].id}`).set({ legacyGroupId: 'S1_grpold' }, { merge: true })
+  const F0 = await imported()
+  check('G1', '교사가 대상 학년을 정하면 gradesBy teacher, 수업 그룹을 연결하면 catalogBy teacher',
+    gEng.status === 200 && gClub.status === 200 && gMath.status === 200 && F0[K_ENG].gradesBy === 'teacher' && JSON.stringify(F0[K_ENG].grades) === '[2,3]' &&
+      F0[K_CLUB].gradesBy === 'teacher' && F0[K_MATH].catalogBy === 'teacher' && F0[K_MATH].legacyGroupId === 'S1_grpkim',
+    `${gEng.status}/${gClub.status}/${gMath.status} ${gMath.j.code || ''} ${JSON.stringify([F0[K_ENG].gradesBy, F0[K_CLUB].gradesBy, F0[K_MATH].catalogBy])}`)
+  // 다른 교사(tx)가 같은 파일을 '공개·바로 담기'로 다시 발행
+  const txTok = await tok('tx@sa6.kr')
+  const stTx = await api(API, txTok, { action: 'stage', schoolCode: 'S1', termId: TERM, validFrom: addDays(NEXT_MON, 22), mode: 'merge', fileName: '가상.xlsx', fileHash: sha([ROWS3, 'tx']), rows: ROWS3 })
+  const pvTx = await api(API, txTok, { action: 'preview', batchId: stTx.j.batchId })
+  const cTx = await api(API, txTok, { action: 'commit', batchId: stTx.j.batchId, expectedRevision: pvTx.j.revision, acceptReview: true, catalog: { visible: true, policy: 'auto' } })
+  const F1 = await imported()
+  check('G2', '다른 교사의 가져오기(공개·바로 담기): 교사가 정한 대상 학년은 그대로(영어 A [2,3] — 학급 표시 3-4·3-5여도, 학급 표시 없는 동아리 [1]도 지우지 않음)',
+    cTx.status === 200 && JSON.stringify(F1[K_ENG].grades) === '[2,3]' && F1[K_ENG].gradesBy === 'teacher' && JSON.stringify(F1[K_CLUB].grades) === '[1]',
+    `${cTx.status} ${cTx.j.code || ''} ${JSON.stringify([F1[K_ENG].grades, F1[K_CLUB].grades])}`)
+  check('G3', '가져오기가 맡은 수업은 고른 대로(영어 A·동아리 바로 담기), 수업 그룹이 연결된 수업(수학: 교사 연결, 음악: 예전 연결)은 공개 설정 그대로',
+    F1[K_ENG].invitePolicy === 'auto' && F1[K_ENG].catalogVisible === true && F1[K_CLUB].invitePolicy === 'auto' &&
+      F1[K_MATH].invitePolicy === F0[K_MATH].invitePolicy && F1[K_MATH].catalogVisible === F0[K_MATH].catalogVisible &&
+      F1[K_MUSIC].catalogVisible === false && F1[K_MUSIC].invitePolicy === 'approval' && F1[K_MUSIC].catalogBy === 'import',
+    JSON.stringify(Object.values(F1).map((c) => [c.title, c.catalogVisible, c.invitePolicy, c.catalogBy, c.legacyGroupId || null])))
+  check('G4', '발행 결과 updated에 공개 설정이 바뀐 수업만(학년·그룹 때문에 갱신하지 않음)', Array.isArray(cTx.j.updated) && cTx.j.updated.length === 2 && cTx.j.updated.includes(F1[K_ENG].id) && cTx.j.updated.includes(F1[K_CLUB].id), JSON.stringify(cTx.j.updated))
+
+  // ───── 7. 가져오기(바꾸기)가 정리한 수업은 공개 목록에서 빠지고 담을 수 없음 ─────
+  await db.doc(`schools/S1/courses/${F1[K_ENG].id}`).set({ importRetiredOn: TODAY }, { merge: true })
+  await db.doc(`schools/S1/courses/${F1[K_CLUB].id}`).set({ importRetiredOn: addDays(TODAY, 7) }, { merge: true })
+  const catR = await courses('stu3@sa6.kr', { action: 'catalog' })
+  const idsR = (catR.j.courses || []).map((c) => c.courseId)
+  const reqR = await enroll('stu3@sa6.kr', { action: 'requestMany', courseIds: [F1[K_ENG].id] })
+  const oneR = await enroll('stub@sa6.kr', { action: 'request', courseId: F1[K_ENG].id })
+  check('R1', '정리된 수업(importRetiredOn ≤ 오늘)은 공개 목록에 없고 담기 course-ended(한 개 request 409), 앞으로 정리될 수업은 아직 보임',
+    !idsR.includes(F1[K_ENG].id) && idsR.includes(F1[K_CLUB].id) && reqR.j.results?.[0]?.code === 'course-ended' && oneR.status === 409 && oneR.j.code === 'course-ended',
+    JSON.stringify({ r: reqR.j.results, one: [oneR.status, oneR.j.code] }))
 
   for (const s of Object.values(sessions)) await s.close()
 }

@@ -1291,11 +1291,18 @@ export interface ExistingCourse {
   classLabels: string[]
   /** 대상 학년(학급 표시에서 뽑은 값 또는 교사가 정한 값) — 없으면 [] */
   grades: number[]
+  /** 대상 학년을 정한 쪽: 'teacher'(수업 화면 — 가져오기가 덮어쓰거나 지우지 않음) / 'import' / null(표시 없음 — 가져오기가 맡음) */
+  gradesBy: string | null
   /** 학생 '수업 담기' 공개 여부·참여 방식(문서 값 그대로, 없으면 null) */
   catalogVisible: boolean
   invitePolicy: 'auto' | 'approval' | null
-  /** 공개·참여 방식을 마지막으로 정한 쪽: 'teacher'(수업 화면) / 'import'(가져오기) / null(표시 없는 예전 자료) */
+  /**
+   * 공개·참여 방식을 마지막으로 정한 쪽: 'teacher'(수업 화면) / 'import'(가져오기가 만든 수업) /
+   * 'import-legacy'(표시 없던 예전 가져오기 수업을 가져오기가 공개 — 참여 방식은 '승인 후' 유지) / null(표시 없는 예전 자료)
+   */
   catalogBy: string | null
+  /** 예전 수업 그룹(톡방·공지) 연결 — 있으면 학생이 담을 때 그 그룹에도 들어가므로 가져오기가 공개 설정을 맡지 않음 */
+  legacyGroupId: string | null
   importBatchId: string | null
   importRetiredOn: Ymd | null
   revision: number | null
@@ -1371,16 +1378,35 @@ export interface CatalogPublishOption {
 /**
  * 가져오기가 이 기존 수업의 공개·참여 방식(catalogVisible·invitePolicy)을 정해도 되는지.
  *  - 가져오기로 만든 수업(source 'import')만 — 직접 만든 수업·학급 공통 수업·이전 자료(legacy) 수업은 손대지 않음
- *  - 교사가 수업 화면에서 공개·참여 방식을 바꾼 수업(catalogBy 'teacher')은 그대로
- *  - 가져오기가 정한 값(catalogBy 'import')은 다음 가져오기가 다시 정함
+ *  - 예전 수업 그룹(legacyGroupId — 톡방·공지)이 연결된 수업은 손대지 않음: 담으면 그 그룹에도 들어가므로 담당 교사만 공개를 정함
+ *  - 교사가 수업 화면에서 공개·참여 방식(또는 수업 그룹)을 바꾼 수업(catalogBy 'teacher')은 그대로
+ *  - 가져오기가 정한 값(catalogBy 'import'·'import-legacy')은 다음 가져오기가 다시 정함
  *  - 표시가 없는 예전 가져오기 수업: 그때 가져오기가 쓰던 기본값(비공개·승인 후) 그대로일 때만 — 공개·바로 참여로 바뀌어 있으면
  *    교사가 바꾼 것이므로 그대로 둠
  */
-export function importManagesCatalog(c: Pick<ExistingCourse, 'source' | 'catalogBy' | 'catalogVisible' | 'invitePolicy'>): boolean {
+export function importManagesCatalog(
+  c: Pick<ExistingCourse, 'source' | 'catalogBy' | 'catalogVisible' | 'invitePolicy'> & { legacyGroupId?: string | null }
+): boolean {
   if (c.source !== 'import') return false
+  if (c.legacyGroupId) return false
   if (c.catalogBy === 'teacher') return false
-  if (c.catalogBy === 'import') return true
+  if (c.catalogBy === 'import' || c.catalogBy === 'import-legacy') return true
   return c.catalogVisible !== true && c.invitePolicy !== 'auto'
+}
+
+/**
+ * 가져오기가 맡은 기존 수업에 쓸 공개·참여 방식. 맡지 않으면 null.
+ * 표시가 없던 예전 가져오기 수업('승인 후'가 기본값이라 교사가 일부러 고른 것인지 알 수 없음)은 공개 여부만 따르고
+ * 참여 방식은 '선생님 승인 후'로 둠(catalogBy 'import-legacy' — 다음 가져오기도 바로 담기로 올리지 않음).
+ * 바로 담기로 바꾸려면 담당 교사가 수업 화면에서 정함(catalogBy 'teacher')
+ */
+export function importCatalogFor(
+  c: Pick<ExistingCourse, 'source' | 'catalogBy' | 'catalogVisible' | 'invitePolicy'> & { legacyGroupId?: string | null },
+  option: CatalogPublishOption
+): { visible: boolean; policy: 'auto' | 'approval'; by: 'import' | 'import-legacy' } | null {
+  if (!importManagesCatalog(c)) return null
+  if (c.catalogBy === 'import') return { visible: option.visible, policy: option.policy, by: 'import' }
+  return { visible: option.visible, policy: 'approval', by: 'import-legacy' }
 }
 
 const sameNums = (a: number[], b: number[]): boolean => a.length === b.length && a.every((v, i) => v === b[i])
@@ -1467,6 +1493,7 @@ function courseSnapshot(c: ExistingCourse): Record<string, unknown> {
 function courseRestore(ex: ExistingCourse, set: Record<string, unknown>): Record<string, unknown> {
   const out = courseSnapshot(ex)
   if (own(set, 'grades')) out.grades = ex.grades.length ? ex.grades.slice() : null
+  if (own(set, 'gradesBy')) out.gradesBy = ex.gradesBy
   if (own(set, 'catalogVisible')) out.catalogVisible = ex.catalogVisible
   if (own(set, 'invitePolicy')) out.invitePolicy = ex.invitePolicy
   if (own(set, 'catalogBy')) out.catalogBy = ex.catalogBy
@@ -1567,8 +1594,10 @@ export function planImport(input: PlanInput): ImportPlan {
       const teacherUids = sortedCopy(uniq(manualUids.concat(linked)))
       // 공통 수업: 가져오기는 후보(importCommon)만 기록. commonForHomerooms는 담임이 setCommon으로 정한 값 그대로(새 수업은 [])
       const importCommon = sortedCopy(cand.commonCandidates)
-      // 대상 학년: 이 수업 칸들의 학급 표시에서(없으면 필드 없음 — 학년 미상)
-      const grades = gradesFromClassLabels(cand.classLabels)
+      // 대상 학년: 이 수업 칸들의 학급 표시에서(없으면 필드 없음 — 학년 미상).
+      // 교사가 수업 화면에서 정한 대상 학년(gradesBy 'teacher')은 그대로 — 덮어쓰지도 지우지도 않음
+      const teacherGrades = !!ex && ex.gradesBy === 'teacher'
+      const grades = teacherGrades && ex ? ex.grades : gradesFromClassLabels(cand.classLabels)
       const courseAfter: Record<string, unknown> = {
         title: cand.title,
         subject: cand.subject,
@@ -1584,15 +1613,22 @@ export function planImport(input: PlanInput): ImportPlan {
         importRetiredOn: null,
         revision: input.revision,
       }
-      if (grades.length) courseAfter.grades = grades
-      else if (ex && ex.grades.length) courseAfter.grades = null
-      // 공개·참여 방식: 기존 수업은 가져오기가 맡은 수업이고 값이 다를 때만(교사가 정한 값은 그대로)
-      const catalogUpdate =
-        !!ex && !!catalog && importManagesCatalog(ex) && (ex.catalogVisible !== catalog.visible || ex.invitePolicy !== catalog.policy)
-      if (catalogUpdate && catalog) {
-        courseAfter.catalogVisible = catalog.visible
-        courseAfter.invitePolicy = catalog.policy
-        courseAfter.catalogBy = 'import'
+      if (!teacherGrades) {
+        if (grades.length) {
+          courseAfter.grades = grades
+          courseAfter.gradesBy = 'import'
+        } else if (ex && ex.grades.length) {
+          courseAfter.grades = null
+          courseAfter.gradesBy = null
+        }
+      }
+      // 공개·참여 방식: 기존 수업은 가져오기가 맡은 수업이고 값이 다를 때만(교사가 정한 값·수업 그룹이 연결된 수업은 그대로)
+      const catalogNext = ex && catalog ? importCatalogFor(ex, catalog) : null
+      const catalogUpdate = !!ex && !!catalogNext && (ex.catalogVisible !== catalogNext.visible || ex.invitePolicy !== catalogNext.policy)
+      if (catalogUpdate && catalogNext) {
+        courseAfter.catalogVisible = catalogNext.visible
+        courseAfter.invitePolicy = catalogNext.policy
+        courseAfter.catalogBy = catalogNext.by
       }
       if (ex) {
         if (ex.title !== cand.title || ex.subject !== cand.subject || (ex.section || null) !== (cand.section || null)) changes.push('title')
@@ -1923,9 +1959,11 @@ export function existingFromDocs(
           .filter((x, i, a) => a.indexOf(x) === i)
           .sort((a, b) => a - b)
       : [],
+    gradesBy: strOrNull(d.gradesBy),
     catalogVisible: d.catalogVisible === true,
     invitePolicy: d.invitePolicy === 'auto' || d.invitePolicy === 'approval' ? d.invitePolicy : null,
     catalogBy: strOrNull(d.catalogBy),
+    legacyGroupId: strOrNull(d.legacyGroupId),
     importBatchId: strOrNull(d.importBatchId),
     importRetiredOn: ymdOrNull(d.importRetiredOn),
     revision: typeof d.revision === 'number' ? d.revision : null,

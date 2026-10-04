@@ -62,9 +62,11 @@ import type { Ymd } from '../../lib/timetable/types'
 //             발행할 수업의 이름 정확히 하나의 후보일 때만 그 이름으로 해석. 새 수업은 managerUids에 발행 교사.
 //             미리보기 뒤 학교 scheduleRevision이 올랐어도(수강 변경 등) 지금 자료로 다시 계산한 계획 해시가 미리보기와 같으면 진행.
 //             catalog: { visible, policy } — 학생 '수업 담기' 목록 공개·참여 방식('auto' 바로 담기 / 'approval' 선생님 승인 후).
-//             새로 만드는 수업과, 가져오기가 공개 설정을 맡은 기존 가져오기 수업(교사가 수업 화면에서 공개·참여 방식을 바꾸지 않은 수업 —
-//             importManagesCatalog)에만 씀. 없으면 예전처럼 새 수업은 비공개·승인 후, 기존 수업은 그대로.
-//             수업마다 학급 표시(classLabels)에서 대상 학년(grades)을 기록(학급 표시가 없으면 grades 없음)
+//             새로 만드는 수업과, 가져오기가 공개 설정을 맡은 기존 가져오기 수업(교사가 수업 화면에서 공개·참여 방식·수업 그룹을
+//             바꾸지 않았고 예전 수업 그룹이 연결되지 않은 수업 — importManagesCatalog)에만 씀. 표시 없던 예전 가져오기 수업은 공개
+//             여부만 따르고 참여 방식은 '승인 후'(importCatalogFor). 없으면 예전처럼 새 수업은 비공개·승인 후, 기존 수업은 그대로.
+//             수업마다 학급 표시(classLabels)에서 대상 학년(grades)을 기록(학급 표시가 없으면 grades 없음) —
+//             교사가 수업 화면에서 정한 대상 학년(gradesBy 'teacher')은 덮어쓰거나 지우지 않음
 // 정책: 공통 수업은 담임이 명시한 경우에만 — 가져오기는 commonForHomerooms를 쓰지 않고 후보(importCommon)만 기록.
 //       교사 이름(masterName)만으로 담당 권한을 연결하지 않음 — 후보로 보여 주고 발행 교사가 확인한 것만 연결.
 //  cancel   → staged 배치만 취소

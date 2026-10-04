@@ -16,6 +16,7 @@ import {
   currentRevision,
   enrollmentFromDoc,
   ID_RE,
+  importRetiredBy,
   isTeacher,
   readRevision,
   requireUser,
@@ -55,8 +56,11 @@ import type { Course, LessonSeries, Weekday, Ymd } from '../../lib/timetable/typ
 // - list            교사: 내가 담당·관리하는 수업 + 내가 담임인 학급의 공통 수업
 // - get             담당 교사: 수업·차시·수강 인원·승인 대기 명단(명단은 담당 교사에게만)
 // - catalog         같은 학교 사용자(학생): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시·교실·대상 학년(grades, 알 때만)과
-//                   본인 수강 상태(myStatus)만 — 수강 인원·명단·교사 계정 없음. 학생 '수업 담기'(시간표 칸 보기·과목으로 찾기)가 씀
-// create/update의 grades: 대상 학년(1~6) 목록 — 학생 '수업 담기'의 학년 거르기용(없으면 모든 학년에 보임)
+//                   본인 수강 상태(myStatus)만 — 수강 인원·명단·교사 계정 없음. 학생 '수업 담기'(시간표 칸 보기·과목으로 찾기)가 씀.
+//                   시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남)은 빠짐
+// create/update의 grades: 대상 학년(1~6) 목록 — 학생 '수업 담기'의 학년 거르기용(없으면 모든 학년에 보임).
+//   교사가 정하면 gradesBy:'teacher' → 시간표 가져오기가 다시 덮어쓰거나 지우지 않음.
+//   공개·참여 방식(catalogVisible·invitePolicy)이나 예전 수업 그룹(legacyGroupId)을 바꾸면 catalogBy:'teacher' → 가져오기가 공개 설정을 건드리지 않음
 // 모든 쓰기는 트랜잭션에서 schools/{s}.scheduleRevision을 1 올리고 감사 로그를 남깁니다.
 // 오류: { error, code } — 400 입력, 401, 403 권한, 404 대상 없음, 409 충돌·중복·종료, 500 server-error
 
@@ -259,7 +263,8 @@ async function createCourse(ctx: Ctx) {
     catalogVisible,
     // 공개·참여 방식을 교사가 정함(가져오기가 다시 덮어쓰지 않음 — importMatch.importManagesCatalog)
     catalogBy: 'teacher',
-    ...(grades.length ? { grades } : {}),
+    // 대상 학년을 교사가 정함(가져오기가 덮어쓰지 않음)
+    ...(grades.length ? { grades, gradesBy: 'teacher' } : {}),
     legacyGroupId,
     source: 'manual',
     createdBy: ctx.uid,
@@ -329,8 +334,11 @@ async function updateCourse(ctx: Ctx) {
     }
     if (!Object.keys(after).length) return { ok: true, already: true, courseId, course: courseView(courseId, cur), revision: rev0 }
     const rev = rev0 + 1
-    // 교사가 공개·참여 방식을 바꾸면 표시 — 시간표 가져오기가 그 뒤로는 이 두 값을 덮어쓰지 않음
-    const marker = 'catalogVisible' in after || 'invitePolicy' in after ? { catalogBy: 'teacher' } : {}
+    // 교사가 공개·참여 방식이나 예전 수업 그룹(톡방·공지 — 학생이 담으면 그 그룹에도 들어감)을 바꾸면 표시 —
+    // 시간표 가져오기가 그 뒤로는 공개·참여 방식을 덮어쓰지 않음. 대상 학년을 바꾸면 gradesBy 표시(가져오기가 학년을 덮어쓰지 않음)
+    const marker: Record<string, string> = {}
+    if ('catalogVisible' in after || 'invitePolicy' in after || 'legacyGroupId' in after) marker.catalogBy = 'teacher'
+    if ('grades' in after) marker.gradesBy = 'teacher'
     tx.set(ref, { ...after, ...marker, revision: rev, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
     writeRevision(tx, ctx.db, ctx.schoolCode, rev)
     writeAudit(tx, ctx.db, ctx.schoolCode, { action: 'course.update', actorUid: ctx.uid, target: `courses/${courseId}`, revision: rev, before, after })
@@ -973,7 +981,8 @@ async function catalog(ctx: Ctx) {
     const e = enrollmentFromDoc(d.data() || {})
     if (e.uid === ctx.uid) myStatus.set(e.courseId, e.status)
   })
-  const open = snap.docs.filter((d) => courseActiveOn(courseFromDoc(d.id, d.data() || {}), ctx.today))
+  // 운영 중인 수업만: 종료·종료일 지남, 시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남 — 차시 없는 빈 수업) 제외
+  const open = snap.docs.filter((d) => courseActiveOn(courseFromDoc(d.id, d.data() || {}), ctx.today) && !importRetiredBy(d.data() || {}, ctx.today))
   const seriesSnaps = await Promise.all(
     chunk(open.map((d) => d.id), 30).map((ids) => sref.collection('series').where('courseId', 'in', ids).get())
   )
