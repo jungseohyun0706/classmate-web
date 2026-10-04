@@ -232,8 +232,10 @@ interface TeacherTimetablePayload {        // src/lib/timetable/teacherDay.ts
   schoolCode: string
   from: string; to: string                  // 둘 다 포함
   terms: TermSummary[]                      // /me와 같은 규칙(termsForWindow)
-  offDays: Record<YYYYMMDD, { name } | null>; calendarErrors: string[]   // /me와 같은 NEIS 학사일정(학년 = 담임 학년)
-  periodTimes: PeriodTime[]                 // 담임 학급 교시표 → 학교 엑셀 교시표(school_timetables.periodTimes) → 학교급 기본
+  offDays: Record<YYYYMMDD, { name } | null>          // 학교 전체가 쉬는 날(아래 '쉬는 날' 참고 — 담임 학년으로 정하지 않음)
+  gradeOffDays: Record<YYYYMMDD, { name, grades: number[] }>  // 일부 학년만 쉬는 날(예: '3학년 재량휴업일')
+  calendarErrors: string[]                  // 학사일정 확인 실패(상한 4초 — /me와 같음)
+  periodTimes: PeriodTime[]                 // 담임 학급 교시표(classes/{id}.teacherId = 나, 같은 학교) → 학교 엑셀 교시표(school_timetables.periodTimes) → 학교급 기본
   days: Record<YYYYMMDD, { hasOfficial, lessons: TeacherLesson[], notices: TeacherNotice[], incomplete }>
   mySchedule: { mon..fri: string[7] } | null   // 예전 주간 시간표(users.mySchedule), 모두 비면 null
   covers: TeacherCover[]                    // 예전 교환·보결 중 수락·배정되고 내가 요청했거나 맡은 것
@@ -247,21 +249,23 @@ interface TeacherTimetablePayload {        // src/lib/timetable/teacherDay.ts
   - 기본 담당이 남인데 변경으로 나: `substitute`('대신 들어가는 수업', 남의 수업이라 상세 링크 없음)
   - 원래 내 차시의 취소·다른 날로 옮김·쉬는 날이라 열리지 않음 → `notices`(화면: 취소는 취소선 행, 옮김은 빨간 안내 줄)
   - 결과에는 다른 교사 uid·관리 교사 uid를 넣지 않음(이름만). 수강·학생 명단은 읽지 않음
-- `hasOfficial`: 그 날짜 학기에 내가 기본 담당인 반복 차시(삭제·빈 기간 제외)가 있는 운영 중 수업이 있는지.
-- 교환(`school_swaps/{s}/requests`·`direct_requests`, `status:'accepted'`)·보결(`school_sos/{s}/requests`, `status:'assigned'`)은 `date in [조회 날짜]`로 읽고 메모리에서 내 것만 고릅니다. 예전 1:1 문서의 `fromId`·`toId`도 인정. 교환 메모(`note`)·보결 사유(`reason`)·다른 교사 uid는 넣지 않고 이름(`requesterName`·`accepterName`·`assignedName`)만, 요청 교사 학급 '담임 없음'은 빈 값.
-- 쿼리는 등호·`array-contains`·`array-contains-any`·`in`만(정렬·범위 없음) → 새 복합 인덱스·컬렉션 그룹 쿼리 없음(9절 표 그대로). 후보 수업 150개, 교환·보결 쿼리당 500건 상한.
+- `hasOfficial`: **그 날짜에** 적용 중인(`seriesValidOn`, 요일 무관 — 주말도 공식 방식) 내가 기본 담당인 반복 차시가 있는 운영 중 수업이 있는지. 학기 중 다음 주부터 적용되는 차시는 시작 전 날짜에 세지 않고(그동안은 직접 등록 주간 시간표가 기본), 학기 중 모든 내 차시가 끝난 수업은 끝난 뒤 세지 않습니다.
+- 교환(`school_swaps/{s}/requests`·`direct_requests`)·보결(`school_sos/{s}/requests`)은 학교 전체를 날짜로 읽지 않고 **내가 참여자인 문서만** 읽습니다: 참여자 필드마다 `uid ==` + `status ==`(교환 `'accepted'`, 보결 `'assigned'`) — 공개 요청 `requesterId`·`accepterId`, 1:1 요청 `requesterId`·`fromId`·`accepterId`·`toId`(예전 문서), 보결 `requesterId`·`assignedTo`. 같은 학교 다른 교사가 모집 중 요청을 많이 만들어도 내 교환·보결이 잘리지 않습니다(쿼리당 1000건 상한, 닿으면 로그). 날짜(조회 기간)는 메모리에서 거름. 교환 메모(`note`)·보결 사유(`reason`)·다른 교사 uid는 넣지 않고 이름(`requesterName`·`accepterName`·`assignedName`)만, 요청 교사 학급 '담임 없음'은 빈 값.
+- 쿼리는 등호·`array-contains`·`array-contains-any`·`in`만(정렬·범위 없음) → 새 복합 인덱스·컬렉션 그룹 쿼리 없음(9절 표 그대로 — 등호 두 개는 단일 필드 인덱스 병합). 후보 수업 150개 상한.
+- **쉬는 날**: 교사 수업은 여러 학년에 걸치므로 학생처럼 '내 학년'(users.grade) 하나로 정하지 않습니다(`teacherOffDaysFromRows`, `src/lib/neisOffDays.ts`). 학년 표시가 없는 행이나 그 날 쉬는 학년이 학교의 모든 학년(초 6, 중·고 3)을 덮으면 `offDays`(학교 전체 — 모든 수업이 열리지 않음), 일부 학년만이면 `gradeOffDays`. 일부 학년 쉬는 날에는 그 학년 수업만 쉬는 날로 계산합니다 — 공식 수업은 공통 수업 학급(`commonForHomerooms` '…_3_4' → 3학년)으로, 주간 시간표 칸은 학반 라벨('3-2 국어' → 3학년)로 학년을 알고, 학년을 모르는 수업(선택 과목·라벨 없는 칸)은 그대로 보입니다. 날짜·교시를 명시적으로 옮긴 차시는 학생 화면처럼 열립니다.
+- 담임 학급 교시표: `users.classId`는 본인이 고칠 수 있는 값이라 형식(경로 조각 하나)·학교 코드 접두를 확인하고, `classes/{id}.teacherId`가 나이고 같은 학교 학급일 때만 그 `info/periodTimes`를 씁니다(아니면 학교 엑셀 교시표 → 학교급 기본).
 
 **날짜별 화면(클라이언트, 순수 함수 `buildTeacherDay`)**
 
 | 방식 | 조건 | 기본 목록 |
 |---|---|---|
 | 공식(`official`) | `days[D].hasOfficial` | 공식 수업 행(변경 배지·전후, 수업 상세 `/teacher/courses/{id}` 링크) + 취소 행. 예전 주간 시간표는 접힌 '내 주간 시간표(직접 등록·참고)'로만 |
-| 주간 시간표(`legacy`) | 공식 없음 + `mySchedule` 있음 | 그 요일 칸(`'1-5 국어'` → 국어 · 1학년 5반), 라벨 '내가 등록한 주간 시간표예요 — 수업 변경은 반영되지 않아요', 배지 '직접 등록 · 수업 변경 미반영'. 변경으로 나에게 넘어온 공식 수업·보강도 함께 |
+| 주간 시간표(`legacy`) | 공식 없음 + `mySchedule` 있음 | 그 요일 칸(`'1-5 국어'` → 국어 · 1학년 5반), 라벨 '내가 등록한 주간 시간표예요 — 수업 변경은 반영되지 않아요', 배지 '직접 등록 · 수업 변경 미반영'. 변경으로 나에게 넘어온 공식 수업·보강도 함께. 일부 학년 쉬는 날에는 그 학년 칸을 빼고 안내 줄로 |
 | 빈 상태(`empty`) | 둘 다 없음 | '아직 등록된 내 시간표가 없어요' + 수업 관리(`/teacher/courses`)·내 시간표 등록(`/teacher/my-schedule`) |
 
-- 모든 방식에 교환·보결 겹치기: 내 교시를 남이 맡음 → 같은 교시 행에 '○○ 선생님이 대신 들어가요 (품앗이|보결)'(그 교시 행이 없으면 따로 행), 내가 맡음 → '대신 들어가는 수업 · {학급} {과목} (○○ 선생님)' 행.
-- 상태는 학생 화면과 같음: 쉬는 날(휴업일·공휴일·방학) `holiday`, 학기 밖 `outside-term`(주간 시간표도 숨김), 주말·수업 없는 날 `no-lessons`, 학사일정 확인 실패 안내. 로딩은 스켈레톤, 오류는 '다시 시도'(빈 목록으로 위장하지 않음), 자료가 있는 채 실패하면 동기화 배너.
+- 모든 방식에 교환·보결 겹치기: 내 교시를 남이 맡음 → 같은 교시 내 수업 행에 '○○ 선생님이 대신 들어가요 (품앗이|보결)'(다른 선생님에게 넘긴 차시·변경으로 내가 대신 들어가는 남의 수업 행에는 붙이지 않음. 그 교시 내 수업 행이 없으면 따로 행 — 단 쉬는 날·학기 밖·그 학년이 쉬는 날에는 만들지 않음), 내가 맡음 → '대신 들어가는 수업 · {학급} {과목} (○○ 선생님)' 행(쉬는 날에도 보임).
+- 상태는 학생 화면과 같음: 학교 전체 쉬는 날(휴업일·공휴일·방학) `holiday`, 학기 밖 `outside-term`(주간 시간표도 숨김), 주말·수업 없는 날 `no-lessons`, 학사일정 확인 실패 안내. 일부 학년만 쉬는 날은 `holiday`가 아니라 열린 수업 + '{학년} 쉬는 날이에요(행사명)' 안내 + 열리지 않는 수업 안내 줄(모두 열리지 않으면 `no-lessons`). 빈 상태 교사의 쉬는 날·학기 밖은 그 상태 카드 하나만(등록 안내 카드는 교환·보결 행이 있는 날에만 덧붙임). 로딩은 스켈레톤, 오류는 '다시 시도'(빈 목록으로 위장하지 않음), 자료가 있는 채 실패하면 동기화 배너.
 - 실시간 갱신(`useTeacherTimetable`, `src/lib/timetable/teacherHomeClient.ts`): `schools/{s}.scheduleRevision` 구독(교사 읽기 허용) — 공식 변경 발행이 새로 고침 없이 반영. 교환·보결·주간 시간표는 버전을 올리지 않으므로 화면 복귀·포커스(30초 지난 자료)·온라인 복구 때 다시 받음. 조회 창은 학생과 같은 `clientWindow`(앞 3일~뒤 13일). 로컬 캐시는 두지 않음.
-- 화면 조각은 학생 컴포넌트를 재사용: `DayNav`, `LessonCard`(선택 값 `extraBadges`·`struck`·`href`·`metaPrefix`·`personalLabel` — 주지 않으면 학생 모양 그대로), `TimetableStateCard`(`teacher-empty` 추가), `InfoLine`. 조합은 `src/components/timetable/TeacherTimetable.tsx`.
-- 테스트: `tests/unit/teacher-home-official.test.ts`·`teacher-home-day.test.ts`(순수 로직), `tests/api/sa5-teacher-timetable.test.mjs`(API), `tests/e2e/u6-teacher-home.e2e.mjs`(화면).
+- 화면 조각은 학생 컴포넌트를 재사용: `DayNav`, `LessonCard`(선택 값 `extraBadges`·`struck`·`href`·`metaPrefix`·`personalLabel`·`wrapTime`(좁은 칸에서 시각을 '~' 뒤 줄바꿈) — 주지 않으면 학생 모양 그대로), `TimetableStateCard`(`teacher-empty` 추가), `InfoLine`. 조합은 `src/components/timetable/TeacherTimetable.tsx`.
+- 테스트: `tests/unit/teacher-home-official.test.ts`·`teacher-home-day.test.ts`·`teacher-home-offdays.test.ts`(순수 로직), `tests/api/sa5-teacher-timetable.test.mjs`(API), `tests/e2e/u6-teacher-home.e2e.mjs`(화면).
 
