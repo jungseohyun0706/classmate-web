@@ -70,7 +70,8 @@
   managerUids?: string[] /* 관리만 맡은 계정(예: 학급 시간표로 공통 수업을 만든 담임) — 일정 변경·수강 관리 가능, 교사 충돌 판정에는 쓰지 않음 */,
   status: 'active'|'ended', endedOn?: 'YYYYMMDD'|null, commonForHomerooms: string[],
   defaultRoomId?, defaultRoomName?, invitePolicy: 'auto'|'approval',
-  catalogVisible: boolean /* 학생 '공식 수업 선택' 목록 노출 */,
+  catalogVisible: boolean /* 학생 '수업 담기' 목록 노출 */, grades?: number[] /* 대상 학년 1~6 — 없으면 학년 미상(모든 학년에 보임) */,
+  catalogBy?: 'teacher'|'import' /* 공개·참여 방식을 마지막으로 정한 쪽 — 'teacher'면 가져오기가 덮어쓰지 않음(11절) */,
   legacyGroupId?: string /* 예전 수업 그룹(classes/{base}_g_{x}) — 톡방·공지 연결 */,
   source: 'manual'|'import'|'legacy-group'|'homeroom-common', importBatchId?, createdBy, createdAt, updatedAt, revision,
   /* 가져오기 전용 */ importKey?, importLinkedUids? /* 발행 교사가 확인한 교사 연결 */, importCommon? /* 공통 수업 '후보' 학급 — 담임이 setCommon으로 확인해야 commonForHomerooms가 됨 */,
@@ -84,7 +85,7 @@
 // schools/{s}/enrollments/{courseId}__{uid}
 { courseId, uid, schoolCode, termId, status: 'active'|'pending'|'ended', from?, to?,
   source: 'invite'|'roster'|'request'|'admin'|'legacy-group', invitationCode?, via? /* 'group-qr' */, rosterEntryId?,
-  history? /* 끝난 수강을 다시 열 때 이전 상태 */, createdAt, updatedAt, decidedBy? }
+  history? /* 끝난 수강을 다시 열 때 이전 상태 */, createdAt, updatedAt, decidedBy?, leftBy?, leftAt? /* 학생이 직접 뺀 수강(leave) */ }
 
 // schools/{s}/importBatches/{batchId} (+ rows/{n}, plan/{n})  — 시간표 가져오기 배치: staged → committing → committed | failed | cancelled | rolled-back
 // schools/{s}/rosterBatches/{batchId} (+ rows/{n})           — 수강 명단 임시 적재
@@ -122,12 +123,12 @@
 |---|---|---|---|
 | `/api/timetable/me` | GET `?from=YYYYMMDD&to=YYYYMMDD` (최대 21일) | 로그인 학생(교사도 본인 수강이 있으면 가능) | `MyTimetablePayload` (6절). 조회 실패는 5xx + code |
 | `/api/timetable/teacher` | GET `?from=YYYYMMDD&to=YYYYMMDD` (최대 21일, 기본 어제~13일 뒤) | 로그인 교사(학교 있음). 학생 403 `teacher-only`, 가입 미완료 403 `no-profile`, 학교 없음 409 `no-school` | `TeacherTimetablePayload` (10절) — 본인 차시만. 조회 실패는 5xx + code |
-| `/api/courses` | POST `{action}` — `list`(학교·학기 수업 목록 + 수업별 인원 수 `counts{active,pending}` — 명단 없음), `get`, `create`, `update`, `end`, `setCommon`, `addSeries`, `retireSeries`, `fromHomeroomTimetable`(담임: 학급 시간표 → 공통 수업, 결정적 id `hc_{classId}_{sha1(termId|과목|교사)[0:10]}`·차시 `hcs_…` — src/lib/timetable/ids.ts), `catalog`(학생용 공개 목록) | create: 같은 학교 교사(자기 자신을 담당 교사로). update/end/series: 담당 교사 또는 관리 교사(managerUids). `addSeries.validFrom`·`retireSeries.effectiveFrom`·`fromHomeroomTimetable.effectiveFrom`이 오늘보다 이르면 400 `past-date`(지난 시간표를 소급해 바꾸지 않음). 기본 변경으로 옮긴 공통 수업 칸은 `fromHomeroomTimetable` 재실행이 다시 만들지 않음(`replacesSeriesId`/`supersededBy` 연결, `sourceHomeroomId` 유지) | 수업·차시 |
-| `/api/enrollments` | POST `{action}` — `request`(학생, 공개 수업 신청 → pending), `approve`/`reject`/`end`(담당 교사), `add`(담당 교사가 학생 uid 연결 — 같은 학교 학생만), `list`(담당 교사: 수강생 목록, 학생: 본인) | 위 | 수강 |
+| `/api/courses` | POST `{action}` — `list`(학교·학기 수업 목록 + 수업별 인원 수 `counts{active,pending}` — 명단 없음), `get`, `create`, `update`, `end`, `setCommon`, `addSeries`, `retireSeries`, `fromHomeroomTimetable`(담임: 학급 시간표 → 공통 수업, 결정적 id `hc_{classId}_{sha1(termId|과목|교사)[0:10]}`·차시 `hcs_…` — src/lib/timetable/ids.ts), `catalog`(학생 '수업 담기' 공개 목록 — 11절). `create`/`update`는 `grades`(대상 학년 1~6, 선택)를 받고, `update`로 공개·참여 방식을 바꾸면 `catalogBy:'teacher'` | create: 같은 학교 교사(자기 자신을 담당 교사로). update/end/series: 담당 교사 또는 관리 교사(managerUids). `addSeries.validFrom`·`retireSeries.effectiveFrom`·`fromHomeroomTimetable.effectiveFrom`이 오늘보다 이르면 400 `past-date`(지난 시간표를 소급해 바꾸지 않음). 기본 변경으로 옮긴 공통 수업 칸은 `fromHomeroomTimetable` 재실행이 다시 만들지 않음(`replacesSeriesId`/`supersededBy` 연결, `sourceHomeroomId` 유지) | 수업·차시 |
+| `/api/enrollments` | POST `{action}` — `request`(학생, 공개 수업 하나), `requestMany`(학생 '수업 담기', `{courseIds}` 최대 20개 — 수업마다 결과), `leave`(학생, 내가 담은 수업 빼기), `approve`/`reject`/`end`(담당 교사), `add`(담당 교사가 학생 uid 연결 — 같은 학교 학생만), `list`(담당 교사: 수강생 목록, 학생: 본인) | 학생 동작은 학생 계정만(교사 403 `student-only`), uid별 10분 60회(429 `rate-limited`). 나머지 위 | 수강(11절) |
 | `/api/invitations` | POST `{action}` — `create`(type, targetId, expiresInDays? 1~180 기본 30, maxUses?), `revoke`, `list`({targetId}), `preview`({code}, 인증 불필요, 최소 정보 + state: ok/not-found/expired/revoked/used-up/ended), `accept`({code, name?, studentId?}) | create/revoke/list: 대상 학급 담임 또는 수업 담당·관리 교사. accept: 로그인 학생 — 프로필 없는 가입 직후 계정도 허용(수업 초대면 classId:null 학생 프로필 생성, 소속 학급은 비워 둠), 익명·교사 계정 403. 시도 제한(IP·uid 실패 횟수) | 초대 |
 | `/api/join`, `/api/join-info` | 기존 `/join?c=&t=`(10분 토큰) 호환 | 같은 규칙(`planClassJoin`)을 초대 수락과 공유. 신청 중 학생이 그룹 QR → 원래 학급 신청 유지·`extraClassIds`만 추가(`joined-extra-pending`). 그룹에 연결된 수업(`legacyGroupId`)이 있으면 수강 생성 | 입장 |
 | `/api/schedule-changes` | POST `{action}` — `preview`/`publish`(아래), `approve`/`reject`(다른 교사 수업이 포함된 요청), `list`(수업별 이력) | 담당 교사(모든 대상 수업). 일부만 담당이면 `pending-approval` | 변경 묶음 |
-| `/api/timetable-import` | POST `{action}` — `stage`(정규화 행), `preview`, `commit`({batchId, expectedRevision, acceptReview?, confirmTeacherLinks?: [{nameKey, uid}]}), `cancel`, `rollback`, `list` | 같은 학교 교사 | 배치. stale 판정은 학교 버전이 아니라 '수업·차시 계획 또는 교사 후보 매핑'이 바뀌었을 때(수강 변경만으로는 막히지 않음). 형식·규칙은 `docs/classmate-import-format.md` |
+| `/api/timetable-import` | POST `{action}` — `stage`(정규화 행), `preview`, `commit`({batchId, expectedRevision, acceptReview?, confirmTeacherLinks?: [{nameKey, uid}], catalog?: {visible, policy}}), `cancel`, `rollback`, `list` | 같은 학교 교사 | 배치. stale 판정은 학교 버전이 아니라 '수업·차시 계획 또는 교사 후보 매핑'이 바뀌었을 때(수강 변경만으로는 막히지 않음). 형식·규칙은 `docs/classmate-import-format.md` |
 | `/api/roster-import` | POST `{action}` — `stage`, `preview`, `commit`, `cancel`, `link`({entryIds, confirm:true} — 서버가 후보를 다시 계산, 클라이언트 uid 받지 않음), `list` | 같은 학교 교사(연결 확정은 그 학생의 담임 또는 그 수업 담당·관리 교사) | 명단 |
 
 ### 5.1 변경 발행 본문
@@ -269,3 +270,42 @@ interface TeacherTimetablePayload {        // src/lib/timetable/teacherDay.ts
 - 화면 조각은 학생 컴포넌트를 재사용: `DayNav`, `LessonCard`(선택 값 `extraBadges`·`struck`·`href`·`metaPrefix`·`personalLabel`·`wrapTime`(좁은 칸에서 시각을 '~' 뒤 줄바꿈) — 주지 않으면 학생 모양 그대로), `TimetableStateCard`(`teacher-empty` 추가), `InfoLine`. 조합은 `src/components/timetable/TeacherTimetable.tsx`.
 - 테스트: `tests/unit/teacher-home-official.test.ts`·`teacher-home-day.test.ts`·`teacher-home-offdays.test.ts`(순수 로직), `tests/api/sa5-teacher-timetable.test.mjs`(API), `tests/e2e/u6-teacher-home.e2e.mjs`(화면).
 
+## 11. 학생 수업 담기(골라 담기) (`/student/courses#catalog`, 요구 R20)
+
+학생이 직접 입력(자유 입력)으로 시간표를 만들면 오타·다른 이름 때문에 선생님이 발행한 변경이 닿지 않습니다. 그래서 시간표를 만드는 **기본 방법은 학교가 공개한 공식 수업 목록에서 골라 담는 것**입니다. 담은 수업은 수강(`enrollments`)이 되어 변경이 자동 반영됩니다. 직접 입력은 학원·자습 같은 학교 밖 일정용으로 안내합니다. 이름으로 연결하는 일은 어디에도 없습니다(학생이 고른 수업만, 직접 입력 일정은 학생이 '연결'을 고를 때만).
+
+**공개 목록(`/api/courses` `catalog`)** — 같은 학교 사용자. 이번 학기(`termForDate(오늘)`) + `catalogVisible == true` + 운영 중(`courseActiveOn`) 수업만, 수업마다 제목·과목·분반·교사 이름·기본 교실·참여 방식(`invitePolicy`)·요일·교시·교실(`slots`, 오늘 이후 이어지는 차시)·본인 수강 상태(`myStatus`)·대상 학년(`grades`, 정한 수업만). 수강 인원·명단·교사 uid 없음. 쿼리는 기존 (termId, catalogVisible) 인덱스 그대로.
+
+**화면(`src/components/timetable/CoursePicker.tsx`, 계산은 순수 함수 `src/lib/timetable/coursePicker.ts`)**
+
+- 보기 두 가지(같은 자료): **시간표 칸 보기**(기본) — 요일 × 교시 표(월~금, 토·일은 공개 수업이나 내 수업 차시가 있을 때만, 교시는 1교시부터 있는 교시 중 가장 큰 교시까지·0교시는 있을 때만). 칸에는 이미 내 시간표에 있는 수업(참여·시작 예정·승인 대기·반 공통 — `/api/timetable/me` 자료로 계산, `myLessonsFrom`)과 담은 수업·겹침·고를 수 있는 수 표시. 칸을 누르면(버튼 — `aria-label`에 요일·교시·내 수업·담은 수업·고를 수 있는 수, `aria-expanded`) 아래에 그 시간 수업 목록(제목·분반·선생님·교실·참여 방식·상태)이 열리고 거기서 '담기'. **과목으로 찾기** — 과목명 검색 목록(검색은 목록만 좁힘).
+- 학년: 기본은 내 학년(`users.grade`) 수업 + 대상 학년을 정하지 않은 수업(학년 미상은 언제나 보임). '다른 학년 수업도 보기'로 전부. 내 학년을 모르면 거르지 않음.
+- 담은 수업(장바구니, 최대 20개): 섹션 아래에 붙어 따라오는 '담은 수업 N'. 겹침(같은 요일·교시) — 담은 수업끼리, 담은 수업과 이미 있는 내 수업(승인 대기·반 공통 포함) — 을 **경고로만** 보여 주고 그대로 담거나 뺄 수 있음(`cartConflicts`). '내 시간표에 담기' → 확인 시트(수업 이름·승인 필요 수·겹침 수) → `requestMany` **한 번** → 수업마다 '추가됨 / 선생님 승인 대기 / 이미 있음 / 담지 못함(이유)'(`mapRequestResults` — 응답에 없는 수업은 성공으로 보지 않음) → 내 시간표(`useMyTimetable().retry`)·목록 다시 받기. 요청 전체가 실패하면 장바구니를 그대로 두고 오류 code 안내.
+- 빼기: '참여 중인 수업'과 칸 목록에서 **내가 담은 수업(출처 `request`, 참여·승인 대기)**만 '빼기'(승인 대기는 '신청 취소(빼기)'). 초대·명단·선생님 추가·예전 그룹 수강과 반 공통 수업은 버튼 없이 '선생님께 문의' 안내.
+- 진입: 학생 홈 '내 수업'의 '+ 수업 담기'(수업이 없으면 빈 상태 안의 '수업 담기' 버튼), 상태 카드 '아직 연결된 수업이 없어요'의 첫 버튼(강조) '수업 담기', 내 수업 화면 빈 상태·바로가기. '초대 코드 입력'은 그대로.
+- 390px에서 가로 스크롤 없음(표는 `table-fixed`로 칸을 줄이고 글자는 말줄임), 로그인 확인 뒤에만 그려 하이드레이션 차이가 없음.
+
+**학생 동작(`/api/enrollments`)**
+
+| 동작 | 규칙 |
+|---|---|
+| `requestMany {courseIds}` | 학생만, 1~20개(21개 400 `too-many`, 문자열 아닌 항목 400). 중복 id는 한 번. 수업마다 `request`와 **같은 규칙**(`planRequest`): 요청자 학교 경로에서만 읽음(다른 학교 수업은 `course-not-found`), `catalogVisible`(아니면 `not-open`), 운영 중(`course-ended`), 이번 학기(`other-term`), 결정적 수강 id `courseId__uid`, 이미 active/pending이면 `already`(쓰기 없음). `invitePolicy 'auto'` → active(오늘부터), 아니면 pending, 선생님이 끝내거나 거절한 수강은 다시 담으면 pending. 한 트랜잭션에서 수업·수강 문서를 모두 읽고 판정 → **일부 성공**, 바뀐 수강이 있으면 `scheduleRevision` +1 **한 번**·감사 로그 **한 건**(`enrollment.requestMany`, 수업 id와 상태 변화만). 예전 수업 그룹은 `extraClassIds` arrayUnion 한 번. 승인 대기 수업은 `request`와 같은 알림 id(`enr_{courseId}__{uid}_{오늘}`)로 담당·관리 교사에게 — 같은 날 다시 담거나 `request`로 신청해도 겹치지 않음. 응답 `{ ok, results:[{courseId, ok, status?, already?, code?, error?}], changed, revision }` |
+| `leave {courseId}` | 학생만, 본인 수강 문서만(`courseId__내 uid`). 출처 `request`가 아니면 403 `not-self-picked`, 수강이 없으면 404, 이미 끝났으면 `already`. active → `ended`, `to = 오늘`(시작일이 뒤면 시작일 — 빈 기간): 오늘부터 빠지고 **지난 날짜 기록은 그대로**(엔진은 끝낸 수강을 [from, to) 동안 보여 줌). pending → `ended`, 기간 없음. `decidedBy`는 비워 두어 다시 담으면 처음처럼(바로 담기 수업은 바로). `leftBy`·`leftAt`, `scheduleRevision` +1, 감사 `enrollment.leave`. 예전 그룹 톡방(`extraClassIds`)은 교사 `end`처럼 빼지 않음 |
+| `request {courseId}` | 하나만 — 위와 같은 `planRequest`(이번에 '이번 학기' 확인이 공개 목록과 같아짐) |
+
+수강 쓰기는 지금처럼 서버만(보안 규칙 변경 없음). 요청 수 제한(uid별, 인스턴스 메모리)은 학생이 담기·빼기를 반복해 학교 `scheduleRevision`을 계속 올려(같은 학교 학생 화면이 모두 다시 받음) 흔드는 것을 막는 넉넉한 상한입니다.
+
+**직접 입력 안내(`PersonalEntryForm`, 요일·교시로만)**
+
+- 머리말: '학원·자습 같은 학교 밖 일정을 적어 두는 곳이에요. 학교 수업은 ‘수업 담기’에서 골라 담아야 …자동으로 반영돼요'.
+- '이 시간 학교 수업': 고른 요일(특정 날짜면 그 날짜의 요일) + 교시, 또는 교시 없이 시각만 있으면 교시표에서 그 시각과 겹치는 학교 교시(`entrySchoolSlot` — 학원 18:00처럼 학교 교시 밖이면 없음). 그 칸에 열리는 공개 수업 중 아직 내 것이 아닌 수업은 '담기'(같은 담기 흐름 — 확인 시트 → `requestMany`, 결과 표시), 이미 듣는(연결 가능한) 수업은 기존 '연결'(학생이 고르면 연결 선택지만 바뀌고, 저장할 때 연결 확인). 입력한 제목은 이 계산에 들어가지 않음(`slotSuggestions`는 제목을 받지 않음). 담은 수업은 자료가 다시 오면 같은 칸의 '연결' 후보로 바뀜('방금 담았어요').
+- 직접 입력 목록: 연결하지 않은 일정이 같은 요일·교시의 학교 수업(내 수업 또는 공개 수업)과 겹치면 '학교 수업과 시간이 겹쳐요 — 담기/연결하면 변경이 자동 반영돼요'(`entryOverlapsSchool`).
+
+**학교가 목록을 채우는 방법** — 수업은 기본이 비공개(`catalogVisible:false`)라 이전에는 목록이 비어 있었습니다.
+
+- 시간표 가져오기 확정 단계의 '학생 수업 담기 목록에 공개 (학생이 직접 골라 담기)'(기본 켬) + '바로 담기(기본) / 선생님 승인 후' → `commit.catalog {visible, policy}`. 적용 대상(`importManagesCatalog`): **새로 만드는 수업**과, **가져오기로 만든 기존 수업 중 공개 설정을 가져오기가 맡은 수업** — `catalogBy:'import'`이거나, 표시가 없는 예전 가져오기 수업 중 그때 기본값(비공개·승인 후) 그대로인 수업. 교사가 수업 화면에서 공개·참여 방식을 바꾼 수업(`catalogBy:'teacher'`, 또는 표시는 없지만 공개·바로 참여로 바뀌어 있는 예전 수업)은 덮어쓰지 않습니다. 끄고 발행하면 맡은 수업을 비공개로. `catalog`를 보내지 않은 호출(이전 화면·스크립트)은 예전처럼 새 수업 비공개·승인 후, 기존 수업 그대로. 원복하면 이전 값으로. 미리보기 비교 해시에는 넣지 않고 확정 때만 얹음(발행 교사·교사 연결 확인과 같은 방식).
+- 가져오기는 수업마다 학급 표시(`classLabels` '3-4')에서 대상 학년 `grades`(중복 없이 오름차순, `gradesFromClassLabels`)를 기록합니다. 학급 표시가 없는 수업(분반·코드 수업)은 `grades` 없음(학년 미상). 학급 표시가 바뀌면 함께 바뀜(변경 'grades').
+- 교사 수업 만들기·정보 수정: '대상 학년(선택)'(1~6 여러 개, `GradePicker`), 공개 체크 이름은 '학생 수업 담기 목록에 공개'.
+- 학급 시간표로 만든 공통 수업(`fromHomeroomTimetable`)과 마이그레이션이 만든 예전 수업은 계속 비공개(가져오기 대상이 아님).
+
+**테스트**: `tests/unit/course-picker-grid.test.ts`·`course-picker-cart.test.ts`·`course-picker-entry.test.ts`·`course-picker-import.test.ts`(순수 로직), `tests/api/sa6-course-picker.test.mjs`(API), `tests/e2e/u7-course-picker.e2e.mjs`(화면).
