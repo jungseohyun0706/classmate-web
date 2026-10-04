@@ -26,6 +26,23 @@ export function coversDate(p: { from: Ymd; to: Ymd }, date: Ymd): boolean {
   return p.from <= date && date <= p.to
 }
 
+/** w가 need 기간을 모두 포함하는지(둘 다 포함 구간) */
+export function windowContains(w: { from: Ymd; to: Ymd }, need: TimetableWindow): boolean {
+  return w.from <= need.from && need.to <= w.to
+}
+
+/**
+ * 날짜 → 받을 기간(fetch)·화면에 필요한 기간(need).
+ * 받은 자료(또는 진행 중 요청)가 need를 모두 포함해야 그 날짜 화면을 그림. fetch(date)는 need(date)를 포함해야 함(반복 요청 방지)
+ */
+export interface WindowPolicy {
+  fetch: (date: Ymd) => TimetableWindow
+  need: (date: Ymd) => TimetableWindow
+}
+
+/** 하루 화면(학생 홈·교사 홈 카드): 그 날짜만 있으면 되고, 받을 때는 앞 3일~뒤 13일 */
+export const DAY_WINDOW_POLICY: WindowPolicy = { fetch: windowFor, need: (date) => ({ from: date, to: date }) }
+
 /** 조회 도중 학교 시간표 버전이 올라간 경우 같은 기간을 다시 받는 최대 횟수 */
 export const MAX_STALE_RETRIES = 2
 
@@ -61,15 +78,19 @@ export function planForDate(input: {
   payload: PayloadWindowLike | null
   fromCache: boolean
   knownRevision: number
+  /** 기본: 하루 화면(DAY_WINDOW_POLICY). 교사 주간 시간표는 그 주(월~일) */
+  policy?: WindowPolicy
 }): DatePlan {
   const { date, inflight, payload } = input
-  if (inflight && windowCovers(inflight, date)) return { kind: 'keep' }
-  if (payload && !input.fromCache && coversDate(payload, date)) {
+  const policy = input.policy ?? DAY_WINDOW_POLICY
+  const need = policy.need(date)
+  if (inflight && windowContains(inflight, need)) return { kind: 'keep' }
+  if (payload && !input.fromCache && windowContains(payload, need)) {
     if (!inflight) return { kind: 'keep' }
-    if (input.knownRevision > payload.revision) return { kind: 'load', win: windowFor(date) }
+    if (input.knownRevision > payload.revision) return { kind: 'load', win: policy.fetch(date) }
     return { kind: 'cancel-inflight' }
   }
-  return { kind: 'load', win: windowFor(date) }
+  return { kind: 'load', win: policy.fetch(date) }
 }
 
 export type AfterLoadPlan =
@@ -92,9 +113,12 @@ export function planAfterLoad(input: {
   payload: PayloadWindowLike
   knownRevision: number
   staleRetries: number
+  /** 기본: 하루 화면(DAY_WINDOW_POLICY) */
+  policy?: WindowPolicy
 }): AfterLoadPlan {
   const { date, payload } = input
-  if (date && !coversDate(payload, date)) return { kind: 'reload-date', win: windowFor(date) }
+  const policy = input.policy ?? DAY_WINDOW_POLICY
+  if (date && !windowContains(payload, policy.need(date))) return { kind: 'reload-date', win: policy.fetch(date) }
   if (input.knownRevision > payload.revision && input.staleRetries < MAX_STALE_RETRIES) return { kind: 'reload-revision', win: input.win }
   return { kind: 'done' }
 }

@@ -1,8 +1,10 @@
 import type { JSX } from 'react'
 import Link from 'next/link'
-import { slotMinutes } from '../../lib/timetable/engine'
-import { toUtcDate, weekdayOf } from '../../lib/timetable/dates'
-import type { ChangeField, ChangeInfo, LessonView, PeriodTime, SlotState, Ymd } from '../../lib/timetable/types'
+import { changeBadgeLabels, lessonTimeRange, lessonTitle, shortDateKo } from '../../lib/timetable/lessonText'
+import type { ChangeInfo, LessonView, PeriodTime, SlotState } from '../../lib/timetable/types'
+
+// 표시 문구는 순수 모듈(lessonText.ts)에 — 교사 주간 시간표(teacherWeek.ts)도 같은 문구. 기존 import 경로는 그대로
+export { changeBadgeLabels, lessonTimeRange, lessonTitle, shortDateKo }
 
 /**
  * 수업 카드 (요구 문서 2.2)
@@ -35,45 +37,6 @@ export interface LessonCardProps {
   wrapTime?: boolean
 }
 
-const WEEKDAY_KO = ['', '월', '화', '수', '목', '금', '토', '일']
-
-/** '10월 8일(목)' */
-export function shortDateKo(ymd: Ymd): string {
-  const d = toUtcDate(ymd)
-  return `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일(${WEEKDAY_KO[weekdayOf(ymd)]})`
-}
-
-function minutesToHm(m: number): string {
-  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
-}
-
-/** 표시용 시각 '09:00~09:50' (명시 시각 → 교시표). 모르면 null */
-export function lessonTimeRange(
-  l: { period: number | null; start?: string | null; end?: string | null },
-  periodTimes?: PeriodTime[]
-): string | null {
-  const m = slotMinutes(l, periodTimes)
-  if (m.start === null) return null
-  // slotMinutes는 끝 시각이 없으면 시작+1분으로 둠 — 표시는 시작만
-  const hasEnd = m.end !== null && m.end - m.start > 1
-  return hasEnd ? `${minutesToHm(m.start)}~${minutesToHm(m.end as number)}` : minutesToHm(m.start)
-}
-
-const FIELD_LABEL: Record<ChangeField, string> = {
-  date: '날짜 변경',
-  time: '시간 변경',
-  room: '교실 변경',
-  teacher: '교사 변경',
-}
-
-/** 변경 배지 문구 */
-export function changeBadgeLabels(change: ChangeInfo): string[] {
-  if (change.kind === 'makeup' && !change.before) return ['보강']
-  const labels = change.fields.map((f) => FIELD_LABEL[f])
-  if (change.kind === 'makeup') labels.unshift('보강')
-  return labels
-}
-
 function slotWhen(s: SlotState): string {
   if (s.start) return `${s.period}교시(${s.start}${s.end ? `~${s.end}` : ''})`
   return `${s.period}교시`
@@ -104,12 +67,6 @@ export function changeSummaryLines(change: ChangeInfo): string[] {
 export function formatPublishedAt(ms: number): string {
   const d = new Date(ms + 9 * 60 * 60 * 1000)
   return `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`
-}
-
-/** 화면 제목: 제목에 분반이 이미 있으면 그대로, 없으면 '영어 · B' */
-export function lessonTitle(l: Pick<LessonView, 'title' | 'section'>): string {
-  if (l.section && !l.title.includes(l.section)) return `${l.title} · ${l.section}`
-  return l.title
 }
 
 function ChangeIcon(): JSX.Element {

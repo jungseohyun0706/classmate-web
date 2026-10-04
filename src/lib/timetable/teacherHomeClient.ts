@@ -2,7 +2,8 @@
  * 교사 '내 시간표'(대시보드 오늘의 내 수업) — 클라이언트 전용 도우미
  *
  * - GET /api/timetable/teacher 호출과 오류 code 구분(fetchTeacherTimetable) — 실패를 빈 시간표로 바꾸지 않음
- * - useTeacherTimetable: 조회 창(앞 3일~뒤 13일, 학생 화면과 같은 clientWindow 규칙),
+ * - useTeacherTimetable: 조회 창(기본: 앞 3일~뒤 13일, 학생 화면과 같은 clientWindow 규칙 — 홈 카드.
+ *   주간 시간표 화면(/teacher/timetable)은 WEEK_WINDOW_POLICY로 그 주 월~일 7일만),
  *   schools/{s}.scheduleRevision 구독(공식 수업 변경 발행 → 다시 받기), 화면 복귀·포커스·온라인 복구 때 다시 받기
  *   (교환·보결·주간 시간표는 버전을 올리지 않으므로 복귀 때 확인)
  * - 로컬 캐시는 두지 않음(교사 자료는 화면을 열 때 서버에서)
@@ -12,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { auth } from '../firebase'
 import { subscribeScheduleRevision, type TimetableErrorKind, type TimetableFetchError } from './client'
-import { coversDate, planAfterLoad, planForDate, windowCovers, windowFor, type TimetableWindow } from './clientWindow'
+import { DAY_WINDOW_POLICY, planAfterLoad, planForDate, windowContains, type TimetableWindow, type WindowPolicy } from './clientWindow'
 import { normalizeTeacherPayload, type TeacherTimetablePayload } from './teacherDay'
 import type { Ymd } from './types'
 
@@ -105,16 +106,24 @@ interface TeacherTimetableState {
 }
 
 export interface TeacherTimetableHook extends TeacherTimetableState {
-  /** payload가 선택 날짜를 포함하는지 */
+  /** payload가 선택 날짜 화면에 필요한 기간(policy.need — 하루 화면은 그 날짜, 주간 화면은 그 주)을 모두 포함하는지 */
   covered: boolean
   retry: () => void
+}
+
+/** 받은(받는) 기간 w가 날짜 d 화면에 필요한 기간(policy.need)을 모두 포함하는지 */
+function fitsWindow(policy: WindowPolicy, w: TimetableWindow | null, d: Ymd): boolean {
+  return !!w && windowContains(w, policy.need(d))
 }
 
 const EMPTY: TeacherTimetableState = { payload: null, syncedAt: null, loading: false, error: null }
 /** 화면 복귀 때 이보다 오래된 자료면 다시 받음(교환·보결 수락은 시간표 버전을 올리지 않음) */
 const FOCUS_STALE_MS = 30 * 1000
 
-export function useTeacherTimetable(uid: string | null, date: Ymd | null, schoolCode: string | null): TeacherTimetableHook {
+/**
+ * policy: 날짜 → 받을 기간·필요한 기간. 기본(DAY_WINDOW_POLICY)은 홈 카드 그대로. 렌더마다 바뀌지 않는 모듈 상수를 넘기세요
+ */
+export function useTeacherTimetable(uid: string | null, date: Ymd | null, schoolCode: string | null, policy: WindowPolicy = DAY_WINDOW_POLICY): TeacherTimetableHook {
   // 계정별 상태: 저장된 상태의 uid가 지금 uid와 다르면(계정 전환 직후) 빈 상태로 봄
   const [keyed, setKeyed] = useState<TeacherTimetableState & { uid: string | null }>({ ...EMPTY, uid: null })
   const state: TeacherTimetableState = uid && keyed.uid === uid ? keyed : EMPTY
@@ -128,10 +137,14 @@ export function useTeacherTimetable(uid: string | null, date: Ymd | null, school
   const subFailedRef = useRef(false)
   const staleRetryRef = useRef(0)
   const loadSelfRef = useRef<((win: TimetableWindow) => Promise<void>) | null>(null)
+  const policyRef = useRef<WindowPolicy>(policy)
 
   useEffect(() => {
     dateRef.current = date
   }, [date])
+  useEffect(() => {
+    policyRef.current = policy
+  }, [policy])
 
   const commit = useCallback((next: TeacherTimetableState) => {
     stateRef.current = next
@@ -154,7 +167,7 @@ export function useTeacherTimetable(uid: string | null, date: Ymd | null, school
       if (res.ok) {
         const p = res.payload
         commit({ payload: p, syncedAt: Date.now(), loading: false, error: null })
-        const next = planAfterLoad({ date: dateRef.current, win, payload: p, knownRevision: knownRevRef.current, staleRetries: staleRetryRef.current })
+        const next = planAfterLoad({ date: dateRef.current, win, payload: p, knownRevision: knownRevRef.current, staleRetries: staleRetryRef.current, policy: policyRef.current })
         if (next.kind === 'reload-revision') staleRetryRef.current++
         else if (next.kind === 'done') staleRetryRef.current = 0
         if (next.kind !== 'done') void loadSelfRef.current?.(next.win)
@@ -190,7 +203,7 @@ export function useTeacherTimetable(uid: string | null, date: Ymd | null, school
   useEffect(() => {
     if (!uid || !date) return
     const s = stateRef.current
-    const plan = planForDate({ date, inflight: inflightRef.current, payload: s.payload, fromCache: false, knownRevision: knownRevRef.current })
+    const plan = planForDate({ date, inflight: inflightRef.current, payload: s.payload, fromCache: false, knownRevision: knownRevRef.current, policy: policyRef.current })
     if (plan.kind === 'load') {
       void load(plan.win)
       return
@@ -215,7 +228,7 @@ export function useTeacherTimetable(uid: string | null, date: Ymd | null, school
         if (!p || rev <= p.revision) return
         const d = dateRef.current
         const w = wantedRef.current
-        void load(w && (!d || windowCovers(w, d)) ? w : d ? windowFor(d) : { from: p.from, to: p.to })
+        void load(w && (!d || fitsWindow(policyRef.current, w, d)) ? w : d ? policyRef.current.fetch(d) : { from: p.from, to: p.to })
       },
       () => {
         subFailedRef.current = true
@@ -235,7 +248,7 @@ export function useTeacherTimetable(uid: string | null, date: Ymd | null, school
       const stale = !s.syncedAt || Date.now() - s.syncedAt > FOCUS_STALE_MS
       if (!force && !subFailedRef.current && !s.error && !stale) return
       const w = wantedRef.current
-      void load(w && windowCovers(w, d) ? w : windowFor(d))
+      void load(w && fitsWindow(policyRef.current, w, d) ? w : policyRef.current.fetch(d))
     }
     const onFocus = () => refresh(false)
     const onOnline = () => refresh(true)
@@ -253,8 +266,8 @@ export function useTeacherTimetable(uid: string | null, date: Ymd | null, school
     const d = dateRef.current
     if (!d) return
     const w = wantedRef.current
-    void load(w && windowCovers(w, d) ? w : windowFor(d))
+    void load(w && fitsWindow(policyRef.current, w, d) ? w : policyRef.current.fetch(d))
   }, [load])
 
-  return { ...state, covered: !!(state.payload && date && coversDate(state.payload, date)), retry }
+  return { ...state, covered: !!(state.payload && date && fitsWindow(policy, state.payload, date)), retry }
 }
