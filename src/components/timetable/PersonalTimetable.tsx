@@ -70,7 +70,8 @@ function noticeText(n: NoticeView): string {
   return `${what} ${p}교시`
 }
 
-function InfoLine({ tone, icon, children }: { tone: 'amber' | 'red' | 'gray' | 'sky'; icon: 'warn' | 'info' | 'clock' | 'move' | 'x'; children: ReactNode }): JSX.Element {
+/** 안내 한 줄(겹침·취소·쉬는 날 등) — 교사 '내 시간표'(TeacherTimetable)도 같은 모양으로 씀 */
+export function InfoLine({ tone, icon, children }: { tone: 'amber' | 'red' | 'gray' | 'sky'; icon: 'warn' | 'info' | 'clock' | 'move' | 'x'; children: ReactNode }): JSX.Element {
   const cls = {
     amber: 'bg-amber-50 text-amber-900 ring-amber-200',
     red: 'bg-red-50 text-red-800 ring-red-200',

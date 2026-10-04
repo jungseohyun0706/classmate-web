@@ -22,6 +22,7 @@ export type TimetableStateKind =
   | 'forbidden' // 권한 오류
   | 'not-student' // 학생 계정 아님
   | 'server' // 서버 오류
+  | 'teacher-empty' // 교사 '내 시간표': 공식 수업도 직접 등록한 주간 시간표도 없음
 
 /** 내 수업 화면(U2) 앵커 */
 export const COURSES_LINKS = {
@@ -218,6 +219,13 @@ function specOf(props: TimetableStateCardProps): Spec {
         tone: 'neutral',
         icon: 'moon',
       }
+    case 'teacher-empty':
+      return {
+        title: '아직 등록된 내 시간표가 없어요',
+        desc: '수업 관리에서 내 수업을 만들거나, 내 주간 시간표를 등록하면 여기에 오늘 수업이 보여요.',
+        tone: 'info',
+        icon: 'book',
+      }
     case 'offline':
       return { title: '인터넷 연결을 확인해 주세요', desc: '연결되면 다시 시도해 주세요.', tone: 'warn', icon: 'wifi', role: 'alert' }
     case 'forbidden':
@@ -343,6 +351,16 @@ function actionsOf(props: TimetableStateCardProps): JSX.Element[] {
           </ActionBtn>
         )
       }
+      break
+    case 'teacher-empty':
+      out.push(
+        <LinkBtn key="courses" href="/teacher/courses" primary>
+          수업 관리
+        </LinkBtn>,
+        <LinkBtn key="my-schedule" href="/teacher/my-schedule">
+          내 시간표 등록
+        </LinkBtn>
+      )
       break
     case 'outside-term':
       if (onGoToday && !isToday) {

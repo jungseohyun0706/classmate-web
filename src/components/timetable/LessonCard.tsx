@@ -1,4 +1,5 @@
 import type { JSX } from 'react'
+import Link from 'next/link'
 import { slotMinutes } from '../../lib/timetable/engine'
 import { toUtcDate, weekdayOf } from '../../lib/timetable/dates'
 import type { ChangeField, ChangeInfo, LessonView, PeriodTime, SlotState, Ymd } from '../../lib/timetable/types'
@@ -9,6 +10,8 @@ import type { ChangeField, ChangeInfo, LessonView, PeriodTime, SlotState, Ymd } 
  * - 변경: 빨간 테두리 + 배지 텍스트(시간 변경/날짜 변경/교실 변경/교사 변경/보강) + 전후('3교시 → 2교시'). 사유·안내 시각은 펼쳐서
  * - 직접 입력: 회색 점선 테두리 + '직접 입력 · 학교 시간표와 연결되지 않음', 서버 반영 전이면 '저장 대기'
  * - 내부 id·관리 필드는 보이지 않음
+ * - 교사 '내 시간표'(TeacherTimetable)가 쓰는 선택 값: 덧붙이는 배지(대신 들어가는 수업 등)·취소선·수업 상세 링크·학급 표시·직접 등록 문구.
+ *   주지 않으면 학생 화면 모양 그대로
  */
 export interface LessonCardProps {
   lesson: LessonView
@@ -18,6 +21,16 @@ export interface LessonCardProps {
   isNow?: boolean
   /** 다른 일정과 겹침 — 노란 표시(문구는 목록 위 경고 줄) */
   conflict?: boolean
+  /** 덧붙이는 배지(교사 화면: '대신 들어가는 수업', '○○ 선생님이 대신 들어가요 (품앗이)' 등). 빨강이 하나라도 있으면 빨간 테두리 */
+  extraBadges?: Array<{ label: string; tone: 'red' | 'gray' | 'sky' }>
+  /** 취소된 차시 — 교시·제목에 취소선 */
+  struck?: boolean
+  /** 제목을 링크로(교사 수업 상세) */
+  href?: string | null
+  /** 교실 앞에 붙일 표시(교사 화면: '3학년 4반') */
+  metaPrefix?: string | null
+  /** 직접 입력(source personal) 배지 문구 — 기본 '직접 입력 · 학교 시간표와 연결되지 않음' */
+  personalLabel?: string
 }
 
 const WEEKDAY_KO = ['', '월', '화', '수', '목', '금', '토', '일']
@@ -105,7 +118,24 @@ function ChangeIcon(): JSX.Element {
   )
 }
 
-export default function LessonCard({ lesson, periodTimes, compact = false, isNow = false, conflict = false }: LessonCardProps): JSX.Element {
+const EXTRA_TONE: Record<'red' | 'gray' | 'sky', string> = {
+  red: 'bg-red-100 text-red-700 ring-red-200 font-bold',
+  gray: 'bg-gray-100 text-gray-600 ring-gray-200 font-medium',
+  sky: 'bg-sky-50 text-sky-800 ring-sky-200 font-medium',
+}
+
+export default function LessonCard({
+  lesson,
+  periodTimes,
+  compact = false,
+  isNow = false,
+  conflict = false,
+  extraBadges = [],
+  struck = false,
+  href = null,
+  metaPrefix = null,
+  personalLabel,
+}: LessonCardProps): JSX.Element {
   const personal = lesson.source === 'personal'
   const change = lesson.change
   const changed = !!change
@@ -115,8 +145,9 @@ export default function LessonCard({ lesson, periodTimes, compact = false, isNow
   const lines = change ? changeSummaryLines(change) : []
   const badges = change ? changeBadgeLabels(change) : []
   const hasDetail = !!(change && (change.reason || change.publishedAt))
+  const redExtra = struck || extraBadges.some((b) => b.tone === 'red')
 
-  const frame = changed
+  const frame = changed || redExtra
     ? 'border-2 border-red-300 bg-red-50/50'
     : personal
       ? 'border-2 border-dashed border-gray-300 bg-gray-50'
@@ -125,28 +156,49 @@ export default function LessonCard({ lesson, periodTimes, compact = false, isNow
         : 'border border-gray-200 bg-white'
 
   const meta: string[] = []
+  if (metaPrefix) meta.push(metaPrefix)
   if (lesson.roomName) meta.push(lesson.roomName)
   if (!compact && lesson.teacherNames.length) meta.push(`${lesson.teacherNames.join(', ')} 선생님`)
 
   return (
     <article
-      aria-label={`${periodLabel} ${title}${changed ? ` (${badges.join(', ')})` : ''}${personal ? ' (직접 입력)' : ''}`}
+      aria-label={`${periodLabel} ${title}${changed ? ` (${badges.join(', ')})` : ''}${extraBadges.length ? ` (${extraBadges.map((b) => b.label).join(', ')})` : ''}${personal ? ' (직접 입력)' : ''}`}
       className={`relative rounded-xl ${frame} ${compact ? 'px-3 py-2.5' : 'px-4 py-3'} ${conflict ? 'ring-2 ring-amber-300' : ''}`}
     >
       <div className="flex items-start gap-3">
         {/* 교시·시각 (교시가 없는 직접 입력은 시작 시각을 크게) */}
         <div className={`shrink-0 text-center ${compact ? 'w-12' : 'w-14'}`}>
-          <p className={`font-bold ${changed ? 'text-red-700' : 'text-gray-900'} ${compact ? 'text-sm' : 'text-base'}`}>
+          <p className={`font-bold ${changed || redExtra ? 'text-red-700' : 'text-gray-900'} ${struck ? 'line-through' : ''} ${compact ? 'text-sm' : 'text-base'}`}>
             {lesson.period != null ? `${lesson.period}교시` : time ? time.split('~')[0] : '시간 미정'}
           </p>
           {lesson.period != null
-            ? time && <p className="mt-0.5 text-[11px] leading-tight text-gray-500">{time}</p>
+            ? time && (
+                // 좁은 칸(홈 카드 w-12)에서 '08:40~09:30'이 옆 칸으로 넘치지 않게 '~' 뒤에서 줄을 바꿀 수 있게 함
+                <p className="mt-0.5 text-[11px] leading-tight text-gray-500">
+                  {time.includes('~') ? (
+                    <>
+                      {time.split('~')[0]}~<wbr />
+                      {time.split('~')[1]}
+                    </>
+                  ) : (
+                    time
+                  )}
+                </p>
+              )
             : time && time.includes('~') && <p className="mt-0.5 text-[11px] leading-tight text-gray-500">~{time.split('~')[1]}</p>}
         </div>
 
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h3 className={`min-w-0 font-semibold text-gray-900 break-keep wrap-anywhere ${compact ? 'text-sm' : 'text-[15px]'}`}>{title}</h3>
+            <h3 className={`min-w-0 font-semibold break-keep wrap-anywhere ${struck ? 'text-gray-500 line-through' : 'text-gray-900'} ${compact ? 'text-sm' : 'text-[15px]'}`}>
+              {href ? (
+                <Link href={href} className="underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded">
+                  {title}
+                </Link>
+              ) : (
+                title
+              )}
+            </h3>
             {isNow && (
               <span className="shrink-0 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white">지금</span>
             )}
@@ -165,7 +217,7 @@ export default function LessonCard({ lesson, periodTimes, compact = false, isNow
           )}
 
           {/* 배지: 변경(빨강) / 직접 입력(회색) / 저장 대기 */}
-          {(changed || personal || lesson.pendingSync) && (
+          {(changed || personal || lesson.pendingSync || extraBadges.length > 0) && (
             <div className="mt-1.5 flex flex-wrap gap-1">
               {badges.map((b) => (
                 <span key={b} className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-bold text-red-700 ring-1 ring-red-200">
@@ -173,9 +225,15 @@ export default function LessonCard({ lesson, periodTimes, compact = false, isNow
                   {b}
                 </span>
               ))}
+              {extraBadges.map((b) => (
+                <span key={`x:${b.label}`} className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ring-1 break-keep wrap-anywhere ${EXTRA_TONE[b.tone]}`}>
+                  {b.tone === 'red' && <ChangeIcon />}
+                  {b.label}
+                </span>
+              ))}
               {personal && (
                 <span className="inline-flex max-w-full items-center rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-gray-600 ring-1 ring-gray-300 break-keep">
-                  직접 입력 · 학교 시간표와 연결되지 않음
+                  {personalLabel || '직접 입력 · 학교 시간표와 연결되지 않음'}
                 </span>
               )}
               {lesson.pendingSync && (

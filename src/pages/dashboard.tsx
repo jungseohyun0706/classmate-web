@@ -4,6 +4,7 @@ import { auth } from '../lib/firebase'
 import { onAuthStateChanged, signOut } from 'firebase/auth'
 import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore'
 import TodayCard from '../components/TodayCard'
+import TeacherTimetable from '../components/timetable/TeacherTimetable'
 import { useUI } from '../components/ui/feedback'
 import { useInstallPrompt } from '../components/ui/install'
 import InviteCodeInput from '../components/InviteCodeInput'
@@ -332,14 +333,18 @@ export default function Dashboard() {
           )}
         </div>
 
-        {hasClass && userData?.schoolCode && (
-          <div className="mb-6">
+        {/* 메인: 선생님 본인 시간표(오늘의 내 수업). 학급 시간표는 메인이 아니고 담임만 '우리 반 시간표 보기' 링크로 */}
+        {hasSchool && user?.uid && (
+          <div className="mb-6 space-y-6">
+            <TeacherTimetable uid={String(user.uid)} schoolCode={String(userData.schoolCode)} homeroom={!!hasClass} />
+            {/* 급식·학사일정(학급 시간표 부분은 숨김) */}
             <TodayCard
               schoolCode={String(userData.schoolCode)}
-              schoolName={String(userData.schoolName)}
-              grade={userData.grade as string | number}
-              classNm={userData.classNm as string | number}
-              classId={String(userData.classId)}
+              schoolName={String(userData.schoolName ?? '')}
+              grade={(userData.grade ?? '') as string | number}
+              classNm={(userData.classNm ?? '') as string | number}
+              classId={String(userData.classId ?? '')}
+              showTimetable={false}
             />
           </div>
         )}
