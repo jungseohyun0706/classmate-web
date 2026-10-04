@@ -249,6 +249,8 @@ const form = loadTs('src/components/timetable/PersonalEntryForm.tsx', {
   '../../lib/timetable/client': {},
   '../../lib/timetable/personalEntries': pe,
   '../../lib/firebase': firebaseStub,
+  // 수업 담기 안내(요일·교시로 학교 수업 찾기) — 이 테스트는 오류 문구만 봄
+  '../../lib/timetable/coursePicker': {},
   '../ui/feedback': {},
   './LessonCard': {},
 }) as { personalWriteErrorText: (code: string, linking?: boolean, uid?: string | null) => string }

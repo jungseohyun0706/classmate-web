@@ -1,5 +1,5 @@
 // U2 학생 '내 수업' 화면 E2E (그룹 'u2-student-courses')
-// 대상: /student/courses (#invite 초대 코드 · #mine 참여 중인 수업 · #catalog 공식 수업 찾기 · #personal 직접 입력)
+// 대상: /student/courses (#invite 초대 코드 · #mine 참여 중인 수업 · #catalog 수업 담기(예전 '공식 수업 찾기') · #personal 직접 입력)
 //       + 저장 결과가 /student/timetable?date=·홈 카드에 반영되는지
 // 실행 전제: 실제 서버(BASE, 기본 http://127.0.0.1:3100, NEXT_PUBLIC_USE_EMULATORS=1 빌드)
 //           + Firebase 에뮬레이터(Firestore 8080 — 규칙 firestore.rules, Auth 9099)
@@ -8,7 +8,7 @@
 // 모든 데이터는 에뮬레이터의 테스트용 가상 데이터이며 실제 학생 정보가 아닙니다.
 //
 // 요구 식별자(지시서): R07 R08 R11 R15, T13 T14 T15 T24 T34
-//  - 브라우저 시각은 2026-10-06(화) 09:30 KST로 고정. 서버는 실제 시각 — 공식 수업 찾기(학기)·신청 수강의 시작일(from)은 서버 날짜 기준.
+//  - 브라우저 시각은 2026-10-06(화) 09:30 KST로 고정. 서버는 실제 시각 — 수업 담기(학기)·담은 수강의 시작일(from)은 서버 날짜 기준.
 //    서버 날짜가 10/6보다 늦으면 '신청 → 10/6 시간표' 확인은 건너뛰고 note로 남깁니다.
 import { admin, wipe, createUsers, writeNeisFixture, clientSession, reporter, launchBrowser, newPage, uiLogin, sleep, Timestamp, BASE, PW } from './lib/env.mjs'
 import { doc, setDoc, updateDoc, serverTimestamp } from './lib/firestore-client.mjs'
@@ -22,7 +22,7 @@ const NEXT_TUE = '20261013'
 const TERM = '2026-2'
 const S1 = { schoolCode: 'S1', schoolName: '테스트고등학교', officeCode: 'B10' }
 
-/** 서버 시각 기준 오늘(KST)과 학기 id(서버 defaultTermFor와 같은 규칙) — 공식 수업 찾기는 서버의 '지금 학기' 수업만 보여 줌 */
+/** 서버 시각 기준 오늘(KST)과 학기 id(서버 defaultTermFor와 같은 규칙) — 수업 담기는 서버의 '지금 학기' 수업만 보여 줌 */
 function serverToday() {
   const d = new Date(Date.now() + 9 * 3600 * 1000)
   return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`
@@ -77,7 +77,7 @@ async function seed() {
   await createUsers([
     { uid: U.a, email: 'a@u2.e2e.kr', doc: St('김학생', 'S1_3_4', 3, 4) }, // T14·T24: 공통 문학 + 영어 C(예전 그룹) + 한국사 E(10/12부터) + 수학 C(종료)
     { uid: U.e, email: 'e@u2.e2e.kr', doc: St('이학생', 'S1_3_5', 3, 5) }, // T15: 영어 B 활성 수강
-    { uid: U.k, email: 'k@u2.e2e.kr', doc: St('박학생', 'S1_3_5', 3, 5) }, // T13: 수강 없음 → 공식 수업 찾기에서 신청
+    { uid: U.k, email: 'k@u2.e2e.kr', doc: St('박학생', 'S1_3_5', 3, 5) }, // T13: 수강 없음 → 수업 담기에서 담기
     { uid: U.g, email: 'g@u2.e2e.kr', doc: St('최학생', 'S1_3_5_g_engb', null, null) }, // 그룹이 소속처럼 저장된 예전 학생
     { uid: U.ns, email: 'ns@u2.e2e.kr', doc: { role: 'student', status: 'approved', name: '정학생', displayName: '정학생', classId: null } }, // 학교 없음
     { uid: U.np, email: 'np@u2.e2e.kr' }, // 가입 미완료(Auth 계정만)
@@ -117,7 +117,7 @@ async function seed() {
   await course(C.engC, '영어 C', '영어', 'C', '정영어', '영어전용실', { source: 'legacy-group' })
   await course(C.mathC, '수학 C', '수학', 'C', '오수학', '수학실')
   await course(C.histE, '한국사 E', '한국사', 'E', '서역사', '역사실')
-  // 공식 수업 찾기에 보이는 수업(서버 '지금 학기') — 바로 참여 / 선생님 승인 필요 / 비공개
+  // 수업 담기에 보이는 수업(서버 '지금 학기') — 바로 담기 / 선생님 승인 필요 / 비공개
   await course(C.sciA, '생활과 과학 A', '생활과 과학', 'A', '최과학', '과학실', { termId: CAT_TERM, invitePolicy: 'auto', catalogVisible: true })
   await course(C.physD, '물리 D', '물리학', 'D', '강물리', '물리실', { termId: CAT_TERM, invitePolicy: 'approval', catalogVisible: true })
   await course(C.hidden, '비공개 동아리', '동아리', null, '한비밀', '동아리실', { termId: CAT_TERM, invitePolicy: 'auto', catalogVisible: false })
@@ -453,7 +453,10 @@ async function t24MineList(browser) {
   await g.ctx.close()
 }
 
-// ───────────────────────── T13: 공식 수업 찾기 → 신청 ─────────────────────────
+// ───────────────────────── T13: 수업 담기(과목으로 찾기) → 담기 ─────────────────────────
+// (예전 '공식 수업 찾기 → 신청'을 '수업 담기 → 담은 수업 한 번에 담기'로 바꾼 흐름. 시간표 칸 보기는 u7에서)
+
+const PICKER = '수업 담기 (학교 수업 목록에서 고르기)'
 
 async function t13Catalog(browser) {
   const sToday = serverToday()
@@ -468,17 +471,19 @@ async function t13Catalog(browser) {
     })
   }
   const { ctx, page, errors } = await openAs(browser, 'k@u2.e2e.kr', '/student/courses#catalog', setup)
-  const cat = region(page, '공식 수업 찾기')
+  const cat = region(page, PICKER)
+  await visible(cat.getByRole('button', { name: '과목으로 찾기' }), 15000)
+  await cat.getByRole('button', { name: '과목으로 찾기' }).click()
   const sci = await articleText(cat, '생활과 과학 A', 15000)
-  check('T13.1', '공개 수업 목록: 생활과 과학 A · 과목·분반·최과학 선생님·화 4교시, 목 2교시(교실 과학실) · "바로 참여"', !!sci && sci.includes('분반 A') && sci.includes('최과학 선생님') && sci.includes('화 4교시') && sci.includes('목 2교시') && sci.includes('과학실') && sci.includes('바로 참여'), sci ?? '없음')
+  check('T13.1', '공개 수업 목록: 생활과 과학 A · 과목·분반·최과학 선생님·화 4교시, 목 2교시(교실 과학실) · "바로 담기"', !!sci && sci.includes('분반 A') && sci.includes('최과학 선생님') && sci.includes('화 4교시') && sci.includes('목 2교시') && sci.includes('과학실') && sci.includes('바로 담기'), sci ?? '없음')
   const phys = await articleText(cat, '물리 D')
   check('T13.2', '승인 수업: 물리 D · "선생님 승인 필요"', !!phys && phys.includes('선생님 승인 필요'), phys ?? '없음')
   const catText = await cat.innerText()
   check('T13.3', '비공개(catalogVisible false) 수업·다른 공개 안 된 수업은 목록에 없음', !catText.includes('비공개 동아리') && !catText.includes('영어 B'))
   const box = await cat.boundingBox()
-  check('T13.3b', '#catalog 앵커로 들어오면 공식 수업 찾기 섹션으로 스크롤', !!box && box.y < 900 && box.y + box.height > 0, box ? `y=${Math.round(box.y)}` : '')
+  check('T13.3b', '#catalog 앵커로 들어오면 수업 담기 섹션으로 스크롤', !!box && box.y < 900 && box.y + box.height > 0, box ? `y=${Math.round(box.y)}` : '')
 
-  // 검색은 목록 필터일 뿐(자동 신청·연결 없음)
+  // 검색은 목록 필터일 뿐(자동 담기·연결 없음)
   await cat.getByLabel('과목명으로 찾기').fill('물리')
   const onlyPhys = (await visible(art(cat, '물리 D'), 3000)) && !(await visible(art(cat, '생활과 과학 A'), 1000))
   await sleep(800)
@@ -487,22 +492,24 @@ async function t13Catalog(browser) {
   check('T13.4/R07', '과목명 검색은 목록만 좁힘(수강 문서가 생기지 않음)', onlyPhys && afterSearch.size === 0, `수강 ${afterSearch.size}건`)
   await cat.getByLabel('과목명으로 찾기').fill('')
 
-  // 신청 오류 code 안내(응답 모킹 409 course-ended)
+  // 담기 오류 code 안내(응답 모킹 409 course-ended) — 담은 수업은 그대로 남아 다시 담을 수 있음
+  const cart = region(page, '담은 수업')
   failNext = { status: 409, code: 'course-ended' }
-  await cat.getByRole('button', { name: '생활과 과학 A 신청' }).click()
-  await confirmSheet(page, '신청')
-  check('T13.5', '신청 오류 409 course-ended → "이미 끝난 수업이에요." 안내(빈 결과로 처리하지 않음)', await visible(cat.getByText('이미 끝난 수업이에요.'), 8000))
+  await cat.getByRole('button', { name: '생활과 과학 A 담기' }).click()
+  await cart.getByRole('button', { name: /내 시간표에 담기 \(1\)/ }).click()
+  await confirmSheet(page, '담기')
+  check('T13.5', '담기 오류 409 course-ended → "이미 끝난 수업이에요." 안내(빈 결과로 처리하지 않음), 담은 수업 유지', (await visible(cart.getByText('이미 끝난 수업이에요.'), 8000)) && (await visible(cart.getByText('담은 수업 1'), 2000)))
 
-  // 바로 참여 수업 신청 → 내 시간표에 추가
-  await visible(cat.getByRole('button', { name: '생활과 과학 A 신청' }), 10000)
-  await cat.getByRole('button', { name: '생활과 과학 A 신청' }).click()
-  const sheetTitle = await confirmSheet(page, '신청')
-  check('T13.6', '신청 전 확인 시트(수업 이름)', sheetTitle.includes('생활과 과학 A'), sheetTitle)
+  // 바로 담기 수업 → 내 시간표에 추가
+  await cart.getByRole('button', { name: /내 시간표에 담기 \(1\)/ }).click()
+  const sheetTitle = await confirmSheet(page, '담기')
+  check('T13.6', '담기 전 확인 시트(수업 이름)', sheetTitle.includes('생활과 과학 A'), sheetTitle)
   const added = await visible(cat.getByText('내 시간표에 추가됐어요'), 15000)
+  const resultOk = await visible(cart.getByText(/생활과 과학 A — 추가됨/), 5000)
   const enrSci = (await db.doc(`schools/S1/enrollments/${C.sciA}__${U.k}`).get()).data() || {}
-  check('T13.7', 'auto 수업 신청 → "내 시간표에 추가됐어요" + 수강 active(source request)', added && enrSci.status === 'active' && enrSci.source === 'request', JSON.stringify({ status: enrSci.status, source: enrSci.source, from: enrSci.from }))
+  check('T13.7', 'auto 수업 담기 → "추가됨"·"내 시간표에 추가됐어요" + 수강 active(source request)', added && resultOk && enrSci.status === 'active' && enrSci.source === 'request', JSON.stringify({ status: enrSci.status, source: enrSci.source, from: enrSci.from }))
   const sciAfter = await articleText(cat, '생활과 과학 A')
-  check('T13.8', '신청 후 공식 수업 목록에 "참여 중"(신청 버튼 없음)', !!sciAfter && sciAfter.includes('참여 중') && !(await visible(cat.getByRole('button', { name: '생활과 과학 A 신청' }), 1000)), sciAfter ?? '없음')
+  check('T13.8', '담은 뒤 목록에 "참여 중"(담기 버튼 없음)', !!sciAfter && sciAfter.includes('참여 중') && !(await visible(cat.getByRole('button', { name: '생활과 과학 A 담기' }), 1000)), sciAfter ?? '없음')
   const mine = region(page, '참여 중인 수업')
   const mineSci = await articleText(mine, '생활과 과학 A', 15000)
   const startsLater = !!enrSci.from && enrSci.from > TODAY
@@ -513,27 +520,31 @@ async function t13Catalog(browser) {
     mineSci ?? '없음'
   )
 
-  // 승인 필요 수업 신청 → 승인 대기
-  await cat.getByRole('button', { name: '물리 D 신청' }).click()
-  await confirmSheet(page, '신청')
+  // 승인 필요 수업 담기 → 승인 대기
+  await cat.getByRole('button', { name: '물리 D 담기' }).click()
+  await cart.getByRole('button', { name: /내 시간표에 담기 \(1\)/ }).click()
+  await confirmSheet(page, '담기')
   const waiting = await visible(cat.getByText('선생님 승인을 기다려요'), 15000)
   const enrPhys = (await db.doc(`schools/S1/enrollments/${C.physD}__${U.k}`).get()).data() || {}
-  check('T13.10', 'approval 수업 신청 → "선생님 승인을 기다려요" + 수강 pending', waiting && enrPhys.status === 'pending', JSON.stringify({ status: enrPhys.status }))
+  check('T13.10', 'approval 수업 담기 → "선생님 승인을 기다려요" + 수강 pending', waiting && enrPhys.status === 'pending', JSON.stringify({ status: enrPhys.status }))
   const minePhys = await articleText(mine, '물리 D', 15000)
   check('T13.11', '참여 중인 수업: 물리 D "승인 대기" + "물리 D 수업 승인을 기다리고 있어요"', !!minePhys && minePhys.includes('승인 대기') && minePhys.includes('물리 D 수업 승인을 기다리고 있어요'), minePhys ?? '없음')
   await shot(page, 'T13-catalog-after')
 
-  // 새로고침 뒤에도 서버 myStatus로 상태 유지
+  // 새로고침 뒤에도 상태 유지(과목으로 찾기 목록)
   await page.reload({ waitUntil: 'load' })
-  const sciReload = await articleText(region(page, '공식 수업 찾기'), '생활과 과학 A', 15000)
-  const physReload = await articleText(region(page, '공식 수업 찾기'), '물리 D')
-  check('T13.12', '다시 열어도 공식 수업 목록에 참여 중·승인 대기', !!sciReload && sciReload.includes('참여 중') && !!physReload && physReload.includes('승인 대기'))
+  const cat2 = region(page, PICKER)
+  await visible(cat2.getByRole('button', { name: '과목으로 찾기' }), 15000)
+  await cat2.getByRole('button', { name: '과목으로 찾기' }).click()
+  const sciReload = await articleText(cat2, '생활과 과학 A', 15000)
+  const physReload = await articleText(cat2, '물리 D')
+  check('T13.12', '다시 열어도 수업 담기 목록에 참여 중·승인 대기', !!sciReload && sciReload.includes('참여 중') && !!physReload && physReload.includes('승인 대기'))
 
   // 개인 시간표(10/6)에 이동수업 표시(소속 3학년 5반, 수업 장소 과학실) + 승인 대기 안내
   await page.goto(BASE + `/student/timetable?date=${TODAY}`, { waitUntil: 'load' })
   const tt = ttRegion(page)
   if (startsLater || sToday > TODAY) {
-    note('T13.13', `서버 날짜(${sToday})가 10/6 뒤라 신청 수강이 ${enrSci.from}부터 — 10/6 시간표 확인 생략`)
+    note('T13.13', `서버 날짜(${sToday})가 10/6 뒤라 담은 수강이 ${enrSci.from}부터 — 10/6 시간표 확인 생략`)
   } else {
     const card = await articleText(tt, /4교시 생활과 과학 A/, 15000)
     check('T13.13', '개인 시간표 10/6: 4교시 생활과 과학 A · 과학실(소속 반과 다른 교실)', !!card && card.includes('과학실'), card ?? '없음')
@@ -670,7 +681,7 @@ async function t34States(browser) {
     await anon.page.fill('input[type=password]', PW)
     await anon.page.locator('button[type=submit]:visible').first().click()
     await anon.page.waitForURL(/\/student\/courses/, { timeout: 25000 })
-    check('T34.2/R15', '로그인 뒤 /student/courses(공식 수업 찾기)로 돌아옴', await visible(region(anon.page, '공식 수업 찾기'), 15000), anon.page.url())
+    check('T34.2/R15', '로그인 뒤 /student/courses(수업 담기)로 돌아옴', await visible(region(anon.page, PICKER), 15000), anon.page.url())
   } catch (e) {
     check('T34.2/R15', '로그인 뒤 /student/courses로 돌아옴', false, `${anon.page.url()} ${String(e?.message || e).slice(0, 120)}`)
   }
@@ -705,17 +716,19 @@ async function t34States(browser) {
   }
   const a = await openAs(browser, 'a@u2.e2e.kr', '/student/courses', setup)
   const mine = region(a.page, '참여 중인 수업')
-  const cat = region(a.page, '공식 수업 찾기')
+  const cat = region(a.page, PICKER)
   const mineErr = await visible(mine.getByText('참여 중인 수업을 불러오지 못했어요 (load-failed)'), 20000)
-  const catErr = await visible(cat.getByText('공식 수업 목록을 불러오지 못했어요 (server-error)'), 10000)
+  const catErr = await visible(cat.getByText('학교 수업 목록을 불러오지 못했어요 (server-error)'), 10000)
   const text = await bodyText(a.page)
   check('T34.6/R15', '수업 목록 500 → "참여 중인 수업을 불러오지 못했어요 (load-failed)" + 다시 시도("연결된 수업이 없어요"로 위장 안 함)', mineErr && (await visible(mine.getByRole('button', { name: '다시 시도' }), 2000)) && !text.includes('아직 연결된 수업이 없어요'))
-  check('T34.7/R15', '공식 수업 500 → "공식 수업 목록을 불러오지 못했어요 (server-error)" + 다시 시도("공개된 수업이 없어요"로 위장 안 함)', catErr && !text.includes('지금 학교에 공개된 수업이 없어요'))
+  check('T34.7/R15', '수업 담기 목록 500 → "학교 수업 목록을 불러오지 못했어요 (server-error)" + 다시 시도("공개된 수업이 없어요"로 위장 안 함)', catErr && !text.includes('지금 학교에 공개된 수업이 없어요'))
   await shot(a.page, 'T34-errors')
   ttFail = false
   catFail = false
   await mine.getByRole('button', { name: '다시 시도' }).click()
   await cat.getByRole('button', { name: '다시 시도' }).click()
+  await visible(cat.getByRole('button', { name: '과목으로 찾기' }), 15000)
+  await cat.getByRole('button', { name: '과목으로 찾기' }).click()
   check('T34.8', '다시 시도 → 목록 복구', (await visible(art(mine, '문학'), 15000)) && (await visible(art(cat, '물리 D'), 15000)))
   await a.ctx.close()
 
@@ -733,7 +746,7 @@ async function t34States(browser) {
 
 async function main() {
   await seed()
-  note('setup', `고정 시각 ${FIXED}, 학교 S1, 학기 ${TERM}(공식 수업 찾기 ${CAT_TERM}) — 문학(3-4 공통)·영어 B·영어 C·수학 C(종료)·한국사 E(10/12부터)·생활과 과학 A(바로 참여)·물리 D(승인)·비공개 동아리`)
+  note('setup', `고정 시각 ${FIXED}, 학교 S1, 학기 ${TERM}(수업 담기 ${CAT_TERM}) — 문학(3-4 공통)·영어 B·영어 C·수학 C(종료)·한국사 E(10/12부터)·생활과 과학 A(바로 참여)·물리 D(승인)·비공개 동아리`)
   const browser = await launchBrowser()
   try {
     await t14PersonalEntry(browser)

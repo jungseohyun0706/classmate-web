@@ -662,15 +662,33 @@ export default function StudentToday(): JSX.Element {
               <h2 id="my-courses-title" className="text-sm font-semibold text-gray-700">
                 내 수업
               </h2>
-              <Link
-                href="/student/courses"
-                className="-mr-2 inline-flex min-h-11 items-center px-2 text-xs font-semibold text-emerald-600 transition-colors hover:text-emerald-700"
-              >
-                {myCourses.length ? '전체' : '수업 추가'} &rarr;
-              </Link>
+              <div className="-mr-2 flex items-center gap-1">
+                <Link
+                  href="/student/courses#catalog"
+                  className="inline-flex min-h-11 items-center rounded-lg px-2 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                >
+                  + 수업 담기
+                </Link>
+                {myCourses.length > 0 && (
+                  <Link
+                    href="/student/courses"
+                    className="inline-flex min-h-11 items-center px-2 text-xs font-semibold text-emerald-600 transition-colors hover:text-emerald-700"
+                  >
+                    전체 &rarr;
+                  </Link>
+                )}
+              </div>
             </div>
             {myCourses.length === 0 ? (
-              <p className="mt-1 text-xs text-gray-500 break-keep">아직 참여 중인 수업이 없어요</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2 rounded-xl bg-emerald-50/60 px-3 py-2.5 ring-1 ring-emerald-100">
+                <p className="min-w-0 flex-1 text-xs text-gray-600 break-keep">아직 참여 중인 수업이 없어요 · 학교 수업 목록에서 골라 담아 보세요</p>
+                <Link
+                  href="/student/courses#catalog"
+                  className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                >
+                  수업 담기
+                </Link>
+              </div>
             ) : (
               <ul className="mt-1 flex flex-wrap gap-2">
                 {myCourses.slice(0, MAX_COURSE_CHIPS).map((c) => (

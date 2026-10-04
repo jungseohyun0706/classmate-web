@@ -21,6 +21,7 @@ import {
 } from '../../lib/timetable/personalEntries'
 import type { Course, PeriodTime, PersonalEntry, Weekday, Ymd } from '../../lib/timetable/types'
 import { auth } from '../../lib/firebase'
+import { myLessonsFrom, pickerTitle, slotSuggestions, type PickerCourse, type PickResult } from '../../lib/timetable/coursePicker'
 import { useUI } from '../ui/feedback'
 import { lessonTitle, shortDateKo } from './LessonCard'
 
@@ -34,6 +35,10 @@ import { lessonTitle, shortDateKo } from './LessonCard'
  * - 연결 전 확인: 직접 입력 일정과 그 공식 수업의 같은 요일 차시를 나란히 보여 주고 차이·겹침을 안내
  * - 연결 후: 공식 수업이 표시되고 메모만 붙어요 — 학교 변경이 자동 반영돼요. 연결 해제(null)도 가능
  * - 내부 id(courseId)는 DOM에 넣지 않음(선택지 값은 목록 순번)
+ * - 직접 입력은 학원·자습 같은 학교 밖 일정용 — 학교 수업은 '수업 담기'에서 골라야 변경이 자동 반영된다고 안내
+ * - '이 시간 학교 수업': 고른 요일 + 교시(또는 학교 교시 안의 시각)에 열리는 공개 수업 중 아직 내 것이 아닌 수업은 '담기',
+ *   이미 듣는 수업은 '연결'을 보여 줌. 요일·교시로만 찾고 입력한 제목으로는 찾지 않음. 자동으로 담거나 연결하지 않음
+ *   (담기는 화면의 담기 흐름 — 확인 시트 → requestMany, 연결은 학생이 고른 뒤 저장할 때)
  */
 
 // ───────────────────────── 표시 도우미 ─────────────────────────
@@ -267,6 +272,10 @@ export interface PersonalEntryFormProps {
   /** /api/timetable/me 자료 — 연결할 수 있는 수업·차시 비교용(없으면 연결 선택 불가 안내) */
   payload: MyTimetablePayload | null
   today: Ymd
+  /** 학교 공개 수업 목록(수업 담기와 같은 자료) — 있으면 '이 시간 학교 수업' 빠른 담기를 보여 줌 */
+  catalog?: PickerCourse[] | null
+  /** '이 시간 학교 수업' 담기 — 화면의 담기 흐름(확인 시트 → requestMany). 취소·실패면 null */
+  onQuickPick?: (c: PickerCourse) => Promise<PickResult | null>
   onDone: (r: PersonalEntryFormDone) => void
   onCancel: () => void
 }
@@ -479,7 +488,17 @@ function Field({ label, htmlFor, children, hint }: { label: string; htmlFor: str
   )
 }
 
-export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, today, onDone, onCancel }: PersonalEntryFormProps): JSX.Element {
+export default function PersonalEntryForm({
+  uid,
+  entry,
+  mode = 'edit',
+  payload,
+  today,
+  catalog,
+  onQuickPick,
+  onDone,
+  onCancel,
+}: PersonalEntryFormProps): JSX.Element {
   const { toast, confirm } = useUI()
   const base = useId()
   const fid = (k: string) => `${base}-${k}`
@@ -508,6 +527,8 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
   const [errors, setErrors] = useState<PersonalEntryErrors>({})
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState<boolean>(false)
+  /** '이 시간 학교 수업'에서 담은 결과(수업별) */
+  const [quick, setQuick] = useState<Record<string, 'busy' | PickResult>>({})
 
   // 열릴 때 첫 입력칸으로(연결만 고를 때는 수업 선택)
   useEffect(() => {
@@ -529,6 +550,31 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
   const slotDraft = slotDraftOf(values)
   const check = selected && selected.course && payload && linkChanged ? checkLink(slotDraft, selected.course, payload, today, uid) : null
   const titleForPreview = linkOnly && entry ? entry.title : values.title
+  // 같은 요일·교시의 학교 수업(제목은 넘기지 않음 — 이름으로 찾지 않음)
+  const myLessons = useMemo(() => (payload ? myLessonsFrom(payload, uid, today) : []), [payload, uid, today])
+  const suggestions =
+    !linkOnly && (catalog || payload)
+      ? slotSuggestions(
+          { kind: slotDraft.kind, weekday: slotDraft.weekday, date: slotDraft.date, period: slotDraft.period, start: slotDraft.start, end: slotDraft.end },
+          catalog || [],
+          myLessons,
+          payload?.periodTimes || []
+        )
+      : null
+  const quickOffered = suggestions ? suggestions.offered.slice(0, 6) : []
+  const quickLinkable = suggestions ? suggestions.linkable.filter((m) => options.some((o) => o.courseId === m.courseId && o.usable)) : []
+
+  const runQuickPick = async (c: PickerCourse): Promise<void> => {
+    if (!onQuickPick || quick[c.courseId] === 'busy') return
+    setQuick((prev) => ({ ...prev, [c.courseId]: 'busy' }))
+    const r = await onQuickPick(c)
+    setQuick((prev) => {
+      const next = { ...prev }
+      if (r) next[c.courseId] = r
+      else delete next[c.courseId]
+      return next
+    })
+  }
 
   const errorFor = (k: keyof PersonalEntryErrors): string | undefined => errors[k]
   const described = (k: keyof PersonalEntryErrors): string | undefined => (errors[k] ? fid(`${k}-err`) : undefined)
@@ -624,7 +670,7 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
   const noLinkable = !payload
     ? '참여 중인 수업 정보를 불러오지 못해 지금은 공식 수업에 연결할 수 없어요.'
     : options.length === 0
-      ? '참여 중인 공식 수업이 없어 연결할 수 없어요. 초대 코드나 공식 수업 찾기로 먼저 참여해 주세요.'
+      ? '참여 중인 공식 수업이 없어 연결할 수 없어요. 수업 담기나 초대 코드로 먼저 참여해 주세요.'
       : null
 
   const linkSelect = (
@@ -683,6 +729,15 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
       className="scroll-mt-20 space-y-4 rounded-xl bg-emerald-50/40 p-4 ring-1 ring-emerald-100"
     >
       <p className="text-sm font-bold text-gray-900">{formLabel}</p>
+      {!linkOnly && (
+        <p className="-mt-2 rounded-lg bg-white px-3 py-2 text-xs leading-relaxed text-gray-700 ring-1 ring-emerald-100 break-keep">
+          학원·자습 같은 <b>학교 밖 일정</b>을 적어 두는 곳이에요. 학교 수업은{' '}
+          <a href="#catalog" className="font-semibold text-emerald-700 underline underline-offset-2">
+            &lsquo;수업 담기&rsquo;
+          </a>
+          에서 골라 담아야 선생님이 바꾼 시간표가 자동으로 반영돼요.
+        </p>
+      )}
 
       {linkOnly && entry ? (
         <div className="rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-2.5">
@@ -840,6 +895,75 @@ export default function PersonalEntryForm({ uid, entry, mode = 'edit', payload, 
             </div>
             <FieldError id={fid('when-err')} text={errorFor('when')} />
           </fieldset>
+
+          {(quickOffered.length > 0 || quickLinkable.length > 0) && suggestions?.weekday && (
+            <div role="group" aria-label="이 시간 학교 수업" className="rounded-xl bg-sky-50/70 p-3 ring-1 ring-sky-200">
+              <p className="text-xs font-bold text-sky-900">
+                이 시간 학교 수업 · {weekdayShort(suggestions.weekday)}요일 {suggestions.periods.map((p) => `${p}교시`).join(', ')}
+              </p>
+              <p className="mt-0.5 text-[11px] leading-relaxed text-gray-600 break-keep">
+                같은 요일·교시에 열리는 학교 수업이에요. 학교 수업이면 직접 입력 대신 담거나 연결해야 변경이 자동 반영돼요. 이름으로는 찾지 않아요.
+              </p>
+              <ul className="mt-2 space-y-1.5">
+                {quickLinkable.map((m) => {
+                  const just = quick[m.courseId]
+                  return (
+                  <li key={`l-${m.courseId}`} className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 ring-1 ring-emerald-200">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-gray-900">{m.title}</p>
+                      <p className="truncate text-[11px] text-emerald-800">
+                        {just && just !== 'busy' && just.kind !== 'failed' ? `방금 담았어요(${just.label})` : '이미 듣는 수업'}
+                        {m.roomName ? ` · ${m.roomName}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => set('linkCourseId', m.courseId)}
+                      disabled={saving || selectedLink === m.courseId}
+                      aria-label={`${m.title} 연결`}
+                      className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-white px-3 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-300 transition-colors hover:bg-emerald-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-60"
+                    >
+                      {selectedLink === m.courseId ? '연결 선택됨' : '연결'}
+                    </button>
+                  </li>
+                  )
+                })}
+                {quickOffered.map((c) => {
+                  const st = quick[c.courseId]
+                  const title = pickerTitle(c)
+                  const done = st && st !== 'busy' && st.kind !== 'failed' ? st : null
+                  return (
+                    <li key={`o-${c.courseId}`} className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 ring-1 ring-sky-200">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-gray-900">{title}</p>
+                        <p className="truncate text-[11px] text-gray-600">
+                          {c.teacherNames.length ? `${c.teacherNames.join(', ')} 선생님` : '담당 선생님 정보 없음'}
+                          {c.invitePolicy === 'approval' ? ' · 승인 필요' : ' · 바로 담기'}
+                        </p>
+                        {st && st !== 'busy' && (
+                          <p role="status" className={`text-[11px] font-semibold ${st.kind === 'failed' ? 'text-rose-700' : st.kind === 'pending' ? 'text-amber-800' : 'text-emerald-700'}`}>
+                            {st.label}
+                            {st.detail ? ` · ${st.detail}` : ''}
+                          </p>
+                        )}
+                      </div>
+                      {!done && onQuickPick && (
+                        <button
+                          type="button"
+                          onClick={() => void runQuickPick(c)}
+                          disabled={saving || st === 'busy'}
+                          aria-label={`${title} 담기`}
+                          className={`${btnPrimary} shrink-0 px-3 text-xs`}
+                        >
+                          {st === 'busy' ? '담는 중…' : '담기'}
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
 
           <Field
             label="교실 (선택)"

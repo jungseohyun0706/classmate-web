@@ -525,10 +525,15 @@ async function t34States(browser) {
   const nRegion = ttRegion(n.page)
   const noCourses = await visible(nRegion.getByText('아직 연결된 수업이 없어요'))
   check('T34.1', '수강 없음: "아직 연결된 수업이 없어요"', noCourses)
-  const links = ['초대 코드 입력', '공식 수업 찾기', '직접 입력']
+  const links = ['수업 담기', '초대 코드 입력', '직접 입력']
   const linkOk = []
-  for (const l of links) linkOk.push(await visible(nRegion.getByRole('link', { name: l }), 3000))
-  check('T34.2', '수강 없음 버튼: 초대 코드 입력·공식 수업 찾기·직접 입력', linkOk.every(Boolean), JSON.stringify(linkOk))
+  for (const l of links) linkOk.push(await visible(nRegion.getByRole('link', { name: l, exact: true }), 3000))
+  // 수업 담기(학교 수업 목록에서 고르기)가 기본 방법 — 첫 버튼·강조, 내 수업 화면의 #catalog로
+  const pickLink = nRegion.getByRole('link', { name: '수업 담기', exact: true })
+  const card = nRegion.getByRole('status').filter({ hasText: '아직 연결된 수업이 없어요' }).first()
+  const firstLink = await card.getByRole('link').first().innerText().catch(() => '')
+  const pickHref = linkOk[0] ? await pickLink.getAttribute('href') : ''
+  check('T34.2', '수강 없음 버튼: 수업 담기(첫 버튼, #catalog)·초대 코드 입력·직접 입력', linkOk.every(Boolean) && firstLink.trim() === '수업 담기' && pickHref === '/student/courses#catalog', JSON.stringify({ linkOk, firstLink, pickHref }))
   const nText = await bodyText(n.page)
   check('T34.3', '수강 없음을 "이 날은 수업이 없어요"로 표시하지 않음', !nText.includes('이 날은 수업이 없어요'))
   const refBtn = nRegion.getByRole('button', { name: '학급 시간표(참고) 보기' })

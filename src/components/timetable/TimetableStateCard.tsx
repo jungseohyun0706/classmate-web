@@ -203,7 +203,7 @@ function specOf(props: TimetableStateCardProps): Spec {
         title: '아직 연결된 수업이 없어요',
         desc: props.awaitingHomeroom
           ? `담임 선생님이 학급 신청을 승인하기 전이에요.${props.onShowClassReference ? ' 그동안 아래 학급 시간표(참고)를 볼 수 있어요.' : ''}`
-          : '선생님께 받은 초대 코드로 수업에 참여하거나, 공식 수업을 찾거나, 직접 입력할 수 있어요.',
+          : '학교 수업 목록에서 내 수업을 골라 담거나, 선생님께 받은 초대 코드로 참여할 수 있어요. 학원 같은 학교 밖 일정은 직접 입력해요.',
         tone: 'info',
         icon: 'link',
       }
@@ -321,14 +321,15 @@ function actionsOf(props: TimetableStateCardProps): JSX.Element[] {
       )
       break
     case 'no-courses':
-      // 담임 승인 대기 중에는 초대 코드·수업 찾기를 앞세우지 않음(학급 신청이 이미 기다리는 중)
+      // 담임 승인 대기 중에는 초대 코드·수업 담기를 앞세우지 않음(학급 신청이 이미 기다리는 중)
+      // 수업 담기(학교 수업 목록에서 고르기)가 시간표를 만드는 기본 방법 — 맨 앞·강조
       if (!props.awaitingHomeroom) {
         out.push(
-          <LinkBtn key="invite" href={COURSES_LINKS.invite} primary>
-            초대 코드 입력
+          <LinkBtn key="catalog" href={COURSES_LINKS.catalog} primary>
+            수업 담기
           </LinkBtn>,
-          <LinkBtn key="catalog" href={COURSES_LINKS.catalog}>
-            공식 수업 찾기
+          <LinkBtn key="invite" href={COURSES_LINKS.invite}>
+            초대 코드 입력
           </LinkBtn>,
           <LinkBtn key="personal" href={COURSES_LINKS.personal}>
             직접 입력

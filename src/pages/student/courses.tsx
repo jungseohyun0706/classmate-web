@@ -4,7 +4,7 @@ import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../../lib/firebase'
 import InviteCodeInput from '../../components/InviteCodeInput'
-import CourseCatalog, { type EnrollmentState } from '../../components/timetable/CourseCatalog'
+import CoursePicker from '../../components/timetable/CoursePicker'
 import PersonalEntryForm, {
   entryTimeText,
   entryWhenText,
@@ -28,6 +28,18 @@ import {
   type TimetableFetchError,
 } from '../../lib/timetable/client'
 import { courseActiveOn } from '../../lib/timetable/engine'
+import {
+  cartConflicts,
+  entryOverlapsSchool,
+  myLessonsFrom,
+  pickerTitle,
+  pickSummaryText,
+  studentGradeOf,
+  type CartConflict,
+  type PickerCourse,
+  type PickResult,
+} from '../../lib/timetable/coursePicker'
+import { leaveCourse, leaveErrorText, pickRequestErrorText, requestCourses, useCatalog } from '../../lib/timetable/pickerClient'
 import { addDays, schoolYmdAt, toUtcDate } from '../../lib/timetable/dates'
 import {
   deletePersonalEntry,
@@ -38,16 +50,18 @@ import type { Course, Enrollment, PersonalEntry, Ymd } from '../../lib/timetable
 
 /**
  * 학생 '내 수업' — /student/courses (요구 문서 4절, 지시서 8장, R07·R08·R11)
+ *  #mine     참여 중인 수업(활성·시작 예정·승인 대기·종료) — 출처(초대·명단·신청·반 공통 수업·예전 수업 그룹), 요일·교시·교실·교사.
+ *            내가 직접 담은 수업(출처 신청)은 '빼기', 학교가 넣어 준 수업은 '선생님께 문의'
+ *  #catalog  수업 담기(학교 수업 목록에서 고르기 — 시간표 칸 보기·과목으로 찾기 → 담은 수업 한 번에 담기). 시간표를 만드는 기본 방법
  *  #invite   초대 코드 입력(XXXX-XXXX → /i/{code})
- *  #mine     참여 중인 수업(활성·시작 예정·승인 대기·종료) — 출처(초대·명단·신청·반 공통 수업·예전 수업 그룹), 요일·교시·교실·교사
- *  #catalog  공식 수업 찾기(학교 공개 수업 → 신청)
- *  #personal 내가 직접 입력한 일정(추가·수정·삭제, 공식 수업 연결·해제, 저장 대기)
+ *  #personal 내가 직접 입력한 일정(학원·자습 같은 학교 밖 일정 — 추가·수정·삭제, 공식 수업 연결·해제, 저장 대기).
+ *            같은 요일·교시의 학교 수업이 있으면 담기·연결을 안내(요일·교시로만 — 제목으로 찾지 않음)
  * 상태(요구 3절): 로그인 필요 / 가입 미완료 / 학교 미설정 / 학생 계정 아님 / 네트워크·서버 오류(다시 시도).
  * 자료: /api/timetable/me(본인 수강·수업·차시만 — 다른 학생 정보 없음) + users/{uid}/personalEntries(본인만).
  * 내부 id(uid·courseId)는 화면에 내놓지 않습니다.
  */
 
-const SECTION_IDS = ['invite', 'mine', 'catalog', 'personal'] as const
+const SECTION_IDS = ['mine', 'catalog', 'invite', 'personal'] as const
 type SectionId = (typeof SECTION_IDS)[number]
 
 /** 직접 입력 일정 수(규칙으로 개수를 제한할 수 없어 앱에서 제한) */
@@ -144,16 +158,6 @@ function mineRows(payload: MyTimetablePayload, uid: string, today: Ymd): { rows:
   const order: Record<MineStatus, number> = { active: 0, upcoming: 1, pending: 2, ended: 3 }
   rows.sort((a, b) => order[a.status] - order[b.status] || lessonTitle(a.course).localeCompare(lessonTitle(b.course), 'ko'))
   return { rows, missing }
-}
-
-/** 공식 수업 찾기에 넘길 내 수강 상태(시간표 자료 기준) */
-function knownStatusOf(rows: MineRow[]): Record<string, EnrollmentState> {
-  const out: Record<string, EnrollmentState> = {}
-  rows.forEach((r) => {
-    if (r.source === 'common') return
-    out[r.courseId] = r.status === 'pending' ? 'pending' : r.status === 'ended' ? 'ended' : 'active'
-  })
-  return out
 }
 
 /** '10월 12일' */
@@ -311,9 +315,23 @@ function Section({ id, title, desc, children }: { id: SectionId; title: string; 
   )
 }
 
-function MineItem({ row, payload, today }: { row: MineRow; payload: MyTimetablePayload; today: Ymd }): JSX.Element {
+function MineItem({
+  row,
+  payload,
+  today,
+  busy,
+  onLeave,
+}: {
+  row: MineRow
+  payload: MyTimetablePayload
+  today: Ymd
+  busy?: boolean
+  /** 내가 직접 담은 수업(출처 신청) 빼기 — 없으면 버튼 없음 */
+  onLeave?: () => void
+}): JSX.Element {
   const c = row.course
   const title = lessonTitle(c)
+  const selfPicked = row.source === 'request' && row.status !== 'ended'
   const slots = row.status === 'ended' ? [] : courseSchedule(payload, row.courseId, row.status === 'upcoming' && row.from ? row.from : today)
   return (
     <article aria-label={title} className={`rounded-xl border px-4 py-3 ${row.status === 'ended' ? 'border-gray-200 bg-gray-50' : 'border-gray-200 bg-white'}`}>
@@ -350,6 +368,20 @@ function MineItem({ row, payload, today }: { row: MineRow; payload: MyTimetableP
           {title} 수업 승인을 기다리고 있어요 · 선생님이 승인하면 내 시간표에 나타나요
         </p>
       )}
+      {selfPicked && onLeave ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button type="button" onClick={onLeave} disabled={busy} aria-label={`${title} 빼기`} className={btnSmall}>
+            {row.status === 'pending' ? '신청 취소(빼기)' : '빼기'}
+          </button>
+          <span className="text-[11px] text-gray-500 break-keep">내가 담은 수업이라 직접 뺄 수 있어요</span>
+        </div>
+      ) : (
+        row.status !== 'ended' && (
+          <p className="mt-1.5 text-[11px] text-gray-500 break-keep">
+            {row.source === 'common' ? '반 공통 수업이에요' : '학교에서 넣어 준 수업이에요'} · 빼거나 바꾸려면 선생님께 문의해 주세요
+          </p>
+        )
+      )}
     </article>
   )
 }
@@ -360,6 +392,7 @@ function PersonalItem({
   activeIds,
   canLink,
   busy,
+  overlapsSchool,
   onEdit,
   onLink,
   onUnlink,
@@ -370,6 +403,8 @@ function PersonalItem({
   activeIds: Set<string> | null
   canLink: boolean
   busy: boolean
+  /** 연결하지 않은 일정이 같은 요일·교시의 학교 수업(내 수업·공개 수업)과 겹침 — 담기·연결 안내 */
+  overlapsSchool?: boolean
   onEdit: () => void
   onLink: () => void
   onUnlink: () => void
@@ -409,6 +444,17 @@ function PersonalItem({
       </div>
       {linkedActive && (
         <p className="mt-1.5 text-xs leading-relaxed text-emerald-900 break-keep">공식 수업이 표시되고 메모만 붙어요 — 학교 변경이 자동 반영돼요</p>
+      )}
+      {!linkedId && overlapsSchool && (
+        <p className="mt-1.5 flex items-start gap-1 text-xs leading-relaxed text-sky-900 break-keep">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5M12 8h.01" />
+          </svg>
+          <span className="min-w-0">
+            학교 수업과 시간이 겹쳐요 — <a href="#catalog" className="font-semibold underline underline-offset-2">담기</a>/연결하면 변경이 자동 반영돼요
+          </span>
+        </p>
       )}
       {linkedId && !linkedActive && (
         <p className="mt-1.5 text-xs leading-relaxed text-amber-900 break-keep">
@@ -504,10 +550,15 @@ export default function StudentCoursesPage(): JSX.Element {
   const profile = gate.kind === 'ok' ? gate.profile : null
   const tt = useMyTimetable(uid, uid ? today : null, { schoolCode: profile?.schoolCode ?? null })
   const entriesState = useEntriesForManage(uid, entriesAttempt)
+  const catalog = useCatalog(uid)
+  const [leaving, setLeaving] = useState<string | null>(null)
 
   const payload = tt.payload
   const mine = useMemo(() => (payload && uid ? mineRows(payload, uid, today) : null), [payload, uid, today])
-  const knownStatus = useMemo(() => (mine ? knownStatusOf(mine.rows) : undefined), [mine])
+  // 수업 담기·직접 입력 안내용: 이미 내 시간표에 있는 수업의 요일·교시
+  const myLessons = useMemo(() => (payload && uid ? myLessonsFrom(payload, uid, today) : null), [payload, uid, today])
+  const catalogCourses = useMemo(() => (catalog.state.status === 'ready' ? catalog.state.courses : null), [catalog.state])
+  const studentGrade = studentGradeOf(profile?.grade)
   const activeIds = useMemo(() => (payload ? new Set(activeCoursesOn(payload, today, uid).map((c) => c.courseId)) : null), [payload, today, uid])
   const canLinkAny = useMemo(() => (payload ? linkableCourses(payload, today, uid).length > 0 : false), [payload, today, uid])
   const entries = useMemo(() => sortEntries(entriesState.entries), [entriesState.entries])
@@ -556,6 +607,71 @@ export default function StudentCoursesPage(): JSX.Element {
   }, [])
 
   const closeEditor = useCallback(() => setEditor(null), [])
+
+  /**
+   * 골라 담은 수업 한 번에 담기(수업 담기 장바구니·직접 입력의 '이 시간 학교 수업' 공통):
+   * 확인 시트(겹침 경고 포함) → requestMany 한 번 → 결과 안내 → 내 시간표·목록 다시 받기
+   */
+  const pickCourses = async (picks: PickerCourse[], conflicts: CartConflict[]): Promise<PickResult[] | { error: string } | null> => {
+    if (!picks.length) return null
+    const n = picks.length
+    const approval = picks.filter((c) => c.invitePolicy === 'approval').length
+    const ok = await confirm({
+      title: n === 1 ? `${pickerTitle(picks[0])} 수업을 담을까요?` : `수업 ${n}개를 내 시간표에 담을까요?`,
+      description:
+        `${picks.map(pickerTitle).join(', ')}.` +
+        (approval < n ? ' 바로 담기 수업은 오늘부터 내 시간표에 들어가요.' : '') +
+        (approval ? ` 선생님 승인이 필요한 수업 ${approval}개는 승인 후 들어가요.` : '') +
+        (conflicts.length ? ` 겹치는 시간이 ${conflicts.length}곳 있어요 — 그대로 담아도 되고, 취소하고 빼도 돼요.` : '') +
+        ' 담은 수업은 선생님이 시간표를 바꾸면 자동으로 반영돼요.',
+      confirmText: '담기',
+    })
+    if (!ok) return null
+    const r = await requestCourses(picks.map((c) => c.courseId))
+    if (!r.ok) {
+      const msg = pickRequestErrorText(r.failure)
+      toast(msg, 'error')
+      // 응답을 못 받았으면 실제로는 담겼을 수 있어 다시 받음, 수업 상태가 바뀐 경우(끝남 등)도 목록을 새로
+      if (r.failure.code === 'timeout') tt.retry()
+      if (r.failure.code === 'timeout' || r.failure.code === 'course-ended' || r.failure.status === 409) catalog.reload()
+      return { error: msg }
+    }
+    const okCount = r.results.filter((x) => x.kind !== 'failed').length
+    toast(pickSummaryText(r.results), okCount ? 'success' : 'error')
+    if (r.changed > 0) tt.retry()
+    catalog.reload()
+    return r.results
+  }
+
+  /** 내가 직접 담은 수업 빼기(출처 신청만 — 서버도 확인) */
+  const leavePicked = async (courseId: string, title: string, pending: boolean): Promise<void> => {
+    if (leaving) return
+    const ok = await confirm({
+      title: pending ? `${title} 신청을 취소할까요?` : `${title} 수업을 내 시간표에서 뺄까요?`,
+      description: pending
+        ? '선생님 승인을 기다리던 신청이 취소돼요. 나중에 다시 담을 수 있어요.'
+        : '오늘부터 내 시간표에서 빠지고, 지난 날짜 기록은 그대로 남아요. 나중에 다시 담을 수 있어요.',
+      confirmText: '빼기',
+      danger: true,
+    })
+    if (!ok) return
+    setLeaving(courseId)
+    const r = await leaveCourse(courseId)
+    setLeaving(null)
+    if (!r.ok) {
+      toast(leaveErrorText(r.failure), 'error')
+      return
+    }
+    toast(r.already ? '이미 뺀 수업이에요' : `${title} 수업을 뺐어요`, 'success')
+    tt.retry()
+    catalog.reload()
+  }
+
+  /** 직접 입력 화면의 '이 시간 학교 수업' 담기 — 같은 담기 흐름(확인 시트 → requestMany)으로 한 개만 */
+  const quickPick = async (c: PickerCourse): Promise<PickResult | null> => {
+    const res = await pickCourses([c], cartConflicts([c], myLessons || []))
+    return Array.isArray(res) ? res.find((r) => r.courseId === c.courseId) ?? null : null
+  }
 
   const onDelete = async (entry: PersonalEntry): Promise<void> => {
     if (!uid || busyEntry) return
@@ -752,9 +868,9 @@ export default function StudentCoursesPage(): JSX.Element {
         <ul className="flex flex-wrap gap-2">
           {(
             [
-              ['invite', '초대 코드'],
               ['mine', '참여 중인 수업'],
-              ['catalog', '공식 수업 찾기'],
+              ['catalog', '수업 담기'],
+              ['invite', '초대 코드'],
               ['personal', '직접 입력'],
             ] as const
           ).map(([id, label]) => (
@@ -769,10 +885,6 @@ export default function StudentCoursesPage(): JSX.Element {
           ))}
         </ul>
       </nav>
-
-      <Section id="invite" title="초대 코드로 참여" desc="담임 선생님의 학급 초대와 다른 선생님의 수업 초대 모두 여기에 입력해요. 소속 학급은 그대로 두고 수업만 더해져요.">
-        <InviteCodeInput autoFocus={initialHash === 'invite'} />
-      </Section>
 
       <Section id="mine" title="참여 중인 수업" desc="학교 시간표와 연결된 공식 수업이에요. 선생님이 시간표를 바꾸면 내 시간표에 자동으로 반영돼요.">
         {!mine || !payload ? (
@@ -799,13 +911,13 @@ export default function StudentCoursesPage(): JSX.Element {
               <SyncBanner kind={tt.error.kind} syncedLabel={syncedLabel} code={tt.error.code} onRetry={tt.retry} retrying={tt.loading} />
             )}
             {current.length === 0 ? (
-              <StateBox tone="info" title="아직 연결된 수업이 없어요" desc="선생님께 받은 초대 코드로 수업에 참여하거나, 공식 수업을 찾아 신청하거나, 직접 입력할 수 있어요.">
+              <StateBox tone="info" title="아직 연결된 수업이 없어요" desc="학교 수업 목록에서 내 수업을 골라 담거나, 선생님께 받은 초대 코드로 참여하거나, 학교 밖 일정은 직접 입력할 수 있어요.">
                 <div className="flex flex-wrap gap-2">
-                  <a href="#invite" className={btnPrimary}>
-                    초대 코드 입력
+                  <a href="#catalog" className={btnPrimary}>
+                    수업 담기
                   </a>
-                  <a href="#catalog" className={btnSecondary}>
-                    공식 수업 찾기
+                  <a href="#invite" className={btnSecondary}>
+                    초대 코드 입력
                   </a>
                   <a href="#personal" className={btnSecondary}>
                     직접 입력
@@ -816,7 +928,13 @@ export default function StudentCoursesPage(): JSX.Element {
               <ul className="space-y-2" aria-label="참여 중인 수업 목록">
                 {current.map((r) => (
                   <li key={r.courseId}>
-                    <MineItem row={r} payload={payload} today={today} />
+                    <MineItem
+                      row={r}
+                      payload={payload}
+                      today={today}
+                      busy={!!leaving}
+                      onLeave={() => void leavePicked(r.courseId, lessonTitle(r.course), r.status === 'pending')}
+                    />
                   </li>
                 ))}
               </ul>
@@ -845,14 +963,33 @@ export default function StudentCoursesPage(): JSX.Element {
         )}
       </Section>
 
-      <Section id="catalog" title="공식 수업 찾기" desc="학교가 공개한 수업이에요. 과목·분반·선생님·요일을 보고 맞는 수업을 직접 신청해요. 수업에 따라 바로 참여하거나 선생님 승인이 필요해요.">
-        {uid && <CourseCatalog uid={uid} knownStatus={knownStatus} onEnrolled={() => tt.retry()} />}
+      <Section
+        id="catalog"
+        title="수업 담기 (학교 수업 목록에서 고르기)"
+        desc="학교가 공개한 수업을 시간표 칸이나 과목으로 찾아 골라 담아요. 담은 수업은 선생님이 시간표를 바꾸면 내 시간표에 자동으로 반영돼요. 수업에 따라 바로 담기거나 선생님 승인 후 들어가요."
+      >
+        {uid && (
+          <CoursePicker
+            catalog={catalog.state}
+            refreshing={catalog.refreshing}
+            onReloadCatalog={catalog.reload}
+            mine={myLessons}
+            studentGrade={studentGrade}
+            busy={!!leaving}
+            onSubmit={pickCourses}
+            onLeave={(courseId, title) => leavePicked(courseId, title, myLessons?.find((m) => m.courseId === courseId)?.status === 'pending')}
+          />
+        )}
+      </Section>
+
+      <Section id="invite" title="초대 코드로 참여" desc="담임 선생님의 학급 초대와 다른 선생님의 수업 초대 모두 여기에 입력해요. 소속 학급은 그대로 두고 수업만 더해져요.">
+        <InviteCodeInput autoFocus={initialHash === 'invite'} />
       </Section>
 
       <Section
         id="personal"
         title="직접 입력한 일정"
-        desc="공식 수업이 아직 없거나 학교 시간표에 없는 일정을 직접 적어 둘 수 있어요. 직접 입력한 일정은 학교 시간표와 연결되지 않아 선생님의 변경이 자동으로 반영되지 않아요."
+        desc="학원·자습처럼 학교 밖 일정을 적어 두는 곳이에요. 직접 입력한 일정은 학교 시간표와 연결되지 않아 선생님의 변경이 자동으로 반영되지 않아요 — 학교 수업은 ‘수업 담기’에서 골라 담아 주세요."
       >
         <div className="space-y-3">
           {entriesState.status === 'loading' && (
@@ -875,7 +1012,15 @@ export default function StudentCoursesPage(): JSX.Element {
                 </p>
               )}
               {editor?.mode === 'create' && uid ? (
-                <PersonalEntryForm uid={uid} payload={payload} today={today} onDone={closeEditor} onCancel={closeEditor} />
+                <PersonalEntryForm
+                  uid={uid}
+                  payload={payload}
+                  today={today}
+                  catalog={catalogCourses}
+                  onQuickPick={quickPick}
+                  onDone={closeEditor}
+                  onCancel={closeEditor}
+                />
               ) : entries.length >= MAX_PERSONAL_ENTRIES ? (
                 <p className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 ring-1 ring-gray-200 break-keep">
                   직접 입력 일정은 {MAX_PERSONAL_ENTRIES}개까지 둘 수 있어요. 쓰지 않는 일정을 지운 뒤 추가해 주세요.
@@ -902,6 +1047,8 @@ export default function StudentCoursesPage(): JSX.Element {
                           mode={editor.mode === 'link' ? 'link' : 'edit'}
                           payload={payload}
                           today={today}
+                          catalog={catalogCourses}
+                          onQuickPick={quickPick}
                           onDone={closeEditor}
                           onCancel={closeEditor}
                         />
@@ -912,6 +1059,15 @@ export default function StudentCoursesPage(): JSX.Element {
                           activeIds={activeIds}
                           canLink={canLinkAny}
                           busy={busyEntry === e.entryId}
+                          overlapsSchool={
+                            !e.linkedCourseId &&
+                            entryOverlapsSchool(
+                              { kind: e.kind, weekday: e.weekday ?? null, date: e.date ?? null, period: e.period ?? null, start: e.start ?? null, end: e.end ?? null, linkedCourseId: e.linkedCourseId ?? null },
+                              catalogCourses || [],
+                              myLessons || [],
+                              payload?.periodTimes || []
+                            )
+                          }
                           onEdit={() => setEditor({ mode: 'edit', entryId: e.entryId })}
                           onLink={() => setEditor({ mode: 'link', entryId: e.entryId })}
                           onUnlink={() => void onUnlink(e)}
