@@ -176,7 +176,7 @@ export default function LessonCard({
           </p>
           {lesson.period != null
             ? time && (
-                // wrapTime: 좁은 칸(교사 홈 카드 w-12)에서 '08:40~09:30'이 옆 칸으로 넘치지 않게 '~' 뒤에서 줄을 바꿀 수 있게 함
+                // wrapTime: 좁은 칸(교사·학생 홈 카드 w-12)에서 '08:40~09:30'이 옆 칸으로 넘치지 않게 '~' 뒤에서 줄을 바꿀 수 있게 함
                 <p className="mt-0.5 text-[11px] leading-tight text-gray-500">
                   {wrapTime && time.includes('~') ? (
                     <>

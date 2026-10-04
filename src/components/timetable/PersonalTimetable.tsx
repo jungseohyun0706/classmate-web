@@ -190,7 +190,7 @@ export default function PersonalTimetable({
         <ol className={compact ? 'space-y-1.5' : 'space-y-2'} aria-label="수업 목록">
           {day.lessons.map((l) => (
             <li key={l.key}>
-              <LessonCard lesson={l} periodTimes={payload.periodTimes} compact={compact} isNow={isNow(l)} conflict={conflictKeys.has(l.key)} />
+              <LessonCard lesson={l} periodTimes={payload.periodTimes} compact={compact} wrapTime={compact} isNow={isNow(l)} conflict={conflictKeys.has(l.key)} />
             </li>
           ))}
         </ol>
