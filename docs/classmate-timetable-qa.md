@@ -136,18 +136,18 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 |---|---|---|
 | 타입 검사 | `npx tsc --noEmit -p .` | 오류 0 |
 | 프로덕션 빌드 | `next build`(로컬 E2E 설정) | 성공 |
-| 커밋본 빌드 | 커밋본을 따로 꺼내(로컬 전용 연결 코드 없음) `tsc` · `npm run test:unit` · `next build --webpack`(가짜 공개 설정) | 오류 0 · 281/281 · 성공, 번들에 에뮬레이터 주소·서버 비밀값 없음 |
-| 단위 | `npm run test:unit` | **281/281** |
+| 커밋본 빌드 | 커밋본을 따로 꺼내(로컬 전용 연결 코드 없음) `tsc` · `npm run test:unit` · `next build --webpack`(가짜 공개 설정) | 오류 0 · 347/347 · 성공, 번들에 에뮬레이터 주소·서버 비밀값 없음 |
+| 단위 | `npm run test:unit` | **347/347** |
 | 보안 규칙 | `node --test tests/rules/` | **27/27** |
 | 수업·수강·개인 시간표 API | `tests/api/sa1-student-courses.test.mjs` | **82/82** |
-| 변경 발행 API | `tests/api/sa2-schedule-changes.test.mjs` | **97/97** |
+| 변경 발행 API | `tests/api/sa2-schedule-changes.test.mjs` | **99/99** |
 | 초대·/join API | `tests/api/sa3-invitations.test.mjs` | **71/71** |
 | 규칙(서버 경유) | `tests/api/sa4-rules.test.mjs` | **33/33** |
 | 시간표 가져오기 API | `tests/api/im1-import.test.mjs` | **122/122** |
 | 수강 명단 API | `tests/api/im2-roster.test.mjs` | **49/49** |
-| 데이터 전환(T41) | `tests/e2e/migration.test.mjs` | **16/16** |
+| 데이터 전환(T41) | `tests/e2e/migration.test.mjs` | **25/25** |
 | R01 해결 확인 | `tests/e2e/r01-verify.mjs` | **24/24** |
-| 학생 홈·개인 시간표 | `tests/e2e/u1-student-home.e2e.mjs` | **60/60** |
+| 학생 홈·개인 시간표 | `tests/e2e/u1-student-home.e2e.mjs` | **78/78** |
 | 학생 내 수업·직접 입력 | `tests/e2e/u2-student-courses.e2e.mjs` | **77/77** |
 | 초대·로그인 복구·설치 안내 | `tests/e2e/u3-invite-install.e2e.mjs` | **67/67** |
 | 교사 수업 관리·초대 | `tests/e2e/u4-teacher-courses.e2e.mjs` | **55/55** |
@@ -156,6 +156,16 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 | 앱 번들 비밀값 검사(T46) | `.next/static`에서 서비스 계정 키·private_key·CRON_SECRET·firebase-admin·서버 전용 함수 이름 검색 | 0건 |
 
 ESLint는 저장소에 설정 파일이 없어(기존 상태) 실행하지 않았습니다.
+
+### 운영 반영 전 점검 (에뮬레이터가 잡지 못하는 항목)
+
+에뮬레이터는 복합 인덱스를 강제하지 않으므로, 운영에서만 드러나는 문제를 따로 점검했습니다. 5개 관점(인덱스, 배포 순서·혼합 버전, Vercel 운영 환경, 전환 스크립트 안전성, 기존 사용자 첫날 영향)으로 나눠 찾고, 항목마다 독립 반박 검증을 거쳤습니다. 29건 중 22건이 확인됐고(중복 포함) 7건은 반박됐습니다. 확인된 항목은 모두 고치고 위 표에 회귀 테스트를 더했습니다.
+
+- 인덱스: 교사 '전체 시간표'가 쓰는 `classes(schoolCode, grade, classNm)`이 파일에 없어, 첫 배포 때 삭제 후보로 뜰 수 있었음 → 파일에 추가. 쓰는 쿼리가 없는 복합 인덱스 5개 제거. 승인 대기 목록은 상태를 `limit(200)` 전에 쿼리로 거름(처리된 요청이 200건 넘게 쌓이면 새 요청이 빠지던 문제). 단위 `prod-a-*`가 코드의 쿼리 모양과 인덱스 파일을 대조함.
+- 배포 순서: 문서의 '앱 → 규칙·인덱스'는 틀렸음 → **백업 → 인덱스(READY 확인) → 규칙 → 바로 앱 → 전환 dry-run → 승인 후 적용**으로 고침(`docs/classmate-timetable-migration.md` 2·3절).
+- 전환 스크립트: 복구가 남기는 수업의 수강까지 지우던 문제, 교사가 목록에서 뺀 그룹도 수업으로 만들던 문제, `--school`이 빈 값이면 전체 학교로 넓어지던 문제, 복구가 `--school`을 무시하던 문제, 여러 실행 로그 복구, 자격 증명(ADC)·할당량 프로젝트 안내, 복구에도 `--confirm-production` 요구.
+- 학생 홈(기존 사용자 첫날): 직접 입력을 하나라도 추가하면 홈에서 학급 시간표(참고)가 사라지고 '수업이 없어요'로 보이던 문제, 승인 대기 학생이 보던 학급 시간표를 잃던 문제, `/api/timetable/me` 오류 때 학급 시간표도 못 보던 문제, '지금' 교시·교시 시각 표시 누락, 저녁 '내일 가방' 알림이 가방 체크리스트가 없는 화면으로 열리던 문제.
+- 직접 입력 구독: 권한·네트워크 오류 뒤 화면 복귀 때 자동 재연결, 로그인 상태의 권한 오류는 '지금은 저장할 수 없어요'로 안내.
 
 ### 미실행·미검증 (완료로 보고하지 않음)
 
