@@ -383,12 +383,12 @@ async function t16t36Change(browser, a) {
 }
 
 async function t11t12DateNav(browser) {
-  // 저녁 알림 링크(/student/timetable?date=내일)
+  // 날짜 주소로 연 전체 시간표(/student/timetable?date=내일 — 시간표 변경 알림 링크와 같은 형식)
   const { ctx, page } = await openAs(browser, 'a@u1.e2e.kr', '/student/timetable?date=20261007')
   const region = ttRegion(page)
   const wed = await articleText(region, /1교시 영어 B/)
   let nav = await navHas(page, ['내일', '10월 7일 (수)'])
-  check('T11.1', '알림 링크 ?date=내일 → "내일" + 10월 7일 (수) + 그날 수업', nav.ok && !!wed, nav.text)
+  check('T11.1', '?date=내일 주소 → "내일" + 10월 7일 (수) + 그날 수업', nav.ok && !!wed, nav.text)
 
   await page.getByRole('button', { name: '이전 날' }).click()
   nav = await navHas(page, ['오늘', '10월 6일 (화)'])
