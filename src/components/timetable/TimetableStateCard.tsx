@@ -222,7 +222,7 @@ function specOf(props: TimetableStateCardProps): Spec {
     case 'teacher-empty':
       return {
         title: '아직 등록된 내 시간표가 없어요',
-        desc: '수업 관리에서 내 수업을 만들거나, 내 주간 시간표를 등록하면 여기에 오늘 수업이 보여요.',
+        desc: '수업 관리에서 내 수업을 만들거나, 내 주간 시간표를 등록하면 여기에 내 수업이 보여요.',
         tone: 'info',
         icon: 'book',
       }

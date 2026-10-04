@@ -31,6 +31,8 @@ export interface LessonCardProps {
   metaPrefix?: string | null
   /** 직접 입력(source personal) 배지 문구 — 기본 '직접 입력 · 학교 시간표와 연결되지 않음' */
   personalLabel?: string
+  /** 교시 아래 시각('08:40~09:30')을 '~' 뒤에서 줄바꿈할 수 있게(교사 홈 카드의 좁은 칸). 기본은 학생 화면 그대로 한 줄 */
+  wrapTime?: boolean
 }
 
 const WEEKDAY_KO = ['', '월', '화', '수', '목', '금', '토', '일']
@@ -135,6 +137,7 @@ export default function LessonCard({
   href = null,
   metaPrefix = null,
   personalLabel,
+  wrapTime = false,
 }: LessonCardProps): JSX.Element {
   const personal = lesson.source === 'personal'
   const change = lesson.change
@@ -173,9 +176,9 @@ export default function LessonCard({
           </p>
           {lesson.period != null
             ? time && (
-                // 좁은 칸(홈 카드 w-12)에서 '08:40~09:30'이 옆 칸으로 넘치지 않게 '~' 뒤에서 줄을 바꿀 수 있게 함
+                // wrapTime: 좁은 칸(교사 홈 카드 w-12)에서 '08:40~09:30'이 옆 칸으로 넘치지 않게 '~' 뒤에서 줄을 바꿀 수 있게 함
                 <p className="mt-0.5 text-[11px] leading-tight text-gray-500">
-                  {time.includes('~') ? (
+                  {wrapTime && time.includes('~') ? (
                     <>
                       {time.split('~')[0]}~<wbr />
                       {time.split('~')[1]}

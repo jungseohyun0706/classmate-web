@@ -1,7 +1,8 @@
 // U6 교사 메인 화면 '오늘의 내 수업' E2E — 선생님 화면 메인은 반 시간표가 아니라 선생님 본인 시간표
 // 덮는 항목: 메인에 '오늘의 내 수업'(학급 시간표는 메인 아님 — 급식은 유지), 날짜 이동, 변경 발행 뒤 새로 고침 없이 빨간 배지,
 //           공식 수업 없는 교사의 직접 등록 주간 시간표(라벨), 교환·보결 겹침, 빈 상태(수업 관리·내 시간표 등록),
-//           담임 '우리 반 시간표 보기' 링크, 390px 가로 스크롤 없음, 콘솔 오류·페이지 오류 0
+//           담임 '우리 반 시간표 보기' 링크, 390px 가로 스크롤 없음, 콘솔 오류·페이지 오류 0,
+//           일부 학년만 쉬는 날(담임 3학년 교사도 학년 모르는 수업은 그대로 + 학년 쉬는 날 안내), 빈 상태 교사의 쉬는 날은 상태 카드 하나
 // 실행 전제: 실제 서버(BASE, 기본 http://127.0.0.1:3100) + Firebase 에뮬레이터(Firestore 8080, Auth 9099)
 //           + NEIS mock(NODE_OPTIONS="--require tests/support/neis-mock.cjs", NEIS_MOCK_FILE) + NEXT_PUBLIC_USE_EMULATORS=1 빌드
 // 사용: node tests/e2e/u6-teacher-home.e2e.mjs
@@ -13,6 +14,7 @@ const { OUT, check, note, finish } = reporter(LABEL)
 const FIXED = '2026-10-06T08:00:00+09:00' // 화요일 아침(1교시 전)
 const TUE = '20261006'
 const WED = '20261007'
+const FRI = '20261009'
 const S1 = { schoolCode: 'S1', schoolName: '테스트고등학교', officeCode: 'B10' }
 const STUDENT_NAME = '테스트학생가'
 const LEGACY = {
@@ -30,7 +32,12 @@ async function seed() {
     meals: [{ SD_SCHUL_CODE: 'S1', MLSV_YMD: TUE, MMEAL_SC_CODE: '2', MMEAL_SC_NM: '중식', DDISH_NM: '현미밥<br/>카레라이스<br/>깍두기' }],
     // 담임 반(3학년 5반) NEIS 학급 시간표 — 메인 화면에 보이면 안 됨(학급 시간표는 '우리 반 시간표 보기'에서만)
     timetables: { hisTimetable: ['학급체육', '학급음악'].map((s, i) => ({ SD_SCHUL_CODE: 'S1', GRADE: '3', CLASS_NM: '5', ALL_TI_YMD: TUE, PERIO: String(i + 1), ITRT_CNTNT: s })) },
-    schedule: [],
+    schedule: [
+      // 3학년만 쉬는 날(수) — 담임 3학년 교사라도 학년을 모르는 영어 B는 열림
+      { SD_SCHUL_CODE: 'S1', AA_YMD: WED, EVENT_NM: '3학년 재량휴업일', SBTR_DD_SC_NM: '휴업일', ONE_GRADE_EVENT_YN: 'N', TW_GRADE_EVENT_YN: 'N', THREE_GRADE_EVENT_YN: 'Y', FR_GRADE_EVENT_YN: 'N', FIV_GRADE_EVENT_YN: 'N', SIX_GRADE_EVENT_YN: 'N' },
+      // 학교 전체 공휴일(금)
+      { SD_SCHUL_CODE: 'S1', AA_YMD: FRI, EVENT_NM: '한글날', SBTR_DD_SC_NM: '공휴일' },
+    ],
   })
   const T = (name, extra = {}) => ({ role: 'teacher', name, displayName: name, ...S1, ...extra })
   await createUsers([
@@ -146,6 +153,8 @@ try {
     rows = await rowsText(page)
     const heading = await card(page).locator('h2').innerText()
     check('U6.nav-next', "다음 날: '내일 10월 7일 (수)' + 수요일 영어 B 2교시, 제목 '내 수업'", tomorrow && rows.length === 1 && /2교시/.test(rows[0]) && rows[0].includes('영어 B') && heading === '내 수업', JSON.stringify({ rows, heading }))
+    check('U6.grade-off', "3학년만 쉬는 날(담임 3학년 교사): 쉬는 날 카드가 아니라 수업 + '3학년 쉬는 날이에요(3학년 재량휴업일)' 안내",
+      (await seen(page, '이 날은 3학년 쉬는 날이에요(3학년 재량휴업일)', 10000)) && !(await card(page).getByText('이 날은 쉬는 날이에요').count()))
     await card(page).getByRole('button', { name: '오늘로' }).click()
     const back = await page.waitForFunction(() => document.querySelector('#teacher-today-title')?.textContent === '오늘의 내 수업', null, { timeout: 10000 }).then(() => true, () => false)
     check('U6.nav-today', "'오늘로' → 오늘(화)로 돌아옴", back && (await seen(page, '10월 6일 (화)', 5000)))
@@ -212,8 +221,17 @@ try {
     const c2 = await card(page).getByRole('link', { name: '내 시간표 등록' }).getAttribute('href').catch(() => null)
     check('U6.empty', "빈 상태 + '수업 관리'(/teacher/courses)·'내 시간표 등록'(/teacher/my-schedule)", empty && c1 === '/teacher/courses' && c2 === '/teacher/my-schedule', `${c1} ${c2}`)
     check('U6.empty-not-error', '빈 상태는 오류 카드가 아님', !(await card(page).getByText('시간표를 불러오지 못했어요').count()))
+    check('U6.empty-copy', "빈 상태 안내는 날짜와 상관없는 문구('여기에 내 수업이 보여요')", await seen(page, '여기에 내 수업이 보여요', 5000))
     check('U6.width4', '390px 가로 스크롤 없음(빈 상태)', await noHorizontalScroll(page))
     await shot(page, '4-empty')
+    // 쉬는 날(금, 한글날): 상태 카드는 쉬는 날 하나만(빈 상태 카드를 겹쳐 보이지 않음)
+    await card(page).getByLabel('날짜 선택').fill(`${FRI.slice(0, 4)}-${FRI.slice(4, 6)}-${FRI.slice(6)}`)
+    const holiday = await seen(page, '이 날은 쉬는 날이에요 (한글날)', 15000)
+    check('U6.empty-holiday', '빈 상태 교사의 쉬는 날: 쉬는 날 카드만(아직 등록된 내 시간표가 없어요 카드 없음)',
+      holiday && (await card(page).getByText('아직 등록된 내 시간표가 없어요').count()) === 0)
+    await shot(page, '5-empty-holiday')
+    await card(page).getByRole('button', { name: '오늘로' }).click()
+    await seen(page, '아직 등록된 내 시간표가 없어요', 10000)
     await card(page).getByRole('link', { name: '내 시간표 등록' }).click()
     check('U6.empty-cta', "'내 시간표 등록' → /teacher/my-schedule", await page.waitForURL(/\/teacher\/my-schedule/, { timeout: 15000 }).then(() => true, () => false))
     await ctx.close()

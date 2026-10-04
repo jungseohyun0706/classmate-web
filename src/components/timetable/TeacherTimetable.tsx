@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { slotMinutes } from '../../lib/timetable/engine'
 import { schoolYmdAt } from '../../lib/timetable/dates'
 import { formatSyncedAt, type TimetableFetchError } from '../../lib/timetable/client'
-import { buildTeacherDay, parseScheduleCell, rowBadges, type TeacherDayView, type TeacherNotice, type TeacherRow, type TeacherTimetablePayload } from '../../lib/timetable/teacherDay'
+import { buildTeacherDay, gradesLabel, parseScheduleCell, rowBadges, type TeacherDayView, type TeacherNotice, type TeacherRow, type TeacherTimetablePayload } from '../../lib/timetable/teacherDay'
 import { useTeacherTimetable } from '../../lib/timetable/teacherHomeClient'
 import type { Ymd } from '../../lib/timetable/types'
 import DayNav from './DayNav'
@@ -37,6 +37,12 @@ function noticeText(n: TeacherNotice): string {
   return `${what} ${n.original.period}교시`
 }
 
+/** 일부 학년 쉬는 날이라 열리지 않는 주간 시간표 칸 표시('3교시 국어(3학년 2반)') */
+function cellText(c: { period: number; text: string }): string {
+  const cell = parseScheduleCell(c.text)
+  return `${cell.title}${cell.classLabel ? `(${cell.classLabel})` : ''} ${c.period}교시`
+}
+
 function courseHref(row: TeacherRow): string | null {
   return row.courseId && row.manageable && (row.kind === 'official' || row.kind === 'cancelled') ? `/teacher/courses/${encodeURIComponent(row.courseId)}` : null
 }
@@ -57,7 +63,7 @@ function DayBody({ view, payload, today, nowMinutes, onGoToday }: { view: Teache
       {view.mode === 'legacy' && view.state !== 'holiday' && view.state !== 'outside-term' && (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-700 ring-1 ring-gray-200 break-keep" role="note">
           <span className="min-w-0">내가 등록한 주간 시간표예요 — 수업 변경은 반영되지 않아요</span>
-          <Link href="/teacher/my-schedule" className="inline-flex min-h-8 items-center font-semibold text-blue-700 underline-offset-2 hover:underline">
+          <Link href="/teacher/my-schedule" className="inline-flex min-h-11 items-center font-semibold text-blue-700 underline-offset-2 hover:underline">
             주간 시간표 고치기
           </Link>
         </p>
@@ -66,6 +72,13 @@ function DayBody({ view, payload, today, nowMinutes, onGoToday }: { view: Teache
       {view.state === 'lessons' && view.offDayName && (
         <p className="rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-900 ring-1 ring-sky-200 break-keep">
           {isToday ? '오늘은' : '이 날은'} 쉬는 날({view.offDayName})이지만 아래 일정이 있어요
+        </p>
+      )}
+
+      {/* 일부 학년만 쉬는 날(예: 3학년 재량휴업일) — 학교는 열려 있어 다른 학년 수업은 그대로 */}
+      {view.gradeOff && view.state !== 'outside-term' && (
+        <p className="rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-900 ring-1 ring-sky-200 break-keep" role="note">
+          {isToday ? '오늘은' : '이 날은'} {gradesLabel(view.gradeOff.grades)} 쉬는 날이에요({view.gradeOff.name}) — 그 학년 수업은 열리지 않아요
         </p>
       )}
 
@@ -85,14 +98,15 @@ function DayBody({ view, payload, today, nowMinutes, onGoToday }: { view: Teache
                 href={courseHref(row)}
                 metaPrefix={row.classLabel}
                 personalLabel={row.kind === 'legacy' ? '직접 등록 · 수업 변경 미반영' : undefined}
+                wrapTime
               />
             </li>
           ))}
         </ol>
       )}
 
-      {/* 등록된 시간표가 없지만 교환·보결 등 일정이 있는 날: 등록 안내를 함께 */}
-      {view.mode === 'empty' && view.state !== 'not-registered' && <TimetableStateCard kind="teacher-empty" compact />}
+      {/* 등록된 시간표가 없지만 교환·보결 등 일정이 있는 날: 등록 안내를 함께(쉬는 날·학기 밖은 그 상태 카드만) */}
+      {view.mode === 'empty' && view.state === 'lessons' && <TimetableStateCard kind="teacher-empty" compact />}
 
       {view.movedOut.length > 0 && (
         <ul className="space-y-1.5" aria-label="옮겨 간 내 수업">
@@ -105,10 +119,11 @@ function DayBody({ view, payload, today, nowMinutes, onGoToday }: { view: Teache
         </ul>
       )}
 
-      {view.suppressed.length > 0 && (
+      {(view.suppressed.length > 0 || view.suppressedCells.length > 0) && (
         <ul aria-label="쉬는 날 안내">
           <InfoLine tone="gray" icon="info">
-            쉬는 날이라 열리지 않아요: {view.suppressed.map((n) => noticeText(n)).join(', ')}
+            {view.gradeOff ? `${gradesLabel(view.gradeOff.grades)} 쉬는 날이라 열리지 않아요: ` : '쉬는 날이라 열리지 않아요: '}
+            {view.suppressed.map((n) => noticeText(n)).concat(view.suppressedCells.map(cellText)).join(', ')}
           </InfoLine>
         </ul>
       )}
