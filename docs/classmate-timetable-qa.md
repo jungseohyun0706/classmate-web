@@ -23,6 +23,7 @@ node tests/api/sa3-invitations.test.mjs       # 초대·/join
 node tests/api/sa4-rules.test.mjs             # 규칙(서버 경유)
 node tests/api/im1-import.test.mjs            # 시간표 가져오기
 node tests/api/im2-roster.test.mjs            # 수강 명단
+node tests/api/sa5-teacher-timetable.test.mjs # 교사 내 시간표
 node tests/e2e/migration.test.mjs             # 데이터 전환(T41)
 node tests/e2e/r01-verify.mjs                 # R01 해결 확인
 node tests/e2e/u1-student-home.e2e.mjs        # 학생 홈·개인 시간표
@@ -30,6 +31,7 @@ node tests/e2e/u2-student-courses.e2e.mjs     # 학생 내 수업·직접 입력
 node tests/e2e/u3-invite-install.e2e.mjs      # 초대·로그인 복구·설치 안내
 node tests/e2e/u4-teacher-courses.e2e.mjs     # 교사 수업 관리·초대
 node tests/e2e/u5-schedule-changes.e2e.mjs    # 교사 시간표 변경
+node tests/e2e/u6-teacher-home.e2e.mjs        # 교사 메인 '오늘의 내 수업'
 node tests/e2e/regression.e2e.mjs             # 기존 기능 회귀(F1–F13)
 ```
 
@@ -69,6 +71,7 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 | R16 | 서버 권한 + 규칙 + 마이그레이션 dry-run/복구 | rules, sa4, u4 R16, migration T41 |
 | R17 | 단위·규칙·API·E2E | 이 문서 |
 | R18 | 급식·공지·이야기방·학생 관리·푸시 토큰 등 기존 기능 | `tests/e2e/regression.e2e.mjs`(F1–F13, 158 체크) |
+| R19 | 교사 메인 = 교사 본인 시간표(공식 수업 uid 기준 + 직접 등록 주간 시간표 + 품앗이·보결 표시), 반 시간표는 링크만 | 단위 teacher-home-*, sa5, u6 |
 
 ## 5. 인수 시나리오(T) → 테스트
 
@@ -136,8 +139,8 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 |---|---|---|
 | 타입 검사 | `npx tsc --noEmit -p .` | 오류 0 |
 | 프로덕션 빌드 | `next build`(로컬 E2E 설정) | 성공 |
-| 커밋본 빌드 | 커밋본을 따로 꺼내(로컬 전용 연결 코드 없음) `tsc` · `npm run test:unit` · `next build --webpack`(가짜 공개 설정) | 오류 0 · 347/347 · 성공, 번들에 에뮬레이터 주소·서버 비밀값 없음 |
-| 단위 | `npm run test:unit` | **347/347** |
+| 커밋본 빌드 | 커밋본을 따로 꺼내(로컬 전용 연결 코드 없음) `tsc` · `npm run test:unit` · `next build --webpack`(가짜 공개 설정) | 오류 0 · 409/409 · 성공, 번들에 에뮬레이터 주소·서버 비밀값 없음 |
+| 단위 | `npm run test:unit` | **409/409** |
 | 보안 규칙 | `node --test tests/rules/` | **27/27** |
 | 수업·수강·개인 시간표 API | `tests/api/sa1-student-courses.test.mjs` | **82/82** |
 | 변경 발행 API | `tests/api/sa2-schedule-changes.test.mjs` | **99/99** |
@@ -145,6 +148,7 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 | 규칙(서버 경유) | `tests/api/sa4-rules.test.mjs` | **33/33** |
 | 시간표 가져오기 API | `tests/api/im1-import.test.mjs` | **122/122** |
 | 수강 명단 API | `tests/api/im2-roster.test.mjs` | **49/49** |
+| 교사 내 시간표 API | `tests/api/sa5-teacher-timetable.test.mjs` | **47/47** |
 | 데이터 전환(T41) | `tests/e2e/migration.test.mjs` | **25/25** |
 | R01 해결 확인 | `tests/e2e/r01-verify.mjs` | **24/24** |
 | 학생 홈·개인 시간표 | `tests/e2e/u1-student-home.e2e.mjs` | **78/78** |
@@ -152,6 +156,7 @@ NEIS 서버 메모리 캐시(6시간) 때문에 E2E 파일마다 서버를 새�
 | 초대·로그인 복구·설치 안내 | `tests/e2e/u3-invite-install.e2e.mjs` | **67/67** |
 | 교사 수업 관리·초대 | `tests/e2e/u4-teacher-courses.e2e.mjs` | **55/55** |
 | 교사 시간표 변경 | `tests/e2e/u5-schedule-changes.e2e.mjs` | **29/29** |
+| 교사 메인 '오늘의 내 수업' | `tests/e2e/u6-teacher-home.e2e.mjs` | **30/30** |
 | 기존 기능 회귀(F1–F13) | `tests/e2e/regression.e2e.mjs` (이야기방·공지 읽음·명단·푸시 요청 검증·규칙·주요 화면 스모크) | **158/158** |
 | 앱 번들 비밀값 검사(T46) | `.next/static`에서 서비스 계정 키·private_key·CRON_SECRET·firebase-admin·서버 전용 함수 이름 검색 | 0건 |
 
