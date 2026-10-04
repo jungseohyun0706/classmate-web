@@ -168,8 +168,13 @@ export interface TeacherCourse extends Course {
   catalogVisible: boolean
   /** 대상 학년(1~6). 비면 학년 미상 — 학생 '수업 담기'에서 모든 학년에 보임 */
   grades: number[]
-  /** 대상 반('2-1'). 하나면 그 반 학생에게만, 여러 반이면 그 반 학생에게 먼저, 비면 대상 학년 규칙 */
+  /** 대상 반('2-1'). 비면 대상 학년 규칙 */
   classLabels?: string[]
+  /**
+   * 대상 반의 성격(서버 courseClassScope — 학생 '수업 담기'와 같은 판정): 'homeroom' 그 반 학생에게만(반별 수업) /
+   * 'classes' 그 반 학생에게 먼저, 다른 반 학생도 보기로(분반·수업 코드 수업은 한 반이어도 여기) / null 대상 반 없음
+   */
+  classScope?: 'homeroom' | 'classes' | null
   legacyGroupId: string | null
   managerUids: string[]
   source: string

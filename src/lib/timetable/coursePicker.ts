@@ -4,6 +4,8 @@
  * 학생은 학교가 공개한 공식 수업(/api/courses catalog) 중에서 골라 담고, 담은 수업은 선생님이 발행한 변경이 자동 반영됩니다.
  * 이 모듈은 화면이 쓰는 계산만 합니다(서버 catalog도 대상 반·학년 판정 courseOfferFor를 같이 씀).
  *  - normalizeCatalog: 공개 목록 응답 정리(대상 학년 grades·대상 반 classLabels·나에게 보이는 방식 offer 포함)
+ *  - courseClassScope: 대상 반의 성격 — 반별 수업('homeroom' — 가져오기의 한 학급 'hr' 수업·교사가 한 반만 정한 수업) /
+ *    여러 반·선택·이동 수업('classes' — 분반·수업 코드 수업은 칸이 한 반에서만 나와도 여기)
  *  - courseOfferFor: 수업을 이 학생에게 기본으로 보일지('mine') / '다른 반·학년 수업도 보기'에서만('other') / 절대 안 보일지('never' —
  *    다른 반의 반별 수업). 서버가 'never'는 보내지 않음
  *  - filterForStudent: 기본은 'mine' + 이미 내 것인 수업, '다른 반·학년 수업도 보기'면 전부 — 수업 담기 화면과 직접 입력 안내가 같이 씀
@@ -45,7 +47,10 @@ export interface PickerCourse {
   myStatus: PickStatus | null
   /** 대상 학년(1~6). 비면 학년 미상 — 모든 학년에 보임 */
   grades: number[]
-  /** 대상 반('2-1'). 하나면 그 반의 반별 수업(그 반 학생에게만 옴), 둘 이상이면 이동·선택 수업, 비면 반 정보 없음 */
+  /**
+   * 대상 반('2-1'). 비면 반 정보 없음. 반별 수업인지 선택·이동 수업인지는 서버가 판정(courseClassScope — 개수만으로 정하지 않음)해
+   * offer로 알려 줌 — 다른 반의 반별 수업은 아예 오지 않음
+   */
   classLabels: string[]
   /**
    * 서버가 정한 나에게 보이는 방식: 'mine' 기본으로 보임(내 반·학년, 반·학년 미상, 이미 내 수강) /
@@ -210,18 +215,50 @@ export function studentClassLabelOf(grade: unknown, classNm: unknown): string | 
 }
 
 /**
+ * 대상 반의 성격 — 대상 반 개수만으로 정하지 않습니다(칸이 한 반에서만 나온 선택·이동 수업이 있으므로):
+ *  - 'homeroom' 반별 수업 — 그 반의 정규 수업. 그 반 학생만 담을 수 있음
+ *  - 'classes'  여러 반·선택·이동 수업 — 기본은 그 반 학생, 다른 반 학생도 '다른 반·학년 수업도 보기'로 찾아 담을 수 있음
+ * 정하는 규칙(출처 순):
+ *  1. 교사가 수업 화면에서 정한 대상 반(classLabelsBy 'teacher'): 한 반이면 반별 수업, 둘 이상이면 여러 반 수업
+ *     (교사 화면 안내 '한 반만 적으면 그 반 학생에게만'과 같음)
+ *  2. 시간표 가져오기 수업(importKey가 있음): **한 학급 수업 'hr|2-1|국어|…'만** 반별 수업. 분반 'sec|…'·수업 코드 'code|…'·
+ *     여러 학급 'mc|…'는 칸이 한 반에서만 나와도 선택·이동 수업 — 영어 A/B 수준별 반처럼 이번 파일에 3-4 칸만 있어도
+ *     3-5 학생이 그 반에 배정될 수 있음(docs/classmate-import-format.md '선택·이동 수업')
+ *  3. 출처를 모르는 값(표시 없는 예전 자료): 교사 값과 같은 규칙(한 반이면 반별 수업)
+ * 대상 반이 없으면 null(대상 학년 규칙)
+ */
+export type ClassScope = 'homeroom' | 'classes'
+
+/** courseClassScope·courseOfferFor가 읽는 수업 필드(수업 문서 그대로 넘겨도 됨) */
+export interface CourseAudienceFields {
+  classLabels?: unknown
+  /** 대상 반을 정한 쪽: 'teacher' / 'import' / 없음 */
+  classLabelsBy?: unknown
+  /** 시간표 가져오기 수업 식별 키('hr|…'·'sec|…'·'code|…'·'mc|…') — 가져오기 수업만 */
+  importKey?: unknown
+  grades?: unknown
+}
+
+export function courseClassScope(c: CourseAudienceFields): ClassScope | null {
+  const labels = cleanClassLabels(c.classLabels)
+  if (!labels.length) return null
+  const byCount: ClassScope = labels.length === 1 ? 'homeroom' : 'classes'
+  if (c.classLabelsBy === 'teacher') return byCount
+  if (typeof c.importKey === 'string' && c.importKey) return c.importKey.startsWith('hr|') ? 'homeroom' : 'classes'
+  return byCount
+}
+
+/**
  * 수업의 대상 범위:
- *  - 'homeroom' 반별 수업 — 대상 반이 정확히 하나(가져오기의 한 학급 수업 'hr|2-1|국어|…'처럼 칸이 모두 한 반에서 나온 수업,
- *    또는 교사가 대상 반을 하나만 정한 수업). 그 반의 정규 수업이라 그 반 학생만 담을 수 있음
- *  - 'classes' 여러 반 수업 — 대상 반이 둘 이상(이동·선택·합반 수업). 기본은 그 반 학생, 다른 반 학생도 '보기'로 찾을 수 있음
+ *  - 'homeroom' 반별 수업(courseClassScope — 가져오기의 한 학급 수업 'hr|2-1|국어|…', 교사가 대상 반을 하나만 정한 수업)
+ *  - 'classes' 여러 반·선택·이동 수업(대상 반이 둘 이상이거나, 분반·수업 코드 수업). 기본은 그 반 학생, 다른 반 학생도 '보기'로
  *  - 'grades' 대상 반은 없고 대상 학년만 앎 / 'all' 반·학년 모두 모름(모든 학생에게 보임)
  */
 export type CourseAudienceKind = 'homeroom' | 'classes' | 'grades' | 'all'
 
-export function courseAudienceKind(c: { classLabels?: unknown; grades?: unknown }): CourseAudienceKind {
-  const labels = cleanClassLabels(c.classLabels)
-  if (labels.length === 1) return 'homeroom'
-  if (labels.length > 1) return 'classes'
+export function courseAudienceKind(c: CourseAudienceFields): CourseAudienceKind {
+  const scope = courseClassScope(c)
+  if (scope) return scope
   return cleanGrades(c.grades).length ? 'grades' : 'all'
 }
 
@@ -241,19 +278,21 @@ export function studentScopeOf(user: { grade?: unknown; classNm?: unknown } | nu
 }
 
 /**
- * 수업을 이 학생에게 어떻게 보여 줄지 — 서버 catalog(보낼지·offer)와 requestMany(다른 반의 반별 수업 거절)가 이 함수를 씀.
- *  - 반별 수업(대상 반 하나): 내 반이면 'mine', 아니면 'never'. **'다른 반·학년 수업도 보기'로도 보이지 않음** —
+ * 수업을 이 학생에게 어떻게 보여 줄지 — 서버 catalog(보낼지·offer)와 request·requestMany(다른 반의 반별 수업 거절)가 이 함수를 씀.
+ *  - 반별 수업(courseClassScope 'homeroom'): 내 반이면 'mine', 아니면 'never'. **'다른 반·학년 수업도 보기'로도 보이지 않음** —
  *    다른 반의 정규 수업(같은 학년 2-2의 국어 등)이라 담으면 남의 반 시간표가 내 시간표가 되기 때문.
  *    내 반을 모르면(프로필에 반이 없음) 어느 반 수업인지 확인할 수 없어 'never'(소속 학급을 등록하면 보임)
- *  - 여러 반 수업: 내 반이 대상 반에 있으면 'mine', 아니면 'other'(보기로 찾을 수 있음 — 선택 과목은 다른 반 학생도 들을 수 있음).
+ *  - 여러 반·선택·이동 수업('classes' — 대상 반이 하나여도 분반·수업 코드 수업이면 여기): 내 반이 대상 반에 있으면 'mine',
+ *    아니면 'other'(보기로 찾아 담을 수 있음 — 선택 과목·수준별 반은 다른 반 학생도 들을 수 있음).
  *    내 반을 모르면 대상 반들의 학년으로(내 학년이 있으면 'mine', 내 학년도 모르면 'mine')
  *  - 대상 반이 없는 수업은 예전 학년 규칙: 대상 학년이 없거나 내 학년을 모르거나 내 학년이 들어 있으면 'mine', 아니면 'other'
- * 이미 내 수강(참여·승인 대기)인 수업은 이 판정과 상관없이 내 것으로 보임(호출하는 쪽이 먼저 확인 — catalog·filterForStudent)
+ * 이미 내 수강(참여·승인 대기)인 수업은 이 판정과 상관없이 내 것으로 보임(호출하는 쪽이 먼저 확인 — catalog·filterForStudent·planRequest)
  */
-export function courseOfferFor(c: { classLabels?: unknown; grades?: unknown }, me: StudentScope): CourseOffer {
+export function courseOfferFor(c: CourseAudienceFields, me: StudentScope): CourseOffer {
   const labels = cleanClassLabels(c.classLabels)
-  if (labels.length === 1) return me.classLabel !== null && me.classLabel === labels[0] ? 'mine' : 'never'
-  if (labels.length > 1) {
+  const scope = courseClassScope(c)
+  if (scope === 'homeroom') return me.classLabel !== null && labels.indexOf(me.classLabel) >= 0 ? 'mine' : 'never'
+  if (scope === 'classes') {
     if (me.classLabel !== null) return labels.indexOf(me.classLabel) >= 0 ? 'mine' : 'other'
     if (me.grade === null) return 'mine'
     return labels.some((l) => labelParts(l)[0] === me.grade) ? 'mine' : 'other'
@@ -264,11 +303,11 @@ export function courseOfferFor(c: { classLabels?: unknown; grades?: unknown }, m
 }
 
 /**
- * 서버 catalog가 보낼 수업과 수업마다 offer — me가 null(학생이 아님)이면 거르지 않음(모두 'mine').
+ * 서버 catalog가 보낼 수업과 수업마다 offer — me가 null(교사 — 수업을 관리하는 쪽)이면 거르지 않음(모두 'mine').
  * 이미 내 수강(참여·승인 대기)인 수업은 판정과 상관없이 'mine'으로 보냄(내 수업은 언제나 내 것으로 보임).
  * 'never'(다른 반의 반별 수업)는 보내지 않고 개수만(withheld) — 학교에 공개 수업이 없다는 안내와 구분하는 데만 씀
  */
-export function offerCatalog<T extends { courseId: string; classLabels?: unknown; grades?: unknown }>(
+export function offerCatalog<T extends { courseId: string } & CourseAudienceFields>(
   courses: T[],
   me: StudentScope | null,
   myStatusOf: (courseId: string) => string | null | undefined

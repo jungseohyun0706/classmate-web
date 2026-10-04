@@ -7,12 +7,16 @@
  *    · 표시가 없는 예전 가져오기 수업은 기본값(비공개·승인 후) 그대로일 때만 — 공개 여부만 따르고 참여 방식은 '승인 후'
  *      (catalogBy 'import-legacy' — 다음 가져오기도 바로 담기로 올리지 않음). 공개·바로 참여로 바뀌어 있으면 교사가 바꾼 것으로 봄
  *  - 공개 선택이 없으면(이전 호출) 새 수업은 예전처럼 비공개·승인 후, 기존 수업은 그대로
- *  - 대상 반(classLabels): 수업 칸들의 학급 표시(중복 없이 학년·반 순, classLabelsBy 'import') — 학생 '수업 담기'의 반 거르기
- *    (하나면 그 반 학생에게만). 교사가 수업 화면에서 정한 대상 반(classLabelsBy 'teacher', 비운 값 포함)은 다시 가져와도·원복해도 그대로
+ *  - 대상 반(classLabels): 수업 칸들의 학급 표시(중복 없이 학년·반 순, classLabelsBy 'import') — 학생 '수업 담기'의 반 거르기.
+ *    한 학급 수업('hr')만 반별 수업(그 반 학생에게만), 분반·수업 코드 수업은 칸이 한 반에서만 나와도 선택·이동 수업
+ *    (three-sources.json의 영어 A(3-4 칸만)·영어 B(3-5 칸만) — 다른 반 학생도 보기로 찾아 담을 수 있음).
+ *    교사가 수업 화면에서 정한 대상 반(classLabelsBy 'teacher', 비운 값 포함)은 다시 가져와도·원복해도 그대로
  *  - 원복은 이전 값으로
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'fs'
+import path from 'path'
 import {
   buildCandidates,
   courseIdFor,
@@ -26,7 +30,9 @@ import {
   type CatalogPublishOption,
   type ImportPlan,
   type RawImportRow,
+  type TeacherAccount,
 } from '../../src/lib/timetable/importMatch'
+import { courseClassScope, courseOfferFor, offerCatalog, type StudentScope } from '../../src/lib/timetable/coursePicker'
 
 const S = 'S1'
 const TERM = '2026-2'
@@ -401,5 +407,88 @@ describe('학생 수업 담기 공개(catalog) — 기존 수업은 가져오기
     assert.deepEqual(importCatalogFor({ source: 'import', catalogBy: 'import-legacy', catalogVisible: true, invitePolicy: 'approval' }, opt), { visible: true, policy: 'approval', by: 'import-legacy' })
     assert.equal(importCatalogFor({ source: 'import', catalogBy: 'teacher', catalogVisible: false, invitePolicy: 'approval' }, opt), null)
     assert.equal(importCatalogFor({ source: 'import', catalogBy: 'import', catalogVisible: false, invitePolicy: 'approval', legacyGroupId: 'g' }, opt), null)
+  })
+})
+
+/** 시간표 가져오기 가상 자료(tests/fixtures/import) — 컴파일 위치(.test-dist/tests/unit)와 원본 위치 모두에서 찾음 */
+function loadFixture(name: string): { schoolCode: string; termId: string; teachers: TeacherAccount[]; rows: RawImportRow[] } {
+  const file = [
+    path.resolve(__dirname, '../fixtures/import', name),
+    path.resolve(__dirname, '../../../tests/fixtures/import', name),
+    path.resolve(process.cwd(), 'tests/fixtures/import', name),
+  ].find((p) => fs.existsSync(p))
+  if (!file) throw new Error('fixture not found: ' + name)
+  return JSON.parse(fs.readFileSync(file, 'utf8'))
+}
+
+describe('선택·이동 수업은 칸이 한 반에서만 나와도 반별 수업이 아님 (three-sources.json)', () => {
+  const fx = loadFixture('three-sources.json')
+  assert.equal(fx.schoolCode, S)
+  assert.equal(fx.termId, TERM)
+  const r = buildCandidates(fx.rows, { schoolCode: S, teachers: fx.teachers })
+  const db = new FakeDb()
+  db.apply(plan(r, db, { catalog: { visible: true, policy: 'auto' } }))
+  const K_ENGA = 'sec|영어|A|이영희'
+  const K_ENGB = 'sec|영어|B|정하늘'
+  const K_KOR34 = 'hr|3-4|국어|김민수'
+  const K_KOR35 = 'hr|3-5|국어|김민수'
+  const K_MUSIC = 'hr|3-4|음악|최유나'
+  const doc = (key: string) => {
+    const d = db.courses[cid(key)]
+    assert.ok(d, `수업 없음: ${key} (있는 것: ${Object.values(db.courses).map((c) => c.importKey).join(', ')})`)
+    return d
+  }
+  const S34: StudentScope = { grade: 3, classLabel: '3-4' }
+  const S35: StudentScope = { grade: 3, classLabel: '3-5' }
+
+  test('저장된 수업: 영어 A는 3-4 칸만·영어 B는 3-5 칸만(대상 반 하나) — 그래도 분반 수업이라 classes, 한 학급 국어·음악은 homeroom', () => {
+    assert.deepEqual(doc(K_ENGA).classLabels, ['3-4'])
+    assert.deepEqual(doc(K_ENGB).classLabels, ['3-5'])
+    assert.equal(doc(K_ENGA).importKey, K_ENGA)
+    assert.equal(courseClassScope(doc(K_ENGA)), 'classes')
+    assert.equal(courseClassScope(doc(K_ENGB)), 'classes')
+    for (const k of [K_KOR34, K_KOR35, K_MUSIC]) assert.equal(courseClassScope(doc(k)), 'homeroom', k)
+  })
+  test("3-5 학생: 영어 A는 'other'(보기를 켜면 보이고 담을 수 있음), 영어 B는 'mine', 3-4 국어·음악은 'never'", () => {
+    assert.equal(courseOfferFor(doc(K_ENGA), S35), 'other')
+    assert.equal(courseOfferFor(doc(K_ENGB), S35), 'mine')
+    assert.equal(courseOfferFor(doc(K_KOR35), S35), 'mine')
+    assert.equal(courseOfferFor(doc(K_KOR34), S35), 'never')
+    assert.equal(courseOfferFor(doc(K_MUSIC), S35), 'never')
+    // 거꾸로 3-4 학생에게 영어 B도 보기로
+    assert.equal(courseOfferFor(doc(K_ENGB), S34), 'other')
+    assert.equal(courseOfferFor(doc(K_ENGA), S34), 'mine')
+  })
+  test('서버 공개 목록 흐름(offerCatalog): 3-5 학생에게 영어 A를 보내고(offer other), 3-4 반별 수업 둘만 보내지 않음', () => {
+    const list: Array<{ courseId: string } & Record<string, unknown>> = Object.keys(db.courses).map((id) => ({ ...db.courses[id], courseId: id }))
+    const { sent, withheld } = offerCatalog(list, S35, () => null)
+    const offer = Object.fromEntries(sent.map((x) => [String(x.course.importKey), x.offer]))
+    assert.equal(offer[K_ENGA], 'other')
+    assert.equal(offer[K_ENGB], 'mine')
+    assert.equal(offer[K_KOR35], 'mine')
+    assert.ok(!(K_KOR34 in offer) && !(K_MUSIC in offer), JSON.stringify(offer))
+    assert.equal(withheld, 2)
+  })
+  test("교사가 영어 A의 대상 반을 3-4 하나로 직접 정하면(classLabelsBy 'teacher') 그때는 반별 수업 — 교사 화면 안내와 같음", () => {
+    const d = { ...doc(K_ENGA), classLabels: ['3-4'], classLabelsBy: 'teacher' }
+    assert.equal(courseClassScope(d), 'homeroom')
+    assert.equal(courseOfferFor(d, S35), 'never')
+  })
+  test('다음 가져오기에서 3-5 칸이 생기면 3-5 학생에게 mine, 원복하면 다시 other(가져오기 키는 그대로라 판정 규칙도 그대로)', () => {
+    // 다음 파일에서 영어 A가 3-5에도 생김(학급·교사·특별실 시간표 모두에 같은 칸) → 대상 반 3-4·3-5
+    const src = (k: string) => fx.rows.find((x) => x.subject === 'A_영어' && x.sourceKind === k)!
+    const more = [
+      { ...src('class'), row: 99, weekday: 3, period: 6, classLabel: '3-5' },
+      { ...src('teacher'), row: 99, weekday: 3, period: 6, classLabel: '305' },
+      { ...src('room'), row: 99, weekday: 3, period: 6, classLabel: '305' },
+    ]
+    const p2 = plan(buildCandidates(fx.rows.concat(more), { schoolCode: S, teachers: fx.teachers }), db, { validFrom: X2, batchId: 'b2' })
+    db.apply(p2)
+    assert.deepEqual(doc(K_ENGA).classLabels, ['3-4', '3-5'])
+    assert.equal(courseOfferFor(doc(K_ENGA), S35), 'mine')
+    db.undo(p2, X2)
+    assert.deepEqual(doc(K_ENGA).classLabels, ['3-4'])
+    assert.equal(doc(K_ENGA).classLabelsBy, 'import')
+    assert.equal(courseOfferFor(doc(K_ENGA), S35), 'other')
   })
 })

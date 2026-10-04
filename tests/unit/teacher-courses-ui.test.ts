@@ -20,8 +20,10 @@ import {
   PAST_DATE_TEXT,
   retireSeriesImpactText,
   sameSeriesAddRequest,
+  splitClassLabelsText,
   type SeriesFormValues,
 } from '../../src/lib/timetable/teacherCourseView'
+import { normalizeClassLabel } from '../../src/lib/timetable/importMatch'
 import { courseActiveOn } from '../../src/lib/timetable/engine'
 import type { Course } from '../../src/lib/timetable/types'
 
@@ -231,5 +233,27 @@ describe('[20] 수업 목록 인원은 list 응답 counts만', () => {
     assert.ok(!/\bgetCourse\b/.test(s), 'index.tsx가 getCourse를 씀')
     assert.ok(s.includes('listCountsOf('), 'listCountsOf를 쓰지 않음')
     assert.ok(s.includes('인원 —'), "counts가 없을 때 '인원 —' 표시가 없음")
+  })
+})
+
+describe("교사 '대상 반' 입력 나누기(splitClassLabelsText)", () => {
+  test("쉼표·가운뎃점·세미콜론·줄바꿈으로 나눔, 중복 없이 입력 순서대로", () => {
+    assert.deepEqual(splitClassLabelsText('2-1, 2-3'), ['2-1', '2-3'])
+    assert.deepEqual(splitClassLabelsText('2-3·2-1;2-2\n2-1'), ['2-3', '2-1', '2-2'])
+    assert.deepEqual(splitClassLabelsText('  ,  '), [])
+  })
+  test("띄어 쓴 반 표시들도 나눔('2-1 2-3', '201 203', 쉼표와 섞어도) — 모두 반 표시 모양일 때만", () => {
+    assert.deepEqual(splitClassLabelsText('2-1 2-3'), ['2-1', '2-3'])
+    assert.deepEqual(splitClassLabelsText('2-1  2-3, 2-4'), ['2-1', '2-3', '2-4'])
+    assert.deepEqual(splitClassLabelsText('201 203'), ['201', '203'])
+    assert.deepEqual(splitClassLabelsText('2-1반 2-3반'), ['2-1반', '2-3반'])
+    // 나눈 값은 서버 정리 규칙으로 모두 읽힘(400 invalid-class-label이 나지 않음)
+    for (const x of splitClassLabelsText('2-1 2-3 0204 2/5')) assert.ok(normalizeClassLabel(x), x)
+  })
+  test("'2학년 1반'처럼 한 표시를 띄어 쓴 것은 나누지 않음(서버가 '2-1'로 정리) — 모양이 다른 낱말이 섞이면 그대로 보내 서버가 확인", () => {
+    assert.deepEqual(splitClassLabelsText('2학년 1반'), ['2학년 1반'])
+    assert.equal(normalizeClassLabel(splitClassLabelsText('2학년 1반')[0]), '2-1')
+    assert.deepEqual(splitClassLabelsText('2학년 1반, 2-3'), ['2학년 1반', '2-3'])
+    assert.deepEqual(splitClassLabelsText('2-1 사랑반'), ['2-1 사랑반'])
   })
 })

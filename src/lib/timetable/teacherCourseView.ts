@@ -7,6 +7,7 @@
  * - 차시 추가 요청 만들기·비교: 겹침 확인을 받은 입력과 저장할 입력이 같은지
  * - 지난 날짜 막기: 차시 추가·종료 적용일은 오늘(학교 시간대)부터
  * - 수업 목록 인원: 목록 응답의 counts만 사용(수업마다 상세·명단을 다시 받지 않음)
+ * - 대상 반 입력 나누기: '2-1, 2-3'·'2-1 2-3' → ['2-1', '2-3'] (정리·확인은 서버)
  */
 import { courseActiveOn } from './engine'
 import { formatYmdKo, isoToYmd } from './dates'
@@ -204,4 +205,29 @@ export function listCountsOf(item: unknown): ListCounts | null {
   if (!c || typeof c !== 'object') return null
   if (!countOk(c.active) || !countOk(c.pending)) return null
   return { active: c.active, pending: c.pending }
+}
+
+// ───────────────────────── 대상 반 입력 ─────────────────────────
+
+/** 띄어 쓴 낱말 하나가 반 표시 모양인지('2-1'·'2_1'·'2/1'·'2.1'·'2-1반'·'201'·'0201') — 띄어쓰기로 나눌지 판단용 */
+const CLASS_LABEL_WORD = /^(\d{1,2}[-_/.]\d{1,2}반?|0?\d\d{2})$/
+
+/**
+ * 교사 '대상 반' 입력 → 보낼 목록. 쉼표·가운뎃점·세미콜론·줄바꿈으로 나누고, 한 토막 안에서 띄어 쓴 낱말이 **모두** 반 표시 모양이면
+ * 띄어쓰기로도 나눔('2-1 2-3' → ['2-1', '2-3']). '2학년 1반'처럼 한 표시를 띄어 쓴 것은 그대로 보내 서버가 정리·확인
+ * (알 수 없는 표시는 서버가 400 invalid-class-label — 다른 반으로 잘못 저장하지 않음). 중복 없이 입력 순서대로
+ */
+export function splitClassLabelsText(text: string): string[] {
+  const out: string[] = []
+  const add = (x: string) => {
+    if (x && out.indexOf(x) < 0) out.push(x)
+  }
+  text.split(/[,，·;；\n]+/).forEach((chunk) => {
+    const t = chunk.trim()
+    if (!t) return
+    const words = t.split(/\s+/)
+    if (words.length > 1 && words.every((w) => CLASS_LABEL_WORD.test(w))) words.forEach(add)
+    else add(t)
+  })
+  return out
 }

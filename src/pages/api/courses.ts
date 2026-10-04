@@ -40,7 +40,7 @@ import {
 } from '../../lib/timetable/studentData'
 import { homeroomCourseId, homeroomSeriesId } from '../../lib/timetable/ids'
 import { normalizeClassLabel } from '../../lib/timetable/importMatch'
-import { cleanClassLabels, offerCatalog, studentScopeOf, type StudentScope } from '../../lib/timetable/coursePicker'
+import { cleanClassLabels, courseClassScope, offerCatalog, studentScopeOf, type StudentScope } from '../../lib/timetable/coursePicker'
 import { planHomeroomSeries } from '../../lib/timetable/changes'
 import type { Course, LessonSeries, Weekday, Ymd } from '../../lib/timetable/types'
 
@@ -57,17 +57,20 @@ import type { Course, LessonSeries, Weekday, Ymd } from '../../lib/timetable/typ
 //                          기본 시간표 변경으로 옮긴 칸은 그대로 두고 학급 시간표가 바뀐 칸만 적용일부터 반영)
 // - list            교사: 내가 담당·관리하는 수업 + 내가 담임인 학급의 공통 수업
 // - get             담당 교사: 수업·차시·수강 인원·승인 대기 명단(명단은 담당 교사에게만)
-// - catalog         같은 학교 사용자(학생): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시·교실·대상 학년(grades, 알 때만)·
+// - catalog         같은 학교 사용자(학생 등 — 교사가 아니면 모두 반·학년으로 거름): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시·교실·대상 학년(grades, 알 때만)·
 //                   대상 반(classLabels, 알 때만)·나에게 보이는 방식(offer 'mine'|'other')과 본인 수강 상태(myStatus)만 —
 //                   수강 인원·명단·교사 계정 없음. 학생 '수업 담기'(시간표 칸 보기·과목으로 찾기)가 씀.
 //                   시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남)은 빠짐.
-//                   학생에게는 다른 반의 반별 수업(대상 반이 하나이고 내 반이 아님 — courseOfferFor 'never')을 보내지 않음(개수만 withheld) —
-//                   '다른 반·학년 수업도 보기'로도 보이지 않음. 이미 내 수강(참여·승인 대기)인 수업은 언제나 보냄(offer 'mine').
+//                   교사가 아니면 다른 반의 반별 수업(courseClassScope 'homeroom' — 가져오기의 한 학급 'hr' 수업·교사가 한 반만 정한 수업 —
+//                   이고 내 반이 아님, courseOfferFor 'never')을 보내지 않음(개수만 withheld) — '다른 반·학년 수업도 보기'로도 보이지 않음.
+//                   분반·수업 코드 수업(선택·이동)은 칸이 한 반에서만 나와도 다른 반 학생에게 offer 'other'(보기로 찾아 담을 수 있음).
+//                   이미 내 수강(참여·승인 대기)인 수업은 언제나 보냄(offer 'mine'). 교사는 거르지 않음(수업을 관리하는 쪽).
 //                   me: { grade, classLabel } — 판정에 쓴 내 학년·반(users.grade·classNm)
 // create/update의 grades: 대상 학년(1~6) 목록 — 학생 '수업 담기'의 학년 거르기용(없으면 모든 학년에 보임).
 //   교사가 정하면 gradesBy:'teacher' → 시간표 가져오기가 다시 덮어쓰거나 지우지 않음.
 // create/update의 classLabels: 대상 반('2-1', '2학년 1반'·'201'도 받아 정리) 목록 — 하나면 그 반 학생에게만, 둘 이상이면 기본은 그 반 학생
-//   ('다른 반·학년 수업도 보기'로 다른 반도), 비면 대상 학년 규칙. 가져오기는 수업 칸의 학급 표시로 채움(classLabelsBy:'import').
+//   ('다른 반·학년 수업도 보기'로 다른 반도), 비면 대상 학년 규칙. 가져오기는 수업 칸의 학급 표시로 채움(classLabelsBy:'import' —
+//   그때는 한 학급 수업(importKey 'hr|…')만 반별 수업, 분반·코드 수업은 한 반이어도 선택·이동 수업). 응답 classScope로 판정 결과를 알려 줌.
 //   교사가 정하면 classLabelsBy:'teacher' → 시간표 가져오기가 다시 덮어쓰거나 지우지 않음.
 //   공개·참여 방식(catalogVisible·invitePolicy)이나 예전 수업 그룹(legacyGroupId)을 바꾸면 catalogBy:'teacher' → 가져오기가 공개 설정을 건드리지 않음
 // 모든 쓰기는 트랜잭션에서 schools/{s}.scheduleRevision을 1 올리고 감사 로그를 남깁니다.
@@ -210,6 +213,8 @@ function courseView(id: string, d: Record<string, any>) {
     catalogVisible: d.catalogVisible === true,
     grades: gradesOf(d),
     classLabels: classLabelsOf(d),
+    // 대상 반의 성격(학생 '수업 담기'와 같은 판정): 'homeroom' 그 반 학생에게만 / 'classes' 그 반 먼저, 다른 반은 보기로 / null 대상 반 없음
+    classScope: courseClassScope(d),
     legacyGroupId: typeof d.legacyGroupId === 'string' ? d.legacyGroupId : null,
     managerUids: Array.isArray(d.managerUids) ? d.managerUids.filter((x: unknown) => typeof x === 'string') : [],
     source: typeof d.source === 'string' ? d.source : 'manual',
@@ -382,7 +387,7 @@ async function updateCourse(ctx: Ctx) {
     tx.set(ref, { ...after, ...marker, revision: rev, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
     writeRevision(tx, ctx.db, ctx.schoolCode, rev)
     writeAudit(tx, ctx.db, ctx.schoolCode, { action: 'course.update', actorUid: ctx.uid, target: `courses/${courseId}`, revision: rev, before, after })
-    return { ok: true, courseId, course: courseView(courseId, { ...cur, ...after }), revision: rev }
+    return { ok: true, courseId, course: courseView(courseId, { ...cur, ...after, ...marker }), revision: rev }
   })
 }
 
@@ -1021,16 +1026,18 @@ async function catalog(ctx: Ctx) {
     const e = enrollmentFromDoc(d.data() || {})
     if (e.uid === ctx.uid) myStatus.set(e.courseId, e.status)
   })
-  // 대상 반·학년 판정(학생만 — 교사 등은 거르지 않음): 내 학년·반은 프로필(users.grade·classNm)
-  const me: StudentScope | null = ctx.u.user.role === 'student' ? studentScopeOf(ctx.u.user) : null
+  // 대상 반·학년 판정: 교사(수업을 관리하는 쪽)만 거르지 않음. 학생과 그 밖의 계정(역할 표시가 없는 예전 계정 등)은 모두 거름 —
+  // 내 학년·반은 프로필(users.grade·classNm), 모르면 반별 수업은 받지 않음
+  const me: StudentScope | null = isTeacher(ctx.u) ? null : studentScopeOf(ctx.u.user)
   // 운영 중인 수업만: 종료·종료일 지남, 시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남 — 차시 없는 빈 수업) 제외
   const running = snap.docs
     .filter((d) => courseActiveOn(courseFromDoc(d.id, d.data() || {}), ctx.today) && !importRetiredBy(d.data() || {}, ctx.today))
     .map((d) => {
       const v = d.data() || {}
-      return { courseId: d.id, v, classLabels: v.classLabels, grades: v.grades }
+      return { courseId: d.id, v, classLabels: v.classLabels, classLabelsBy: v.classLabelsBy, importKey: v.importKey, grades: v.grades }
     })
-  // 다른 반의 반별 수업(대상 반 하나·내 반 아님)은 보내지 않음 — '다른 반·학년 수업도 보기'로도 보이지 않음(그 반의 정규 수업).
+  // 다른 반의 반별 수업(courseClassScope 'homeroom'·내 반 아님)은 보내지 않음 — '다른 반·학년 수업도 보기'로도 보이지 않음(그 반의 정규 수업).
+  // 분반·수업 코드 수업은 칸이 한 반에서만 나와도 선택·이동 수업이라 다른 반 학생에게 offer 'other'로 보냄.
   // 이미 내 수강(참여·승인 대기)이면 언제나 보냄. 보내지 않은 수는 빈 화면 구분용으로만(withheld)
   const { sent, withheld } = offerCatalog(running, me, (id) => myStatus.get(id))
   const open = sent.map((x) => x.course)

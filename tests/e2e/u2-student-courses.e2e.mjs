@@ -769,6 +769,48 @@ async function t34States(browser) {
   await inv.page.waitForURL(/\/i\/ABCD2345/, { timeout: 10000 }).catch(() => {})
   check('U2.invite.2', '초대 코드 입력 → /i/{code}', /\/i\/ABCD2345/.test(inv.page.url()), inv.page.url())
   await inv.ctx.close()
+
+  // 다시 시도: 공개 목록이 처음에 실패(500) → #invite에 자리 잡음 → 사용자가 수업 담기의 '다시 시도'까지 올라가 누름
+  // (스크롤 막대로 옮긴 것처럼 휠·터치·키 없이, 마우스 누름도 없이 click만 — 처음 자리 잡을 때만 맞추는지 따로 확인)
+  // → 목록이 다시 와도(불러오는 중 → 다 됨) #invite로 다시 끌어가지 않음
+  let catalogCalls = 0
+  const failFirstCatalog = async (page) => {
+    await page.addInitScript(() => {
+      document.addEventListener('DOMContentLoaded', () => {
+        const st = document.createElement('style')
+        st.textContent = 'html, body, * { overflow-anchor: none !important; }'
+        document.head.appendChild(st)
+      })
+    })
+    await page.route('**/api/courses', async (route) => {
+      if ((route.request().postData() || '').includes('"catalog"')) {
+        catalogCalls++
+        if (catalogCalls === 1) {
+          return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: '시험용 서버 오류', code: 'server-error' }) })
+        }
+        await sleep(800)
+      }
+      return route.continue()
+    })
+  }
+  const rt = await openAs(browser, 'k@u2.e2e.kr', '/student/courses#invite', failFirstCatalog)
+  const rtPicker = region(rt.page, PICKER)
+  const retryBtn = rtPicker.getByRole('button', { name: '다시 시도' })
+  const sawError = await visible(retryBtn, 20000)
+  await visible(region(rt.page, '초대 코드로 참여').getByLabel('초대 코드'), 15000)
+  await sleep(800)
+  await retryBtn.evaluate((el) => el.scrollIntoView({ block: 'center' }))
+  await sleep(300)
+  const y0 = await rt.page.evaluate(() => Math.round(window.scrollY))
+  await retryBtn.dispatchEvent('click')
+  const tableBack = await visible(rtPicker.getByRole('table', { name: '수업 담기 시간표 칸' }), 20000)
+  await sleep(800)
+  const y1 = await rt.page.evaluate(() => Math.round(window.scrollY))
+  const invTop = await region(rt.page, '초대 코드로 참여').boundingBox()
+  check('U2.invite.3', "#invite로 연 뒤 공개 목록 '다시 시도'를 누르면 목록이 다시 와도 초대 코드 섹션으로 끌어가지 않음(누른 자리 그대로)",
+    sawError && catalogCalls >= 2 && tableBack && Math.abs(y1 - y0) <= 4,
+    JSON.stringify({ sawError, catalogCalls, tableBack, y0, y1, inviteTop: invTop && Math.round(invTop.y) }))
+  await rt.ctx.close()
 }
 
 async function main() {

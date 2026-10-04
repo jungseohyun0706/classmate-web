@@ -58,17 +58,8 @@ export default function GradePicker({
   )
 }
 
-/** '2-1, 2-3' → ['2-1', '2-3'] (쉼표·가운뎃점·줄바꿈으로 나눔 — '2학년 1반'처럼 띄어 쓴 표시도 그대로 보내 서버가 정리·확인) */
-export function splitClassLabelsText(text: string): string[] {
-  return Array.from(
-    new Set(
-      text
-        .split(/[,，·\n]+/)
-        .map((x) => x.trim())
-        .filter(Boolean)
-    )
-  )
-}
+/** '2-1, 2-3'·'2-1 2-3' → ['2-1', '2-3'] — 순수 함수(단위 테스트)는 teacherCourseView.splitClassLabelsText */
+export { splitClassLabelsText } from '../../lib/timetable/teacherCourseView'
 
 /**
  * 대상 반(선택) — 교사 수업 만들기·정보 수정. 학생 '수업 담기'에서 누구에게 보일지:
@@ -93,7 +84,7 @@ export function ClassLabelsInput({ value, onChange, disabled }: { value: string;
         className="mt-1 block w-full min-h-[44px] rounded-lg border border-gray-300 px-3"
       />
       <span id={hintId} className="mt-1 block text-xs text-gray-500 break-keep">
-        한 반만 적으면 그 반 학생에게만 보여요(반별 수업). 여러 반이면 그 반 학생에게 먼저 보이고, 다른 반 학생도 &lsquo;다른 반·학년 수업도 보기&rsquo;로 찾을 수 있어요. 비우면 대상 학년으로 보여요.
+        여러 반은 쉼표로 나눠 적어요(예: 2-1, 2-3). 한 반만 적으면 그 반 학생에게만 보여요(반별 수업). 여러 반이면 그 반 학생에게 먼저 보이고, 다른 반 학생도 &lsquo;다른 반·학년 수업도 보기&rsquo;로 찾을 수 있어요. 비우면 대상 학년으로 보여요.
       </span>
     </label>
   )

@@ -565,21 +565,26 @@ export default function StudentCoursesPage(): JSX.Element {
   const entries = useMemo(() => sortEntries(entriesState.entries), [entriesState.entries])
   const editingEntry = editor && editor.mode !== 'create' ? entries.find((e) => e.entryId === editor.entryId) ?? null : null
 
-  // 해시 앵커(#invite·#mine·#catalog·#personal)로 들어오면 그 섹션으로. 자료가 들어와 위 섹션 높이가 바뀌면 한 번 더 맞춤(사용자가 스크롤하기 전까지).
+  // 해시 앵커(#invite·#mine·#catalog·#personal)로 들어오면 그 섹션으로. 자료가 들어와 위 섹션 높이가 바뀌면 한 번 더 맞춤(사용자가 손대기 전까지).
   // 위쪽 섹션은 따로따로 늦게 채워짐 — 참여 중인 수업(내 시간표 자료)·수업 담기(공개 목록, 칸 표가 그 뒤에 그려짐)·직접 입력 —
-  // 그래서 셋이 각각 자리를 잡을 때마다 다시 맞춤(#invite는 수업 담기 아래라, 공개 목록이 늦게 오면 밀려 내려가므로)
+  // 그래서 셋이 각각 **처음** 자리를 잡을 때마다 다시 맞춤(#invite는 수업 담기 아래라, 공개 목록이 늦게 오면 밀려 내려가므로).
+  // 처음 한 번뿐: '다시 시도'로 다시 불러오는 것(불러오는 중 → 다 됨)은 새로 맞추지 않음 — 다시 시도를 누른 사람을 옮기지 않게.
+  // 사용자가 손대면(휠·터치·키·마우스 누름) 그 뒤로는 맞추지 않음
   const userScrolledRef = useRef(false)
   const scrolledForRef = useRef<string>('')
+  const settledOnceRef = useRef({ mine: false, entries: false, catalog: false })
   useEffect(() => {
     const mark = (): void => {
       userScrolledRef.current = true
     }
     window.addEventListener('wheel', mark, { passive: true })
     window.addEventListener('touchstart', mark, { passive: true })
+    window.addEventListener('pointerdown', mark, { passive: true })
     window.addEventListener('keydown', mark)
     return () => {
       window.removeEventListener('wheel', mark)
       window.removeEventListener('touchstart', mark)
+      window.removeEventListener('pointerdown', mark)
       window.removeEventListener('keydown', mark)
     }
   }, [])
@@ -590,7 +595,12 @@ export default function StudentCoursesPage(): JSX.Element {
     if (gate.kind !== 'ok') return
     const id = hash.replace(/^#/, '')
     if (!(SECTION_IDS as readonly string[]).includes(id)) return
-    const stage = `${id}|${mineSettled ? 1 : 0}|${entriesSettled ? 1 : 0}|${catalogSettled ? 1 : 0}`
+    // 자료마다 '처음 자리를 잡음'만 기억(한 번 true면 그대로) — 다시 불러와도 같은 단계라 다시 맞추지 않음
+    const once = settledOnceRef.current
+    once.mine = once.mine || mineSettled
+    once.entries = once.entries || entriesSettled
+    once.catalog = once.catalog || catalogSettled
+    const stage = `${id}|${once.mine ? 1 : 0}|${once.entries ? 1 : 0}|${once.catalog ? 1 : 0}`
     if (scrolledForRef.current === stage) return
     if (scrolledForRef.current && userScrolledRef.current) return
     scrolledForRef.current = stage

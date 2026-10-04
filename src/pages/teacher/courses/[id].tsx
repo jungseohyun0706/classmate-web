@@ -541,7 +541,13 @@ export default function TeacherCourseDetailPage() {
                 <dt className="text-gray-500">대상 반</dt>
                 <dd className="min-w-0 break-words">
                   {Array.isArray(course.classLabels) && course.classLabels.length
-                    ? `${course.classLabels.join(', ')}${course.classLabels.length === 1 ? ' (이 반 학생에게만 보임)' : ''}`
+                    ? `${course.classLabels.join(', ')}${
+                        course.classScope === 'homeroom'
+                          ? ' (이 반 학생에게만 보임 — 반별 수업)'
+                          : course.classScope === 'classes'
+                            ? ' (이 반 학생에게 먼저 보임 — 다른 반 학생도 찾아 담을 수 있음)'
+                            : ''
+                      }`
                     : '정하지 않음'}
                 </dd>
                 <dt className="text-gray-500">반 전체 공통</dt>
