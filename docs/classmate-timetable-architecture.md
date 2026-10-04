@@ -121,6 +121,7 @@
 | API | 메서드·본문 | 권한 | 결과 |
 |---|---|---|---|
 | `/api/timetable/me` | GET `?from=YYYYMMDD&to=YYYYMMDD` (최대 21일) | 로그인 학생(교사도 본인 수강이 있으면 가능) | `MyTimetablePayload` (6절). 조회 실패는 5xx + code |
+| `/api/timetable/teacher` | GET `?from=YYYYMMDD&to=YYYYMMDD` (최대 21일, 기본 어제~13일 뒤) | 로그인 교사(학교 있음). 학생 403 `teacher-only`, 가입 미완료 403 `no-profile`, 학교 없음 409 `no-school` | `TeacherTimetablePayload` (10절) — 본인 차시만. 조회 실패는 5xx + code |
 | `/api/courses` | POST `{action}` — `list`(학교·학기 수업 목록 + 수업별 인원 수 `counts{active,pending}` — 명단 없음), `get`, `create`, `update`, `end`, `setCommon`, `addSeries`, `retireSeries`, `fromHomeroomTimetable`(담임: 학급 시간표 → 공통 수업, 결정적 id `hc_{classId}_{sha1(termId|과목|교사)[0:10]}`·차시 `hcs_…` — src/lib/timetable/ids.ts), `catalog`(학생용 공개 목록) | create: 같은 학교 교사(자기 자신을 담당 교사로). update/end/series: 담당 교사 또는 관리 교사(managerUids). `addSeries.validFrom`·`retireSeries.effectiveFrom`·`fromHomeroomTimetable.effectiveFrom`이 오늘보다 이르면 400 `past-date`(지난 시간표를 소급해 바꾸지 않음). 기본 변경으로 옮긴 공통 수업 칸은 `fromHomeroomTimetable` 재실행이 다시 만들지 않음(`replacesSeriesId`/`supersededBy` 연결, `sourceHomeroomId` 유지) | 수업·차시 |
 | `/api/enrollments` | POST `{action}` — `request`(학생, 공개 수업 신청 → pending), `approve`/`reject`/`end`(담당 교사), `add`(담당 교사가 학생 uid 연결 — 같은 학교 학생만), `list`(담당 교사: 수강생 목록, 학생: 본인) | 위 | 수강 |
 | `/api/invitations` | POST `{action}` — `create`(type, targetId, expiresInDays? 1~180 기본 30, maxUses?), `revoke`, `list`({targetId}), `preview`({code}, 인증 불필요, 최소 정보 + state: ok/not-found/expired/revoked/used-up/ended), `accept`({code, name?, studentId?}) | create/revoke/list: 대상 학급 담임 또는 수업 담당·관리 교사. accept: 로그인 학생 — 프로필 없는 가입 직후 계정도 허용(수업 초대면 classId:null 학생 프로필 생성, 소속 학급은 비워 둠), 익명·교사 계정 403. 시도 제한(IP·uid 실패 횟수) | 초대 |
@@ -217,3 +218,50 @@ interface MyTimetablePayload {
 '꼭 필요'가 아닌 셋은 등호 조건만이라 자동 단일 필드 인덱스 병합으로도 돌지만, 쿼리가 실제로 쓰므로 성능용으로 둡니다. 쓰는 쿼리가 없는 복합 인덱스는 두지 않습니다 — enrollments(uid, status), courses(commonForHomerooms CONTAINS, status)·(termId, catalogVisible, status), series(courseId, validFrom), overrides(courseId, status)는 쓰는 쿼리가 없어 뺐습니다(쓰기마다 인덱스 항목만 늘어남). `src/`·`scripts/`에 컬렉션 그룹 쿼리가 없으므로 COLLECTION_GROUP 범위 인덱스나 `fieldOverrides`도 필요 없습니다. 내 승인 대기 목록(`approverUids` CONTAINS + `status` 등호, 정렬은 메모리)도 등호 조건만이라 복합 인덱스가 필요 없습니다. 쿼리에 범위 조건이나 다른 필드 정렬을 붙이면 이 표와 파일을 함께 고칩니다.
 
 단일 필드 조건·정렬(`importBatches.createdAt`, `teacherUids` CONTAINS, `invitations.targetId`, `courses.legacyGroupId` 등)은 자동 인덱스로 충분합니다. 에뮬레이터는 복합 인덱스를 강제하지 않으므로 충분성은 스테이징/운영 프로젝트에서 확인해야 합니다. 배포 시 콘솔에만 있는 기존 인덱스를 지울지 묻는데 `--force`를 쓰지 말고 `firebase firestore:indexes --project classmate-mvp-9f855`로 먼저 비교합니다. 운영에만 있는 인덱스가 아직 쓰이면 파일에 옮기고, 삭제 질문에는 No로 답합니다. 위에서 뺀 다섯 개가 이미 운영에 배포돼 있었다면 비교로 확인한 뒤에만 지웁니다(배포는 별도 승인).
+
+## 10. 교사 내 시간표(메인 화면) (`/dashboard`, `/api/timetable/teacher`)
+
+선생님 화면 메인(`/dashboard`)은 담임 반 학급 시간표가 아니라 **선생님 본인 시간표('오늘의 내 수업')**입니다. 학교가 있는 모든 교사에게 보이고(담임 아니어도), 학급 시간표는 담임에게만 카드 머리의 작은 링크 '우리 반 시간표 보기'(`/teacher/class-timetable`)로 남깁니다. 급식·학사일정은 `TodayCard showTimetable={false}`로 그대로 아래에 둡니다.
+
+**자료(서버, `src/lib/timetable/teacherData.ts`)** — 다른 학생·교사 자료를 내려주지 않습니다.
+
+```ts
+interface TeacherTimetablePayload {        // src/lib/timetable/teacherDay.ts
+  revision: number                          // schools/{s}.scheduleRevision(조회 전에 읽음)
+  generatedAt: number
+  schoolCode: string
+  from: string; to: string                  // 둘 다 포함
+  terms: TermSummary[]                      // /me와 같은 규칙(termsForWindow)
+  offDays: Record<YYYYMMDD, { name } | null>; calendarErrors: string[]   // /me와 같은 NEIS 학사일정(학년 = 담임 학년)
+  periodTimes: PeriodTime[]                 // 담임 학급 교시표 → 학교 엑셀 교시표(school_timetables.periodTimes) → 학교급 기본
+  days: Record<YYYYMMDD, { hasOfficial, lessons: TeacherLesson[], notices: TeacherNotice[], incomplete }>
+  mySchedule: { mon..fri: string[7] } | null   // 예전 주간 시간표(users.mySchedule), 모두 비면 null
+  covers: TeacherCover[]                    // 예전 교환·보결 중 수락·배정되고 내가 요청했거나 맡은 것
+}
+```
+
+- **내 차시 판정은 uid로만**: 후보 수업 = `courses.teacherUids` array-contains 내 uid + `series.teacherUids` array-contains 내 uid + 조회 기간 날짜의 변경(`overrides.dates` array-contains-any) 중 변경 후 `target.teacherUids`에 내가 있는 차시의 수업. `teacherNames`(엑셀 이름)로는 찾지도 연결하지도 않습니다 — 이름만 같은 수업·이름만 바꾼 변경은 내 수업이 아님.
+- 후보 수업의 반복 차시·변경을 `courseId in`으로 읽고(학기 범위·`selectOverridesForWindow`는 /me와 같음) 날짜마다 `computeTeacherOfficialDay`가 **학생 화면과 같은 엔진**(`buildDayTimetable`, 후보 수업을 수강처럼 넣음)으로 계산합니다. 엔진 수업 행의 `teacherUids`(변경 후 최종 담당)로 역할을 정합니다.
+  - 기본 담당이 나이고 지금도 나: `mine`(변경 있으면 전후), 보강이면 `makeup`
+  - 기본 담당이 나인데 변경으로 다른 교사: `changed-away`(빨강, 교사 변경 전후)
+  - 기본 담당이 남인데 변경으로 나: `substitute`('대신 들어가는 수업', 남의 수업이라 상세 링크 없음)
+  - 원래 내 차시의 취소·다른 날로 옮김·쉬는 날이라 열리지 않음 → `notices`(화면: 취소는 취소선 행, 옮김은 빨간 안내 줄)
+  - 결과에는 다른 교사 uid·관리 교사 uid를 넣지 않음(이름만). 수강·학생 명단은 읽지 않음
+- `hasOfficial`: 그 날짜 학기에 내가 기본 담당인 반복 차시(삭제·빈 기간 제외)가 있는 운영 중 수업이 있는지.
+- 교환(`school_swaps/{s}/requests`·`direct_requests`, `status:'accepted'`)·보결(`school_sos/{s}/requests`, `status:'assigned'`)은 `date in [조회 날짜]`로 읽고 메모리에서 내 것만 고릅니다. 예전 1:1 문서의 `fromId`·`toId`도 인정. 교환 메모(`note`)·보결 사유(`reason`)·다른 교사 uid는 넣지 않고 이름(`requesterName`·`accepterName`·`assignedName`)만, 요청 교사 학급 '담임 없음'은 빈 값.
+- 쿼리는 등호·`array-contains`·`array-contains-any`·`in`만(정렬·범위 없음) → 새 복합 인덱스·컬렉션 그룹 쿼리 없음(9절 표 그대로). 후보 수업 150개, 교환·보결 쿼리당 500건 상한.
+
+**날짜별 화면(클라이언트, 순수 함수 `buildTeacherDay`)**
+
+| 방식 | 조건 | 기본 목록 |
+|---|---|---|
+| 공식(`official`) | `days[D].hasOfficial` | 공식 수업 행(변경 배지·전후, 수업 상세 `/teacher/courses/{id}` 링크) + 취소 행. 예전 주간 시간표는 접힌 '내 주간 시간표(직접 등록·참고)'로만 |
+| 주간 시간표(`legacy`) | 공식 없음 + `mySchedule` 있음 | 그 요일 칸(`'1-5 국어'` → 국어 · 1학년 5반), 라벨 '내가 등록한 주간 시간표예요 — 수업 변경은 반영되지 않아요', 배지 '직접 등록 · 수업 변경 미반영'. 변경으로 나에게 넘어온 공식 수업·보강도 함께 |
+| 빈 상태(`empty`) | 둘 다 없음 | '아직 등록된 내 시간표가 없어요' + 수업 관리(`/teacher/courses`)·내 시간표 등록(`/teacher/my-schedule`) |
+
+- 모든 방식에 교환·보결 겹치기: 내 교시를 남이 맡음 → 같은 교시 행에 '○○ 선생님이 대신 들어가요 (품앗이|보결)'(그 교시 행이 없으면 따로 행), 내가 맡음 → '대신 들어가는 수업 · {학급} {과목} (○○ 선생님)' 행.
+- 상태는 학생 화면과 같음: 쉬는 날(휴업일·공휴일·방학) `holiday`, 학기 밖 `outside-term`(주간 시간표도 숨김), 주말·수업 없는 날 `no-lessons`, 학사일정 확인 실패 안내. 로딩은 스켈레톤, 오류는 '다시 시도'(빈 목록으로 위장하지 않음), 자료가 있는 채 실패하면 동기화 배너.
+- 실시간 갱신(`useTeacherTimetable`, `src/lib/timetable/teacherHomeClient.ts`): `schools/{s}.scheduleRevision` 구독(교사 읽기 허용) — 공식 변경 발행이 새로 고침 없이 반영. 교환·보결·주간 시간표는 버전을 올리지 않으므로 화면 복귀·포커스(30초 지난 자료)·온라인 복구 때 다시 받음. 조회 창은 학생과 같은 `clientWindow`(앞 3일~뒤 13일). 로컬 캐시는 두지 않음.
+- 화면 조각은 학생 컴포넌트를 재사용: `DayNav`, `LessonCard`(선택 값 `extraBadges`·`struck`·`href`·`metaPrefix`·`personalLabel` — 주지 않으면 학생 모양 그대로), `TimetableStateCard`(`teacher-empty` 추가), `InfoLine`. 조합은 `src/components/timetable/TeacherTimetable.tsx`.
+- 테스트: `tests/unit/teacher-home-official.test.ts`·`teacher-home-day.test.ts`(순수 로직), `tests/api/sa5-teacher-timetable.test.mjs`(API), `tests/e2e/u6-teacher-home.e2e.mjs`(화면).
+
