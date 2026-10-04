@@ -75,6 +75,12 @@ export function resolveCourses(
 
   for (const e of input.enrollments) {
     if (e.uid !== input.uid) continue
+    // 이전에 들은 기간(빼거나 끝낸 뒤 같은 수업을 다시 담아 지금 기간이 바뀐 경우) — 그 날짜에는 들은 수업 그대로
+    if (e.past && e.past.some((r) => inRange(date, r.from, r.to))) {
+      const course = byId.get(e.courseId)
+      if (course && courseActiveOn(course, date)) active.set(e.courseId, 'enrolled')
+      continue
+    }
     if (!inRange(date, e.from, e.to)) continue
     if (e.status === 'pending') {
       // 승인 대기는 수업 문서를 못 받아도 대기 상태로 알림

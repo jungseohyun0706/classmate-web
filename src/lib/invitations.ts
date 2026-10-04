@@ -14,7 +14,7 @@ import { randomInt } from 'crypto'
 import type { NextApiRequest } from 'next'
 import { FieldValue, Timestamp, type Firestore } from 'firebase-admin/firestore'
 import { courseActiveOn } from './timetable/engine'
-import { courseFromDoc, GROUP_RE, ID_RE, schoolRef } from './timetable/server'
+import { courseFromDoc, GROUP_RE, ID_RE, needsReapproval, schoolRef } from './timetable/server'
 import { homeroomLabel, readTermDocs, termRangeOf, TimetableApiError } from './timetable/studentData'
 import type { EnrollmentStatus, Ymd } from './timetable/types'
 
@@ -489,13 +489,14 @@ export function courseApproverUids(course: Record<string, any> | null | undefine
 /**
  * 기존 수강 문서 → 이번 참여로 정할 상태.
  * active/pending이면 그대로(변경 없음). 선생님이 끝내거나 거절한 수강(ended + decidedBy)은 다시 승인 대기.
+ * 선생님이 끝낸 뒤 학생이 다시 신청했다가 스스로 뺀 수강(reapproval 표시 — /api/enrollments leave는 decidedBy를 비움)도 승인 대기.
  */
 export function decideEnrollment(
   cur: Record<string, any> | null,
   defaultStatus: 'active' | 'pending'
 ): { status: EnrollmentStatus; changed: boolean } {
   if (cur && (cur.status === 'active' || cur.status === 'pending')) return { status: cur.status, changed: false }
-  const removedByTeacher = !!cur && cur.status === 'ended' && !!cur.decidedBy
+  const removedByTeacher = needsReapproval(cur)
   return { status: removedByTeacher ? 'pending' : defaultStatus, changed: true }
 }
 

@@ -176,6 +176,14 @@ export function courseFromDoc(id: string, d: Record<string, any>): Course {
   }
 }
 
+/**
+ * 시간표 가져오기(replace)가 그 날짜부터 정리한 수업인지(importRetiredOn <= 오늘 — 차시가 모두 끝나 빈 수업).
+ * 수업 상태(status)는 그대로라 courseActiveOn으로는 알 수 없음 → 학생 공개 목록에서 빼고 새로 담지 못하게(다음 가져오기가 다시 쓰면 null)
+ */
+export function importRetiredBy(d: Record<string, any>, today: Ymd): boolean {
+  return typeof d.importRetiredOn === 'string' && isYmd(d.importRetiredOn) && d.importRetiredOn <= today
+}
+
 export function seriesFromDoc(id: string, d: Record<string, any>): LessonSeries {
   return {
     seriesId: id,
@@ -240,7 +248,35 @@ export function enrollmentFromDoc(d: Record<string, any>): Enrollment {
     source: ['invite', 'roster', 'request', 'admin', 'legacy-group'].includes(d.source) ? d.source : 'admin',
     ...(d.via === 'group-qr' ? { via: 'group-qr' as const } : {}),
     ...(d.rejected === true ? { rejected: true } : {}),
+    ...pastRangesOf(d.history),
   }
+}
+
+/**
+ * 수강 문서 history(다시 참여할 때 남긴 이전 상태) → 이전에 들은 기간. 끝낸 수강 중 기간이 있는 것만(to 있음, from < to) —
+ * 승인 대기에서 끝내거나 거절된 수강(to 없음)은 들은 기간이 없어 넣지 않음. 최근 20개까지
+ */
+function pastRangesOf(history: unknown): { past?: Array<{ from: Ymd | null; to: Ymd }> } {
+  if (!Array.isArray(history)) return {}
+  const past: Array<{ from: Ymd | null; to: Ymd }> = []
+  history.slice(-20).forEach((h: any) => {
+    if (!h || h.status !== 'ended') return
+    const to = ymdOrNull(h.to)
+    const from = ymdOrNull(h.from)
+    if (!to || (from && from >= to)) return
+    if (!past.some((r) => r.from === from && r.to === to)) past.push({ from, to })
+  })
+  return past.length ? { past } : {}
+}
+
+/**
+ * 다시 참여할 때 선생님 승인이 필요한 수강인지(바로 담기 수업이어도 승인 대기):
+ * 선생님이 끝내거나 거절한 수강(ended + decidedBy), 또는 그 뒤 다시 신청했다가 학생이 스스로 뺀 수강
+ * (reapproval 표시 — 학생 빼기(leave)는 decidedBy를 비우지만 이 표시는 남김. 선생님이 승인·추가하면 지움).
+ * 학생 신청(request·requestMany)·초대 수락·그룹 QR이 같은 규칙을 씀
+ */
+export function needsReapproval(cur: Record<string, any> | null | undefined): boolean {
+  return !!cur && cur.status === 'ended' && (!!cur.decidedBy || cur.reapproval === true)
 }
 
 export function enrollmentId(courseId: string, uid: string): string {

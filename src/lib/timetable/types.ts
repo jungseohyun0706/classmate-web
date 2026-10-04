@@ -75,6 +75,11 @@ export interface Enrollment {
   via?: 'group-qr' | null
   /** 선생님이 거절한 수강(status 'ended')인지 — 종료와 구분해 표시 */
   rejected?: boolean
+  /**
+   * 이전에 들은 기간들 [from, to) — 같은 수업을 빼거나(끝내거나) 다시 담아 수강 문서(결정적 id)의 from/to가 바뀐 경우,
+   * 그 전 기간(history의 끝낸 수강)도 지난 날짜 시간표에 그대로 보이게. 없으면 생략
+   */
+  past?: Array<{ from: Ymd | null; to: Ymd }>
 }
 
 export interface HomeroomMembership {
