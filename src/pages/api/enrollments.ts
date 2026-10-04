@@ -17,20 +17,34 @@ import {
   writeRevision,
   type ApiUser,
 } from '../../lib/timetable/server'
-import { canManageCourse, getDocsById, studentHomeroomLabel, TimetableApiError, toStudentNo } from '../../lib/timetable/studentData'
+import {
+  canManageCourse,
+  getDocsById,
+  readTermDocs,
+  studentHomeroomLabel,
+  termForDateFromDocs,
+  TimetableApiError,
+  toStudentNo,
+} from '../../lib/timetable/studentData'
+import { AttemptLimiter } from '../../lib/invitations'
 import type { EnrollmentStatus, Ymd } from '../../lib/timetable/types'
 
 // POST /api/enrollments  { action, ... }
 // Header: Authorization: Bearer <Firebase ID token>
 // 학생 ↔ 수업반 수강(schools/{s}/enrollments/{courseId}__{uid})을 서버에서만 바꿉니다. 문서 id가 결정적이라 중복 수강이 생기지 않습니다.
-// - request {courseId}            학생: 같은 학교·공개(catalogVisible)·운영 중 수업만. invitePolicy 'auto'면 active, 아니면 pending.
+// - request {courseId}            학생: 같은 학교·공개(catalogVisible)·운영 중·지금 학기 수업만. invitePolicy 'auto'면 active, 아니면 pending.
 //                                  이미 active/pending이면 같은 결과(already). 선생님이 끝내거나 거절한 수강은 다시 신청하면 승인 대기.
+// - requestMany {courseIds}       학생 '수업 담기': 최대 20개, 수업마다 request와 같은 규칙으로 따로 판정(일부 성공 가능) →
+//                                  results[{courseId, ok, status?, already?, code?, error?}]. 바뀐 게 있으면 scheduleRevision +1·감사 1건
+// - leave {courseId}              학생: 내가 직접 담은(source 'request') active·pending 수강만 빼기(to=오늘, 지난 날짜 그대로).
+//                                  학교가 넣어 준 수강(초대·명단·선생님 추가·예전 그룹)은 403 not-self-picked
 // - approve/reject/end {courseId, uid}  담당 교사. end는 to=오늘(오늘부터 시간표에서 빠짐, 지난 날짜는 그대로)
 // - add {courseId, uid}           담당 교사: 같은 학교 학생 계정만, source 'admin', active
 // - list {courseId}               담당 교사: 학생 이름·번호·소속 반·상태 / {mine:true} 본인 수강 + 수업 제목
 // 수강이 바뀌면 schools/{s}.scheduleRevision +1(학생 화면 갱신 신호) + 감사 로그.
 // 수업에 legacyGroupId가 있으면 active가 될 때 학생 users.extraClassIds에 그 그룹을 추가(톡방·공지 호환). 끝낼 때 빼지는 않음.
-// 오류: { error, code } — 400 입력, 403 권한, 404 대상 없음, 409 상태 충돌, 500 server-error
+// 학생 신청·빼기는 uid별 요청 수 제한(10분 60회, 넘으면 429 rate-limited)
+// 오류: { error, code } — 400 입력, 403 권한, 404 대상 없음, 409 상태 충돌, 429 요청 과다, 500 server-error
 
 interface Ctx {
   u: ApiUser
@@ -141,55 +155,242 @@ function commitEnrollment(
   return { ok: true, courseId, uid, status: next.status, revision: rev }
 }
 
-// ───────────────────────── 학생 신청 ─────────────────────────
+// ───────────────────────── 학생 신청(한 개·여러 개)·빼기 ─────────────────────────
+
+/** 학생 신청·빼기 요청 수 제한(uid별, 인스턴스 메모리 — best-effort). 수강이 바뀔 때마다 학교 scheduleRevision이 올라
+ *  같은 학교 학생 화면이 모두 다시 받으므로, 한 학생이 신청·빼기를 반복해 학교 전체를 흔들지 못하게 넉넉한 상한만 둡니다 */
+const studentWriteLimiter = new AttemptLimiter({ windowMs: 10 * 60 * 1000, max: 60, maxKeys: 20000 })
+
+function requireStudent(ctx: Ctx) {
+  if (ctx.u.user.role !== 'student') fail(403, 'student-only', '학생 계정만 수강 신청을 할 수 있어요.')
+}
+
+function hitStudentLimit(ctx: Ctx) {
+  studentWriteLimiter.hit(ctx.uid)
+  if (studentWriteLimiter.limited(ctx.uid)) fail(429, 'rate-limited', '요청이 너무 많아요. 잠시 후 다시 시도해 주세요.')
+}
+
+/** 한 번에 담을 수 있는 수업 수(requestMany) */
+const REQUEST_MANY_MAX = 20
+
+type RequestPlan =
+  | { kind: 'error'; status: number; code: string; message: string }
+  | { kind: 'already'; status: EnrollmentStatus }
+  | { kind: 'write'; next: Record<string, any>; legacyGroupId: string | null; notifyTo: string[] }
+
+/**
+ * 학생 신청 규칙(request·requestMany가 같이 씀) — 트랜잭션에서 읽은 수업·수강 문서로 결정
+ *  - 같은 학교: 수업 문서를 요청자 학교 경로(schools/{내 학교}/courses)에서만 읽음 → 다른 학교 수업은 course-not-found
+ *  - 학교가 공개(catalogVisible)한 수업만, 운영 중(종료·종료일 지남 아님), 지금 학기 수업만(공개 목록과 같은 학기)
+ *  - 수강 문서 id는 courseId__uid(결정적) — 이미 active/pending이면 같은 결과(already, 쓰기 없음)
+ *  - invitePolicy 'auto'면 active(오늘부터), 아니면 pending. 선생님이 끝내거나 거절한 수강(ended + decidedBy)은 다시 승인 대기
+ */
+function planRequest(ctx: Ctx, courseId: string, course: Record<string, any> | null, cur: Record<string, any> | null, termId: string): RequestPlan {
+  if (!course) return { kind: 'error', status: 404, code: 'course-not-found', message: '수업을 찾을 수 없어요.' }
+  if (course.catalogVisible !== true) {
+    return { kind: 'error', status: 403, code: 'not-open', message: '공개된 수업만 신청할 수 있어요. 선생님께 수업 초대를 받아 주세요.' }
+  }
+  if (!courseActiveOn(courseFromDoc(courseId, course), ctx.today)) return { kind: 'error', status: 409, code: 'course-ended', message: '이미 끝난 수업이에요.' }
+  if (course.termId && String(course.termId) !== termId) {
+    return { kind: 'error', status: 409, code: 'other-term', message: '이번 학기 수업만 담을 수 있어요.' }
+  }
+  if (cur && (cur.status === 'active' || cur.status === 'pending')) return { kind: 'already', status: cur.status as EnrollmentStatus }
+  // 선생님이 끝내거나 거절한 수강은 자동 참여 수업이어도 다시 승인을 받아야 함(학생이 스스로 뺀 수강은 decidedBy 없음 → 처음처럼)
+  const removedByTeacher = !!cur && cur.status === 'ended' && !!cur.decidedBy
+  const status: EnrollmentStatus = course.invitePolicy === 'approval' || removedByTeacher ? 'pending' : 'active'
+  const next = {
+    termId: String(course.termId || ''),
+    status,
+    from: status === 'active' ? ctx.today : null,
+    to: null,
+    source: 'request',
+    requestedAt: FieldValue.serverTimestamp(),
+    decidedBy: null,
+    rejected: false,
+  }
+  const gid = typeof course.legacyGroupId === 'string' && ID_RE.test(course.legacyGroupId) ? course.legacyGroupId : null
+  return {
+    kind: 'write',
+    next,
+    legacyGroupId: status === 'active' ? gid : null,
+    notifyTo:
+      status === 'pending'
+        ? Array.from(new Set([...(course.teacherUids || []), ...(course.managerUids || [])])).filter((x): x is string => typeof x === 'string' && ID_RE.test(x))
+        : [],
+  }
+}
+
+/** 승인 대기 알림: 수업·학생·날짜마다 한 번만(같은 학생이 반복 신청해도 쌓이지 않게 — request·requestMany 같은 id). 실패해도 신청은 성공 */
+async function notifyPending(ctx: Ctx, courseId: string, to: string[]) {
+  if (!to.length) return
+  try {
+    await notifyUsersOnce(ctx.db, to, `enr_${courseId}__${ctx.uid}_${ctx.today}`, {
+      title: '수강 신청',
+      body: `${String(ctx.u.user.name || ctx.u.user.displayName || '학생')} 학생이 수업 참여를 기다려요`,
+      url: '/teacher/courses',
+    })
+  } catch (e) {
+    console.error('enrollments: notify failed', (e as Error)?.message)
+  }
+}
+
+async function currentTermId(ctx: Ctx): Promise<string> {
+  return termForDateFromDocs(await readTermDocs(ctx.db, ctx.schoolCode), ctx.today).termId
+}
 
 async function requestEnrollment(ctx: Ctx) {
-  if (ctx.u.user.role !== 'student') fail(403, 'student-only', '학생 계정만 수강 신청을 할 수 있어요.')
+  requireStudent(ctx)
   const courseId = idField(ctx.body.courseId, '수업')
+  hitStudentLimit(ctx)
+  const termId = await currentTermId(ctx)
   const r = refs(ctx, courseId, ctx.uid)
   let notifyTo: string[] = []
   const result = await ctx.db.runTransaction(async (tx) => {
     const courseSnap = await tx.get(r.course)
-    if (!courseSnap.exists) fail(404, 'course-not-found', '수업을 찾을 수 없어요.')
-    const course = courseSnap.data() || {}
-    if (course.catalogVisible !== true) fail(403, 'not-open', '공개된 수업만 신청할 수 있어요. 선생님께 수업 초대를 받아 주세요.')
-    if (!courseActiveOn(courseFromDoc(courseId, course), ctx.today)) fail(409, 'course-ended', '이미 끝난 수업이에요.')
     const enrSnap = await tx.get(r.enrollment)
     const rev0 = await readRevision(tx, ctx.db, ctx.schoolCode)
     const cur = enrSnap.exists ? enrSnap.data() || {} : null
-    if (cur && (cur.status === 'active' || cur.status === 'pending')) {
-      return { ok: true as const, courseId, uid: ctx.uid, status: cur.status as EnrollmentStatus, already: true, revision: rev0 }
-    }
-    // 선생님이 끝내거나 거절한 수강은 자동 참여 수업이어도 다시 승인을 받아야 함
-    const removedByTeacher = !!cur && cur.status === 'ended' && !!cur.decidedBy
-    const status: EnrollmentStatus = course.invitePolicy === 'approval' || removedByTeacher ? 'pending' : 'active'
-    const next = {
-      termId: String(course.termId || ''),
-      status,
-      from: status === 'active' ? ctx.today : null,
-      to: null,
-      source: 'request',
-      requestedAt: FieldValue.serverTimestamp(),
-      decidedBy: null,
-      rejected: false,
-    }
-    if (status === 'active') joinLegacyGroup(tx, ctx, course, ctx.uid)
-    else notifyTo = Array.from(new Set([...(course.teacherUids || []), ...(course.managerUids || [])])).filter((x) => typeof x === 'string')
-    return commitEnrollment(tx, ctx, rev0, r, cur, next, 'enrollment.request', courseId, ctx.uid)
+    const plan = planRequest(ctx, courseId, courseSnap.exists ? courseSnap.data() || {} : null, cur, termId)
+    if (plan.kind === 'error') fail(plan.status, plan.code, plan.message)
+    if (plan.kind === 'already') return { ok: true as const, courseId, uid: ctx.uid, status: plan.status, already: true, revision: rev0 }
+    if (plan.legacyGroupId) tx.set(r.user, { extraClassIds: FieldValue.arrayUnion(plan.legacyGroupId) }, { merge: true })
+    notifyTo = plan.notifyTo
+    return commitEnrollment(tx, ctx, rev0, r, cur, plan.next, 'enrollment.request', courseId, ctx.uid)
   })
-  if (notifyTo.length && !result.already) {
-    // 하루 한 번만(같은 학생이 반복 신청해도 알림이 쌓이지 않게). 실패해도 신청은 성공
-    try {
-      await notifyUsersOnce(ctx.db, notifyTo, `enr_${courseId}__${ctx.uid}_${ctx.today}`, {
-        title: '수강 신청',
-        body: `${String(ctx.u.user.name || ctx.u.user.displayName || '학생')} 학생이 수업 참여를 기다려요`,
-        url: '/teacher/courses',
-      })
-    } catch (e) {
-      console.error('enrollments: notify failed', (e as Error)?.message)
-    }
-  }
+  if (!result.already) await notifyPending(ctx, courseId, notifyTo)
   return result
+}
+
+interface ManyItemResult {
+  courseId: string
+  ok: boolean
+  /** 성공: 이번 결과 상태(active 추가됨 / pending 승인 대기) */
+  status?: EnrollmentStatus
+  already?: boolean
+  /** 실패: 'request'와 같은 code·문구 */
+  code?: string
+  error?: string
+}
+
+/**
+ * 여러 수업 한 번에 담기(학생). 수업마다 'request'와 같은 규칙으로 따로 판정(일부만 성공 가능).
+ * 바뀐 수강이 있으면 학교 scheduleRevision +1 한 번, 감사 로그 한 건. 승인 대기 알림은 'request'와 같은 id라 겹치지 않음
+ */
+async function requestMany(ctx: Ctx) {
+  requireStudent(ctx)
+  const raw = ctx.body.courseIds
+  if (!Array.isArray(raw) || !raw.length) fail(400, 'missing-field', '담을 수업을 골라 주세요.')
+  if (raw.length > REQUEST_MANY_MAX) fail(400, 'too-many', `한 번에 ${REQUEST_MANY_MAX}개까지 담을 수 있어요.`, { max: REQUEST_MANY_MAX })
+  if ((raw as unknown[]).some((x) => typeof x !== 'string' || x.length > 200)) fail(400, 'invalid-field', '수업 목록 형식이 올바르지 않아요.')
+  const ids = Array.from(new Set(raw as string[]))
+  hitStudentLimit(ctx)
+  const termId = await currentTermId(ctx)
+  const valid = ids.filter((id) => ID_RE.test(id))
+  const sref = schoolRef(ctx.db, ctx.schoolCode)
+  const userRef = ctx.db.collection('users').doc(ctx.uid)
+  const notify: Array<{ courseId: string; to: string[] }> = []
+
+  const out = await ctx.db.runTransaction(async (tx) => {
+    notify.length = 0
+    const courseRefs = valid.map((id) => sref.collection('courses').doc(id))
+    const enrRefs = valid.map((id) => sref.collection('enrollments').doc(enrollmentId(id, ctx.uid)))
+    const snaps = valid.length ? await tx.getAll(...courseRefs, ...enrRefs) : []
+    const rev0 = await readRevision(tx, ctx.db, ctx.schoolCode)
+    const courseById = new Map<string, Record<string, any> | null>()
+    const enrById = new Map<string, Record<string, any> | null>()
+    valid.forEach((id, i) => {
+      const c = snaps[i]
+      const e = snaps[valid.length + i]
+      courseById.set(id, c && c.exists ? c.data() || {} : null)
+      enrById.set(id, e && e.exists ? e.data() || {} : null)
+    })
+
+    const results: ManyItemResult[] = []
+    const writes: Array<{ courseId: string; cur: Record<string, any> | null; next: Record<string, any> }> = []
+    const groups = new Set<string>()
+    ids.forEach((courseId) => {
+      if (!ID_RE.test(courseId)) {
+        results.push({ courseId, ok: false, code: 'invalid-id', error: '수업 값이 올바르지 않아요.' })
+        return
+      }
+      const cur = enrById.get(courseId) ?? null
+      const plan = planRequest(ctx, courseId, courseById.get(courseId) ?? null, cur, termId)
+      if (plan.kind === 'error') {
+        results.push({ courseId, ok: false, code: plan.code, error: plan.message })
+        return
+      }
+      if (plan.kind === 'already') {
+        results.push({ courseId, ok: true, status: plan.status, already: true })
+        return
+      }
+      writes.push({ courseId, cur, next: plan.next })
+      if (plan.legacyGroupId) groups.add(plan.legacyGroupId)
+      if (plan.notifyTo.length) notify.push({ courseId, to: plan.notifyTo })
+      results.push({ courseId, ok: true, status: plan.next.status })
+    })
+    if (!writes.length) return { results, revision: rev0, changed: 0 }
+
+    const rev = rev0 + 1
+    writes.forEach((w) => {
+      const data: Record<string, any> = {
+        courseId: w.courseId,
+        uid: ctx.uid,
+        schoolCode: ctx.schoolCode,
+        ...w.next,
+        updatedAt: FieldValue.serverTimestamp(),
+      }
+      if (!w.cur) data.createdAt = FieldValue.serverTimestamp()
+      else if (w.cur.status === 'ended') data.history = FieldValue.arrayUnion(historyItem(w.cur))
+      tx.set(sref.collection('enrollments').doc(enrollmentId(w.courseId, ctx.uid)), data, { merge: true })
+    })
+    // 예전 수업 그룹(톡방·공지)은 한 번에(같은 문서를 여러 번 쓰지 않게)
+    if (groups.size) tx.set(userRef, { extraClassIds: FieldValue.arrayUnion(...Array.from(groups)) }, { merge: true })
+    writeRevision(tx, ctx.db, ctx.schoolCode, rev)
+    writeAudit(tx, ctx.db, ctx.schoolCode, {
+      action: 'enrollment.requestMany',
+      actorUid: ctx.uid,
+      target: `enrollments/*__${ctx.uid}`,
+      revision: rev,
+      // 본인 수강만 — 수업 id와 상태 변화(다른 학생 정보 없음)
+      meta: {
+        requested: ids.length,
+        changed: writes.length,
+        items: writes.map((w) => ({ courseId: w.courseId, before: w.cur ? w.cur.status ?? null : null, after: w.next.status })),
+      },
+    })
+    return { results, revision: rev, changed: writes.length }
+  })
+  for (const n of notify) await notifyPending(ctx, n.courseId, n.to)
+  return { ok: true, ...out }
+}
+
+/**
+ * 내가 직접 담은 수업 빼기(학생). 본인 수강 중 출처가 'request'(학생 신청)인 active·pending만.
+ * 초대·명단·선생님 추가·예전 그룹 수강은 403 not-self-picked(선생님께 문의). 반 공통 수업은 수강 문서가 없어 404.
+ * 'end'와 같은 기간 규칙: active는 to=오늘(오늘부터 빠지고 지난 날짜 기록은 그대로), pending은 기간 없이 종료.
+ * decidedBy는 비워 둠 — 다시 담으면 처음 신청처럼(바로 담기 수업은 바로 참여)
+ */
+async function leaveEnrollment(ctx: Ctx) {
+  requireStudent(ctx)
+  const courseId = idField(ctx.body.courseId, '수업')
+  hitStudentLimit(ctx)
+  const r = refs(ctx, courseId, ctx.uid)
+  return ctx.db.runTransaction(async (tx) => {
+    const enrSnap = await tx.get(r.enrollment)
+    const rev0 = await readRevision(tx, ctx.db, ctx.schoolCode)
+    const cur = enrSnap.exists ? enrSnap.data() || {} : null
+    if (!cur || String(cur.uid || '') !== ctx.uid) fail(404, 'enrollment-not-found', '내가 담은 수업이 아니에요.')
+    if (cur.source !== 'request') fail(403, 'not-self-picked', '학교에서 넣어 준 수업은 직접 뺄 수 없어요. 선생님께 문의해 주세요.')
+    const status = enrollmentFromDoc(cur).status
+    if (status === 'ended') return { ok: true, courseId, uid: ctx.uid, status: 'ended' as EnrollmentStatus, already: true, revision: rev0 }
+    const left = { decidedBy: null, leftBy: ctx.uid, leftAt: FieldValue.serverTimestamp(), rejected: false }
+    const from = typeof cur.from === 'string' ? cur.from : null
+    const next =
+      status === 'active'
+        ? { status: 'ended', to: from && from > ctx.today ? from : ctx.today, ...left }
+        : { status: 'ended', to: null, ...left }
+    return commitEnrollment(tx, ctx, rev0, r, cur, next, 'enrollment.leave', courseId, ctx.uid)
+  })
 }
 
 // ───────────────────────── 담당 교사 ─────────────────────────
@@ -317,6 +518,8 @@ async function listEnrollments(ctx: Ctx) {
 
 const ACTIONS: Record<string, (ctx: Ctx) => Promise<unknown>> = {
   request: requestEnrollment,
+  requestMany,
+  leave: leaveEnrollment,
   approve: (ctx) => decide(ctx, 'approve'),
   reject: (ctx) => decide(ctx, 'reject'),
   end: (ctx) => decide(ctx, 'end'),

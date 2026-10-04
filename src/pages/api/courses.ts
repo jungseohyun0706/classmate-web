@@ -54,7 +54,9 @@ import type { Course, LessonSeries, Weekday, Ymd } from '../../lib/timetable/typ
 //                          기본 시간표 변경으로 옮긴 칸은 그대로 두고 학급 시간표가 바뀐 칸만 적용일부터 반영)
 // - list            교사: 내가 담당·관리하는 수업 + 내가 담임인 학급의 공통 수업
 // - get             담당 교사: 수업·차시·수강 인원·승인 대기 명단(명단은 담당 교사에게만)
-// - catalog         같은 학교 사용자(학생): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시만
+// - catalog         같은 학교 사용자(학생): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시·교실·대상 학년(grades, 알 때만)과
+//                   본인 수강 상태(myStatus)만 — 수강 인원·명단·교사 계정 없음. 학생 '수업 담기'(시간표 칸 보기·과목으로 찾기)가 씀
+// create/update의 grades: 대상 학년(1~6) 목록 — 학생 '수업 담기'의 학년 거르기용(없으면 모든 학년에 보임)
 // 모든 쓰기는 트랜잭션에서 schools/{s}.scheduleRevision을 1 올리고 감사 로그를 남깁니다.
 // 오류: { error, code } — 400 입력, 401, 403 권한, 404 대상 없음, 409 충돌·중복·종료, 500 server-error
 
@@ -122,6 +124,26 @@ function teacherNamesField(body: Record<string, any>): string[] | undefined {
   return out
 }
 
+/** 대상 학년(1~6) 목록. 없으면 undefined, null·[]이면 [](지우기 — 학년 미상: 학생 '수업 담기'에서 모든 학년에 보임) */
+function gradesField(body: Record<string, any>): number[] | undefined {
+  if (!has(body, 'grades')) return undefined
+  const v = body.grades
+  if (v === null) return []
+  if (!Array.isArray(v) || v.length > 6) fail(400, 'invalid-field', '대상 학년 형식이 올바르지 않아요.')
+  const out = new Set<number>()
+  for (const x of v as unknown[]) {
+    if (typeof x !== 'number' || !Number.isInteger(x) || x < 1 || x > 6) fail(400, 'invalid-field', '대상 학년은 1~6학년이어야 해요.')
+    out.add(x as number)
+  }
+  return Array.from(out).sort((a, b) => a - b)
+}
+
+/** 문서의 대상 학년(1~6 정수만, 중복 없이 오름차순). 없거나 비면 [] — 학년 미상 */
+function gradesOf(d: Record<string, any>): number[] {
+  if (!Array.isArray(d.grades)) return []
+  return Array.from(new Set((d.grades as unknown[]).filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 6))).sort((a, b) => a - b)
+}
+
 function intField(v: unknown, min: number, max: number, label: string): number {
   const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
   if (!Number.isInteger(n) || n < min || n > max) fail(400, 'invalid-field', `${label}은(는) ${min}~${max} 사이여야 해요.`)
@@ -149,6 +171,7 @@ function courseView(id: string, d: Record<string, any>) {
     ...courseFromDoc(id, d),
     invitePolicy: d.invitePolicy === 'approval' ? 'approval' : 'auto',
     catalogVisible: d.catalogVisible === true,
+    grades: gradesOf(d),
     legacyGroupId: typeof d.legacyGroupId === 'string' ? d.legacyGroupId : null,
     managerUids: Array.isArray(d.managerUids) ? d.managerUids.filter((x: unknown) => typeof x === 'string') : [],
     source: typeof d.source === 'string' ? d.source : 'manual',
@@ -210,6 +233,7 @@ async function createCourse(ctx: Ctx) {
   const teacherNames = teacherNamesField(b) ?? (myName ? [myName] : [])
   const invitePolicy = policyField(b) ?? 'auto'
   const catalogVisible = boolField(b, 'catalogVisible') ?? false
+  const grades = gradesField(b) ?? []
   const termDocs = await readTermDocs(ctx.db, ctx.schoolCode)
   const termId = has(b, 'termId') && b.termId !== null && b.termId !== '' ? termIdField(termDocs, b.termId) : termForDateFromDocs(termDocs, ctx.today).termId
   const legacyGroupId = has(b, 'legacyGroupId') && b.legacyGroupId ? await checkGroupOwner(ctx, idField(b.legacyGroupId, '수업 그룹')) : null
@@ -233,6 +257,9 @@ async function createCourse(ctx: Ctx) {
     defaultRoomName,
     invitePolicy,
     catalogVisible,
+    // 공개·참여 방식을 교사가 정함(가져오기가 다시 덮어쓰지 않음 — importMatch.importManagesCatalog)
+    catalogBy: 'teacher',
+    ...(grades.length ? { grades } : {}),
     legacyGroupId,
     source: 'manual',
     createdBy: ctx.uid,
@@ -246,7 +273,7 @@ async function createCourse(ctx: Ctx) {
       actorUid: ctx.uid,
       target: `courses/${ref.id}`,
       revision: rev,
-      after: { title, subject, section, termId, commonForHomerooms, legacyGroupId },
+      after: { title, subject, section, termId, commonForHomerooms, legacyGroupId, catalogVisible, invitePolicy, grades },
     })
     return rev
   })
@@ -278,6 +305,8 @@ async function updateCourse(ctx: Ctx) {
   if (policy !== undefined) patch.invitePolicy = policy
   const visible = boolField(b, 'catalogVisible')
   if (visible !== undefined) patch.catalogVisible = visible
+  const grades = gradesField(b)
+  if (grades !== undefined) patch.grades = grades
   if (has(b, 'legacyGroupId')) patch.legacyGroupId = b.legacyGroupId ? await checkGroupOwner(ctx, idField(b.legacyGroupId, '수업 그룹')) : null
   if (!Object.keys(patch).length) fail(400, 'nothing-to-update', '바꿀 내용이 없어요.')
 
@@ -291,14 +320,18 @@ async function updateCourse(ctx: Ctx) {
     const before: Record<string, unknown> = {}
     const after: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(patch)) {
-      if (JSON.stringify(cur[k] ?? null) !== JSON.stringify(v ?? null)) {
-        before[k] = cur[k] ?? null
+      // 대상 학년은 정리한 값으로 비교(없음 = [] — 학년을 고르지 않은 수업을 저장해도 바뀐 것으로 보지 않음)
+      const curVal = k === 'grades' ? gradesOf(cur) : cur[k] ?? null
+      if (JSON.stringify(curVal) !== JSON.stringify(v ?? null)) {
+        before[k] = curVal
         after[k] = v
       }
     }
     if (!Object.keys(after).length) return { ok: true, already: true, courseId, course: courseView(courseId, cur), revision: rev0 }
     const rev = rev0 + 1
-    tx.set(ref, { ...after, revision: rev, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+    // 교사가 공개·참여 방식을 바꾸면 표시 — 시간표 가져오기가 그 뒤로는 이 두 값을 덮어쓰지 않음
+    const marker = 'catalogVisible' in after || 'invitePolicy' in after ? { catalogBy: 'teacher' } : {}
+    tx.set(ref, { ...after, ...marker, revision: rev, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
     writeRevision(tx, ctx.db, ctx.schoolCode, rev)
     writeAudit(tx, ctx.db, ctx.schoolCode, { action: 'course.update', actorUid: ctx.uid, target: `courses/${courseId}`, revision: rev, before, after })
     return { ok: true, courseId, course: courseView(courseId, { ...cur, ...after }), revision: rev }
@@ -968,6 +1001,8 @@ async function catalog(ctx: Ctx) {
         invitePolicy: v.invitePolicy === 'approval' ? 'approval' : 'auto',
         slots: (slots.get(d.id) || []).sort((a, b) => a.weekday - b.weekday || a.period - b.period),
         myStatus: myStatus.get(d.id) || null,
+        // 대상 학년(알 때만). 없으면 학년 미상 — 학생 화면이 모든 학년에 보여 줌
+        ...(gradesOf(v).length ? { grades: gradesOf(v) } : {}),
       }
     })
     .sort((a, b) => a.title.localeCompare(b.title, 'ko') || a.courseId.localeCompare(b.courseId))
