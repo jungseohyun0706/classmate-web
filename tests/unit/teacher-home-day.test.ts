@@ -61,7 +61,7 @@ function official(date: Ymd, courses: Course[], overrides: Override[] = [], offD
 function payload(p: Partial<TeacherTimetablePayload> = {}): TeacherTimetablePayload {
   return {
     revision: 1, generatedAt: 0, schoolCode: 'S1', from: '20261001', to: '20261021',
-    terms: TERMS, offDays: {}, calendarErrors: [], periodTimes: PERIOD_TIMES, days: {}, mySchedule: null, covers: [], ...p,
+    terms: TERMS, offDays: {}, gradeOffDays: {}, calendarErrors: [], periodTimes: PERIOD_TIMES, days: {}, mySchedule: null, covers: [], ...p,
   }
 }
 
@@ -183,6 +183,33 @@ describe('쉬는 날·학기 밖', () => {
     assert.equal(v.state, 'lessons')
   })
 
+  test('쉬는 날: 내가 요청한 교환·보결(covered)은 따로 행을 만들지 않음 — holiday 그대로', () => {
+    const off = { name: '재량휴업일' }
+    const c = cover({ date: MON, period: 5, subject: '2-3 문학' })
+    const v = buildTeacherDay(payload({ days: { [MON]: official(MON, [], [], off) }, offDays: { [MON]: off }, mySchedule: SCHEDULE, covers: [c] }), MON)
+    assert.equal(v.state, 'holiday')
+    assert.deepEqual(v.rows, [])
+  })
+
+  test('학기 밖: covered 교환은 행을 만들지 않음 — outside-term 그대로(빈 상태 교사도)', () => {
+    const d = '20261221'
+    const c = cover({ date: d, period: 1 })
+    const legacy = buildTeacherDay(payload({ days: { [d]: official(d, []) }, mySchedule: SCHEDULE, covers: [c] }), d)
+    assert.equal(legacy.state, 'outside-term')
+    assert.deepEqual(legacy.rows, [])
+    const empty = buildTeacherDay(payload({ days: { [d]: official(d, []) }, covers: [c] }), d)
+    assert.equal(empty.mode, 'empty')
+    assert.equal(empty.state, 'outside-term')
+  })
+
+  test('쉬는 날에도 내가 대신 들어가는 교환(covering)은 보임(명시적으로 잡은 일정)', () => {
+    const off = { name: '재량휴업일' }
+    const c = cover({ id: 'swap:k', direction: 'covering', date: MON, period: 2 })
+    const v = buildTeacherDay(payload({ days: { [MON]: official(MON, [], [], off) }, offDays: { [MON]: off }, covers: [c] }), MON)
+    assert.equal(v.state, 'lessons')
+    assert.deepEqual(v.rows.map((r) => r.kind), ['covering'])
+  })
+
   test('학사일정 확인 실패 날짜 표시', () => {
     const v = buildTeacherDay(payload({ days: { [MON]: official(MON, []) }, calendarErrors: [MON], mySchedule: SCHEDULE }), MON)
     assert.equal(v.calendarFailed, true)
@@ -203,6 +230,17 @@ describe('교환(품앗이)·보결 겹치기', () => {
     const v = buildTeacherDay(payload({ days: { [TUE]: official(TUE, [engB]) }, covers: [sos] }), TUE)
     assert.deepEqual(rowBadges(v.rows[0]).map((b) => b.label), ['박보결 선생님이 대신 들어가요 (보결)'])
     assert.equal(coveredByText(sos), '박보결 선생님이 대신 들어가요 (보결)')
+  })
+
+  test('대신 들어가는 남의 수업(substitute)에는 내 교시 교환 표시를 붙이지 않음 — 내 수업은 따로 행', () => {
+    const c = cover({ date: TUE, period: 4, subject: '2-1 문학', otherName: '김동료' })
+    const v = buildTeacherDay(payload({ days: { [TUE]: official(TUE, [sciA], [subTo(TUE)]) }, mySchedule: SCHEDULE, covers: [c] }), TUE)
+    const sub = v.rows.find((r) => r.role === 'substitute')!
+    assert.deepEqual(sub.coveredBy, [])
+    assert.deepEqual(rowBadges(sub).map((b) => b.label), ['대신 들어가는 수업'])
+    const own = v.rows.find((r) => r.kind === 'covered-only')!
+    assert.equal(own.lesson.period, 4)
+    assert.deepEqual(rowBadges(own).map((b) => b.label), ['김동료 선생님이 대신 들어가요 (품앗이)'])
   })
 
   test('그 교시 수업이 목록에 없으면 따로 행(covered-only)', () => {

@@ -1,7 +1,9 @@
 // 교사 '내 시간표' API 통합 테스트 — GET /api/timetable/teacher (아키텍처 '교사 내 시간표(메인 화면)' 절)
 // 덮는 항목: 401·403(학생·가입 미완료)·409, 본인 차시만(uid로만 — 이름만 같은 수업 제외), 다른 교사에게 넘긴 차시(changed-away),
 //           나에게 넘어온 차시(substitute), 취소, 보강, 학생 화면과 같은 변경 전후, 예전 주간 시간표(mySchedule) 대체 방식,
-//           교환(품앗이)·보결(SOS) 겹치기, 응답에 학생 자료(uid·이메일·이름)·다른 교사 uid 없음, 조회 기간 상한, 교시 시각 출처
+//           교환(품앗이)·보결(SOS) 겹치기, 응답에 학생 자료(uid·이메일·이름)·다른 교사 uid 없음, 조회 기간 상한, 교시 시각 출처,
+//           일부 학년만 쉬는 날(교사는 담임 학년으로 정하지 않음 — 그 학년 수업만 열리지 않음)·학교 전체 쉬는 날,
+//           다른 교사가 대기 요청을 많이 만들어도 내 교환·보결이 잘리지 않음, 본인이 고친 users.classId로 남의 학급 교시표를 읽지 못함
 // 실행 전제: 실제 서버(BASE, 기본 http://127.0.0.1:3100) + Firebase 에뮬레이터(Firestore 8080, Auth 9099)
 //           + NEIS mock(NODE_OPTIONS="--require tests/support/neis-mock.cjs", NEIS_MOCK_FILE)
 // 사용: node tests/api/sa5-teacher-timetable.test.mjs
@@ -28,6 +30,8 @@ const THU = addDays(TUE, 2)
 const FRI = addDays(TUE, 3)
 const SUN = addDays(TUE, 5)
 const NEXT_TUE = addDays(TUE, 7)
+const NEXT_WED = addDays(TUE, 8)
+const NEXT_THU = addDays(TUE, 9)
 const TERM_START = addDays(TODAY, -40)
 const TERM_END = addDays(TODAY, 120)
 
@@ -67,8 +71,19 @@ function neisFixture() {
     ],
     meals: [],
     timetables: {},
-    schedule: [],
+    // 학년별 해당 여부: ONE·TW·THREE(고등학교라 FR~SIX는 N)
+    schedule: [
+      schoolRow(NEXT_TUE, '1학년 현장체험 휴업일', ['Y', 'N', 'N']), // 1학년만
+      schoolRow(NEXT_WED, '3학년 재량휴업일', ['N', 'N', 'Y']), // 3학년만
+      schoolRow(NEXT_THU, '재량휴업일', ['Y', 'Y', 'Y']), // 모든 학년 = 학교 전체
+    ],
   }
+}
+
+function schoolRow(ymd, name, grades) {
+  const r = { SD_SCHUL_CODE: 'S1', ATPT_OFCDC_SC_CODE: 'B10', AA_YMD: ymd, EVENT_NM: name, SBTR_DD_SC_NM: '휴업일' }
+  ;['ONE', 'TW', 'THREE', 'FR', 'FIV', 'SIX'].forEach((g, i) => (r[`${g}_GRADE_EVENT_YN`] = grades[i] || 'N'))
+  return r
 }
 
 async function seed() {
@@ -85,6 +100,10 @@ async function seed() {
     { uid: 'tempty', email: 'tempty@e2e.kr', doc: T('최빈칸') }, // 아무것도 없음
     { uid: 'tnos', email: 'tnos@e2e.kr', doc: { role: 'teacher', name: '학교없음', displayName: '학교없음' } },
     { uid: 'tw', email: 'tw@e2e.kr', doc: T('이영어', {}, S2) }, // 다른 학교의 같은 이름 교사
+    // 본인이 users.classId를 남의 학급·다른 학교 학급·경로 모양 값으로 고친 교사(담임 아님) — 남의 학급 교시표를 읽으면 안 됨
+    { uid: 'tfake', email: 'tfake@e2e.kr', doc: T('가짜담임', { classId: 'S1_3_4' }) },
+    { uid: 'tfake2', email: 'tfake2@e2e.kr', doc: T('가짜담임둘', { classId: 'S2_1_1' }) },
+    { uid: 'tfake3', email: 'tfake3@e2e.kr', doc: T('가짜담임셋', { classId: 'S1_9_9/info/periodTimes/x' }) },
     { uid: 'stuA', email: 'a@e2e.kr', doc: St(STUDENT_NAMES[0], 'S1_3_4', 3, 4, 1) },
     { uid: 'stuB', email: 'b@e2e.kr', doc: St(STUDENT_NAMES[1], 'S1_3_5', 3, 5, 2) },
     { uid: 'noprof', email: 'noprof@e2e.kr' }, // 가입 미완료(users 문서 없음)
@@ -94,6 +113,8 @@ async function seed() {
   await db.doc('classes/S1_3_4').set({ classId: 'S1_3_4', grade: 3, classNm: 4, teacherId: 'tme', teacherName: '이영어', createdAt: now, ...S1 })
   await db.doc('classes/S1_3_4/info/periodTimes').set({ times: ['09:10'] }) // 담임 학급 교시표(엑셀 업로드 때 복사)
   await db.doc('school_timetables/S1').set({ classes: {}, teachers: {}, periodTimes: { 1: '08:50' }, sources: [] }) // 학교 엑셀 교시표
+  await db.doc('classes/S2_1_1').set({ classId: 'S2_1_1', grade: 1, classNm: 1, teacherId: 'tw', createdAt: now, ...S2 })
+  await db.doc('classes/S2_1_1/info/periodTimes').set({ times: ['07:30'] }) // 다른 학교 학급 교시표
   const s = db.doc('schools/S1')
   await s.set({ name: '테스트고등학교', kind: '고등학교', scheduleRevision: 0, timezone: 'Asia/Seoul' })
   await db.doc('schools/S2').set({ name: '다른고등학교', kind: '고등학교', scheduleRevision: 0, timezone: 'Asia/Seoul' })
@@ -117,6 +138,8 @@ async function seed() {
   await ser('sr_sciA_tue4', 'sciA', 2, 4)
   await ser('sr_engN_tue5', 'engN', 2, 5)
   await ser('sr_kor34_wed1', 'kor34', 3, 1)
+  // 영어 B 수5: 다음 주부터(이번 주 수요일 B5 확인에 영향 없음) — 3학년만 쉬는 다음 주 수요일에도 열리는 학년 모르는 수업
+  await s.collection('series').doc('sr_engB_wed5').set({ courseId: 'engB', termId: 'T1', weekday: 3, period: 5, validFrom: THU, validTo: null, status: 'active', createdBy: 'seed', createdAt: now })
   const en = (courseId, uid) =>
     s.collection('enrollments').doc(`${courseId}__${uid}`).set({ courseId, uid, schoolCode: 'S1', termId: 'T1', status: 'active', source: 'admin', createdAt: now, updatedAt: now })
   await en('engB', 'stuA')
@@ -133,7 +156,20 @@ async function seed() {
   const sos = db.collection('school_sos').doc('S1').collection('requests')
   await sos.doc('sos1').set({ date: MON, period: 2, reason: '병원 진료', requesterId: 'tleg', requesterName: '박주간', requesterClass: '2학년 1반', schoolCode: 'S1', status: 'assigned', assignedTo: 'tme', assignedName: '이영어', createdAt: now })
   await sos.doc('sosOpen').set({ date: MON, period: 3, reason: '출장', requesterId: 'tleg', requesterName: '박주간', requesterClass: '2학년 1반', schoolCode: 'S1', status: 'open', createdAt: now })
+
+  // 같은 학교 다른 교사가 조회 기간 날짜에 모집 중 요청을 많이 만든 상태(규칙상 누구나 만들 수 있음) — 문서 id가 내 문서보다 앞에 정렬됨
+  for (const [col, make] of [
+    [sos, (i) => ({ date: MON, period: 1 + (i % 7), reason: '출장', requesterId: 'tx', requesterName: '김과학', schoolCode: 'S1', status: 'open', createdAt: now })],
+    [sw.collection('requests'), (i) => ({ requesterId: 'tx', requesterName: '김과학', period: 1 + (i % 7), subject: '1-2 과학', date: TUE, status: 'pending', createdAt: now })],
+  ]) {
+    for (let start = 0; start < SPAM_DOCS; start += 400) {
+      const batch = db.batch()
+      for (let i = start; i < Math.min(SPAM_DOCS, start + 400); i++) batch.set(col.doc(`aaspam${String(i).padStart(4, '0')}`), make(i))
+      await batch.commit()
+    }
+  }
 }
+const SPAM_DOCS = 620
 
 const sessions = {}
 async function tok(email) {
@@ -242,7 +278,7 @@ async function main() {
   const text = JSON.stringify(p)
   const leaked = ['stuA', 'stuB', 'a@e2e.kr', 'b@e2e.kr', ...STUDENT_NAMES, 'enrollments', 'teacherUids', 'managerUids', '"tx"', '"tz"', '"tleg"', '병원 진료', '개인 사정'].filter((x) => text.includes(x))
   check('C1', '응답에 학생 uid·이메일·이름·수강, 교사 uid, 보결 사유·교환 메모 없음', leaked.length === 0, leaked.join(','))
-  check('C2', '응답 키는 정해진 것만', JSON.stringify(Object.keys(p).sort()) === JSON.stringify(['calendarErrors', 'covers', 'days', 'from', 'generatedAt', 'mySchedule', 'offDays', 'periodTimes', 'revision', 'schoolCode', 'terms', 'to']), Object.keys(p).join(','))
+  check('C2', '응답 키는 정해진 것만', JSON.stringify(Object.keys(p).sort()) === JSON.stringify(['calendarErrors', 'covers', 'days', 'from', 'generatedAt', 'gradeOffDays', 'mySchedule', 'offDays', 'periodTimes', 'revision', 'schoolCode', 'terms', 'to']), Object.keys(p).join(','))
 
   // ───── 다른 학교 같은 이름 교사 ─────
   const w = (await teacherApi('tw@e2e.kr')).j
@@ -251,7 +287,7 @@ async function main() {
 
   // ───── 교환·보결 ─────
   const covers = (p.covers || []).map((c) => `${c.kind}:${c.direction}:${c.date === TUE ? 'TUE' : c.date === MON ? 'MON' : c.date}:${c.period}:${c.otherName}`)
-  check('D1', 'ME 교환·보결: 내가 요청한 품앗이(정대체가 대신), 내가 받은 1:1 품앗이, 내가 맡은 보결 — 대기·남의 것·기간 밖·모집 중 SOS 제외',
+  check('D1', `ME 교환·보결: 내가 요청한 품앗이(정대체가 대신), 내가 받은 1:1 품앗이, 내가 맡은 보결 — 대기·남의 것·기간 밖·모집 중 SOS 제외(다른 교사 모집 중 요청 ${SPAM_DOCS}건씩이 있어도 잘리지 않음)`,
     JSON.stringify(covers) === JSON.stringify(['sos:covering:MON:2:박주간', 'swap:covered:TUE:6:정대체', 'swap:covering:TUE:7:김과학']), JSON.stringify(covers))
   const dirCover = (p.covers || []).find((c) => c.period === 7)
   check('D2', "요청 교사 담임 학급 '담임 없음'은 빈 값, 교환 칸 문구는 그대로", dirCover?.requesterClass === '' && dirCover?.subject === '1-2 과학', JSON.stringify(dirCover))
@@ -277,6 +313,43 @@ async function main() {
   const emptyMon = buildTeacherDay(empty, MON)
   check('E3', '아무것도 없는 교사: 빈 상태(not-registered), 주간 시간표 null',
     empty.mySchedule === null && emptyMon.mode === 'empty' && emptyMon.state === 'not-registered' && (empty.covers || []).length === 0, JSON.stringify({ mode: emptyMon.mode, state: emptyMon.state }))
+
+  // ───── 쉬는 날: 일부 학년만 vs 학교 전체(교사는 담임 학년 하나로 정하지 않음) ─────
+  const nw = (await teacherApi('tme@e2e.kr', `?from=${NEXT_TUE}&to=${NEXT_THU}`)).j
+  check('G1', `학년별 행은 학교 전체 쉬는 날이 아님(offDays null) → gradeOffDays, 1~3학년 모두면 학교 전체`,
+    nw.offDays?.[NEXT_TUE] === null && nw.offDays?.[NEXT_WED] === null && nw.offDays?.[NEXT_THU]?.name === '재량휴업일' &&
+      JSON.stringify(nw.gradeOffDays) === JSON.stringify({ [NEXT_TUE]: { name: '1학년 현장체험 휴업일', grades: [1] }, [NEXT_WED]: { name: '3학년 재량휴업일', grades: [3] } }),
+    JSON.stringify({ off: nw.offDays, g: nw.gradeOffDays }))
+  const nwOn = (d) => (nw.days?.[d]?.lessons || []).map((l) => `${l.courseId}:${l.period}`)
+  const nwSup = (d) => (nw.days?.[d]?.notices || []).filter((n) => n.kind === 'holiday-suppressed').map((n) => n.courseId)
+  check('G2', '3학년만 쉬는 날(담임 3학년 교사): 3학년 4반 공통 국어만 열리지 않음, 학년 모르는 영어 B 5교시는 열림',
+    JSON.stringify(nwOn(NEXT_WED)) === '["engB:5"]' && JSON.stringify(nwSup(NEXT_WED)) === '["kor34"]', JSON.stringify({ on: nwOn(NEXT_WED), sup: nwSup(NEXT_WED) }))
+  check('G3', '1학년만 쉬는 날: 담임 3학년 교사의 영어 B 3교시 그대로', JSON.stringify(nwOn(NEXT_TUE)) === '["engB:3"]', JSON.stringify(nwOn(NEXT_TUE)))
+  const nwThu = buildTeacherDay(nw, NEXT_THU)
+  check('G4', '모든 학년 휴업(학교 전체): 영어 B 목2 열리지 않음, 화면 holiday', nwOn(NEXT_THU).length === 0 && nwSup(NEXT_THU).includes('engB') && nwThu.state === 'holiday',
+    JSON.stringify({ on: nwOn(NEXT_THU), state: nwThu.state }))
+  const nwWed = buildTeacherDay(nw, NEXT_WED)
+  check('G5', '3학년만 쉬는 날 화면: holiday 아님(lessons) + 학년 쉬는 날 정보 + 열리지 않는 수업 안내',
+    nwWed.state === 'lessons' && nwWed.gradeOff?.grades?.[0] === 3 && nwWed.suppressed.length === 1, JSON.stringify({ state: nwWed.state, g: nwWed.gradeOff }))
+  // 학년 없는 교사(담임 아님): 학생 규칙(학년 모르면 학년별 행도 쉬는 날)을 쓰면 하루 전체가 쉬는 날이 되던 경우
+  const txNext = (await teacherApi('tx@e2e.kr', `?from=${NEXT_TUE}&to=${NEXT_TUE}`)).j
+  check('G6', "학년 없는 교사: '1학년 현장체험 휴업일'에 학년 모르는 생활과 과학 A 4교시가 그대로(하루 전체를 쉬는 날로 보지 않음)",
+    txNext.offDays?.[NEXT_TUE] === null && JSON.stringify((txNext.days?.[NEXT_TUE]?.lessons || []).map((l) => `${l.courseId}:${l.period}`)) === '["sciA:4"]',
+    JSON.stringify({ off: txNext.offDays, lessons: txNext.days?.[NEXT_TUE]?.lessons?.map((l) => l.courseId) }))
+  const legNext = (await teacherApi('tleg@e2e.kr', `?from=${NEXT_TUE}&to=${NEXT_TUE}`)).j
+  const legNextView = buildTeacherDay(legNext, NEXT_TUE)
+  check('G7', "주간 시간표 교사: 1학년만 쉬는 날에 '1-3 국어' 칸은 열리지 않음 안내, 상태 no-lessons(학교는 열림)",
+    legNextView.mode === 'legacy' && legNextView.state === 'no-lessons' && JSON.stringify(legNextView.suppressedCells) === JSON.stringify([{ period: 1, text: '1-3 국어' }]),
+    JSON.stringify({ state: legNextView.state, cells: legNextView.suppressedCells }))
+
+  // ───── 담임 학급 교시표: users.classId는 본인이 고칠 수 있는 값 ─────
+  const fake = await teacherApi('tfake@e2e.kr')
+  const fake2 = await teacherApi('tfake2@e2e.kr')
+  const fake3 = await teacherApi('tfake3@e2e.kr')
+  check('H1', '남의 학급(담임 아님)·다른 학교 학급·경로 모양 classId는 학급 교시표를 쓰지 않음 → 학교 엑셀 교시표(08:50), 500 아님',
+    fake.status === 200 && fake2.status === 200 && fake3.status === 200 &&
+      [fake, fake2, fake3].every((x) => x.j.periodTimes?.[0]?.start === '08:50'),
+    [fake, fake2, fake3].map((x) => `${x.status}:${x.j.periodTimes?.[0]?.start}`).join(' '))
 
   // ───── 학기·교시 시각 ─────
   check('F1', '학기: 학교 학기 문서(T1)', (p.terms || []).some((t) => t.termId === 'T1' && t.startDate === TERM_START && t.endDate === TERM_END), JSON.stringify(p.terms))

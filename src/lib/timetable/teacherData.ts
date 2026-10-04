@@ -8,23 +8,31 @@
  * - 후보 수업의 반복 차시·변경을 읽어 날짜마다 computeTeacherOfficialDay(학생 화면과 같은 엔진)로 계산
  * - 학생 명단·수강(enrollments)·다른 교사 uid는 읽지도 내려주지도 않음(다른 교사는 이름만)
  * - 예전 자료: users.mySchedule(주간 시간표), 교환(school_swaps/{s}/requests·direct_requests)·보결(school_sos/{s}/requests) 중
- *   조회 기간에 수락·배정되고 내가 요청했거나 맡은 것
- * - 쿼리는 등호·array-contains·array-contains-any·in만(정렬·범위 없음) — 복합 인덱스가 필요 없음. 날짜 거르기는 메모리에서
- * - 학기·쉬는 날·교시 시각은 학생 /api/timetable/me와 같은 규칙
+ *   조회 기간에 수락·배정되고 내가 요청했거나 맡은 것. 학교 전체를 날짜로 읽지 않고 '내가 참여자(uid 등호) + 수락·배정(status 등호)'
+ *   문서만 읽음 — 다른 교사가 대기 요청을 많이 만들어도 내 교환·보결이 잘리지 않음
+ * - 쿼리는 등호·array-contains·array-contains-any·in만(정렬·범위 없음) — 복합 인덱스가 필요 없음(등호끼리는 단일 필드 인덱스 병합).
+ *   날짜 거르기는 메모리에서
+ * - 학기·교시 시각은 학생 /api/timetable/me와 같은 규칙. 쉬는 날은 학생처럼 '내 학년' 하나로 정하지 않고
+ *   학교 전체(offDays)·일부 학년(gradeOffDays)으로 나눔(teacherOffDaysFromRows)
+ * - 교시 시각의 담임 학급 교시표는 classes/{id}.teacherId가 나이고 같은 학교 학급일 때만(users.classId는 본인이 고칠 수 있는 값)
  */
 import type { CollectionReference, DocumentData, Firestore, QueryDocumentSnapshot, QuerySnapshot } from 'firebase-admin/firestore'
+import { teacherOffDaysFromRows } from '../neis'
+import { schoolLevelOf } from '../periodTimes'
 import { periodTimesToStarts } from '../timetableConvert'
 import { isYmd } from './dates'
 import { clipSeriesToTerm, scopeCoursesToTerms, selectOverridesForWindow } from './engine'
 import { chunk, cleanText, courseFromDoc, currentRevision, GROUP_RE, overrideFromDoc, schoolRef, seriesFromDoc } from './server'
-import { boundCalendarLookup, buildPeriodTimes, datesBetween, loadOffDays, readTermDocs, termRangeOf, termsForWindow, TimetableApiError } from './studentData'
-import { computeTeacherOfficialDay, normalizeMySchedule, type TeacherCover, type TeacherOfficialDay, type TeacherTimetablePayload } from './teacherDay'
+import { buildPeriodTimes, datesBetween, loadSchoolScheduleRows, readTermDocs, termRangeOf, termsForWindow, TimetableApiError, withCalendarTimeout } from './studentData'
+import { computeTeacherOfficialDay, normalizeMySchedule, type TeacherCover, type TeacherGradeOff, type TeacherOfficialDay, type TeacherTimetablePayload } from './teacherDay'
 import type { Course, LessonSeries, Override, Ymd } from './types'
 
 /** 후보 수업 상한 — 넘으면 앞에서부터만 계산하고 로그(정상 교사는 수십 개 이하) */
 const MAX_COURSES = 150
-/** 한 쿼리에서 읽을 교환·보결 문서 상한(조회 기간 21일 안 학교 전체) */
-const MAX_COVER_DOCS = 500
+/** 참여자 쿼리 하나에서 읽을 수락·배정된 교환·보결 문서 상한(내가 참여한 것 전체 기간) — 넘으면 로그 */
+const MAX_COVER_DOCS = 1000
+/** 학급 문서 id(경로 조각 하나) */
+const CLASS_ID_RE = /^[A-Za-z0-9_-]{1,120}$/
 
 const docData = (d: QueryDocumentSnapshot<DocumentData>) => d.data() || {}
 const LEVEL_RE = /(고등학교|중학교|초등학교)$/
@@ -94,15 +102,29 @@ export function sosCoverOf(uid: string, id: string, d: Record<string, unknown>, 
   }
 }
 
-async function queryIn(col: CollectionReference, field: string, op: 'in' | 'array-contains-any', values: string[], limit?: number) {
+async function queryIn(col: CollectionReference, field: string, op: 'in' | 'array-contains-any', values: string[]) {
   const parts = chunk(Array.from(new Set(values.filter(Boolean))), 30)
-  const snaps: QuerySnapshot[] = await Promise.all(
-    parts.map((p) => {
-      const q = col.where(field, op, p)
-      return (limit ? q.limit(limit) : q).get()
-    })
-  )
+  const snaps: QuerySnapshot[] = await Promise.all(parts.map((p) => col.where(field, op, p).get()))
   return snaps.reduce<QueryDocumentSnapshot[]>((acc, s) => acc.concat(s.docs), [])
+}
+
+/**
+ * 내가 참여한 수락·배정 문서: 참여자 필드마다 uid 등호 + status 등호(복합 인덱스 불필요 — 등호끼리 인덱스 병합).
+ * 같은 문서가 여러 필드로 잡히면 하나로. 상한에 닿으면 로그(조용히 잘리지 않게)
+ */
+async function participantDocs(col: CollectionReference, fields: string[], uid: string, status: string, label: string) {
+  const snaps = await Promise.all(fields.map((f) => col.where(f, '==', uid).where('status', '==', status).limit(MAX_COVER_DOCS).get()))
+  const byId = new Map<string, QueryDocumentSnapshot>()
+  snaps.forEach((snap, i) => {
+    if (snap.size >= MAX_COVER_DOCS) console.error('timetable/teacher: cover query hit limit', label, fields[i], snap.size)
+    snap.docs.forEach((d) => byId.set(d.id, d))
+  })
+  return Array.from(byId.values())
+}
+
+/** 학교 이름·종류 → 학년 수(초 6, 중·고 3) */
+function gradeCountOf(levelName: string): number {
+  return schoolLevelOf(levelName) === 'elementary' ? 6 : 3
 }
 
 /**
@@ -124,27 +146,33 @@ export async function loadTeacherTimetableData(
   // 버전을 가장 먼저 읽음(조회 도중 변경이 발행되면 화면은 낮은 버전을 받고, 구독한 버전이 바뀌어 다시 받음)
   const revision = await currentRevision(db, schoolCode)
 
-  // 학사일정은 함께 시작하고 느리면 상한 뒤 calendarErrors로(학생 /me와 같은 규칙 — 학년은 담임 학년)
-  const offDaysPromise = boundCalendarLookup(
-    loadOffDays(schoolCode, typeof user.officeCode === 'string' ? user.officeCode : '', dates, user.grade),
-    dates
+  // 학사일정 행은 함께 시작하고 느리면 상한 뒤 calendarErrors로(학생 /me와 같은 상한). 쉬는 날 판정은 학교급을 안 뒤에
+  const scheduleRowsPromise = withCalendarTimeout(
+    loadSchoolScheduleRows(schoolCode, typeof user.officeCode === 'string' ? user.officeCode : '', dates),
+    () => null
   )
 
-  // 교시 시각: 담임 학급 교시표(엑셀 업로드 때 복사) → 학교 엑셀 교시표 → 학교급 기본
-  const homeroomId = typeof user.classId === 'string' && user.classId && !GROUP_RE.test(user.classId) ? user.classId : ''
+  // 교시 시각: 담임 학급 교시표(엑셀 업로드 때 복사) → 학교 엑셀 교시표 → 학교급 기본.
+  // users.classId는 본인이 고칠 수 있으므로 형식·학교를 확인하고, 아래에서 학급 문서의 담임(teacherId)이 나일 때만 씀
+  const rawClassId = typeof user.classId === 'string' ? user.classId : ''
+  const homeroomId =
+    rawClassId && !GROUP_RE.test(rawClassId) && CLASS_ID_RE.test(rawClassId) && rawClassId.startsWith(`${schoolCode}_`) ? rawClassId : ''
+  const classRef = homeroomId ? db.collection('classes').doc(homeroomId) : null
   const swapRoot = db.collection('school_swaps').doc(schoolCode)
 
-  const [termDocs, schoolSnap, ownCourses, ownSeries, windowOverrides, classPtSnap, masterSnaps, swapPublic, swapDirect, sosDocs] = await Promise.all([
+  const [termDocs, schoolSnap, ownCourses, ownSeries, windowOverrides, classSnap, classPtSnap, masterSnaps, swapPublic, swapDirect, sosDocs] = await Promise.all([
     readTermDocs(db, schoolCode),
     sref.get(),
     sref.collection('courses').where('teacherUids', 'array-contains', uid).get(),
     sref.collection('series').where('teacherUids', 'array-contains', uid).get(),
     queryIn(sref.collection('overrides'), 'dates', 'array-contains-any', dates),
-    homeroomId ? db.collection('classes').doc(homeroomId).collection('info').doc('periodTimes').get() : null,
+    classRef ? classRef.get() : null,
+    classRef ? classRef.collection('info').doc('periodTimes').get() : null,
     db.getAll(db.collection('school_timetables').doc(schoolCode), { fieldMask: ['periodTimes'] }),
-    queryIn(swapRoot.collection('requests'), 'date', 'in', dates, MAX_COVER_DOCS),
-    queryIn(swapRoot.collection('direct_requests'), 'date', 'in', dates, MAX_COVER_DOCS),
-    queryIn(db.collection('school_sos').doc(schoolCode).collection('requests'), 'date', 'in', dates, MAX_COVER_DOCS),
+    // 예전 문서: 공개 요청은 requesterId·accepterId, 1:1 요청은 fromId(요청)·toId(받은 사람, 수락자가 없던 문서)도 봄
+    participantDocs(swapRoot.collection('requests'), ['requesterId', 'accepterId'], uid, 'accepted', 'swap'),
+    participantDocs(swapRoot.collection('direct_requests'), ['requesterId', 'fromId', 'accepterId', 'toId'], uid, 'accepted', 'direct'),
+    participantDocs(db.collection('school_sos').doc(schoolCode).collection('requests'), ['requesterId', 'assignedTo'], uid, 'assigned', 'sos'),
   ])
 
   // ── 후보 수업 ──
@@ -201,7 +229,10 @@ export async function loadTeacherTimetableData(
 
   // ── 학기·교시 시각·쉬는 날 ──
   const terms = termsForWindow(termDocs, dates)
-  const classStarts = classPtSnap?.exists ? classPtSnap.get('times') : undefined
+  const classData = classSnap?.exists ? classSnap.data() || {} : null
+  const myHomeroom =
+    !!classData && String(classData.teacherId || '') === uid && (typeof classData.schoolCode !== 'string' || !classData.schoolCode || classData.schoolCode === schoolCode)
+  const classStarts = myHomeroom && classPtSnap?.exists ? classPtSnap.get('times') : undefined
   const master = masterSnaps[0]
   const masterStarts = master?.exists ? periodTimesToStarts(master.get('periodTimes')) : []
   const starts =
@@ -210,7 +241,12 @@ export async function loadTeacherTimetableData(
     .map((v) => (typeof v === 'string' ? v.trim() : ''))
   const levelName = names.find((n) => LEVEL_RE.test(n)) || names.find(Boolean) || ''
   const periodTimes = buildPeriodTimes(levelName, starts)
-  const { offDays, calendarErrors } = await offDaysPromise
+  const scheduleRows = await scheduleRowsPromise
+  let offDays: Record<Ymd, { name: string } | null> = {}
+  let gradeOffDays: Record<Ymd, TeacherGradeOff> = {}
+  let calendarErrors: Ymd[] = []
+  if (scheduleRows) ({ offDays, gradeOffDays } = teacherOffDaysFromRows(scheduleRows, dates, gradeCountOf(levelName)))
+  else calendarErrors = dates.slice()
 
   // ── 날짜별 공식 수업(엔진) ──
   const days: Record<Ymd, TeacherOfficialDay> = {}
@@ -221,6 +257,7 @@ export async function loadTeacherTimetableData(
       date,
       term: t ? { startDate: t.startDate, endDate: t.endDate } : null,
       offDay: offDays[date] ?? null,
+      gradeOff: gradeOffDays[date] ?? null,
       periodTimes,
       courses,
       series,
@@ -246,6 +283,7 @@ export async function loadTeacherTimetableData(
     to,
     terms: terms.map((t) => ({ termId: t.termId, name: t.name, startDate: t.startDate, endDate: t.endDate, isDefault: t.isDefault })),
     offDays,
+    gradeOffDays,
     calendarErrors,
     periodTimes,
     days,

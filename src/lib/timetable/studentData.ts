@@ -216,23 +216,33 @@ export async function boundCalendarLookup(lookup: Promise<OffDaysResult>, dates:
   }
 }
 
+/** 학사일정 조회 상한(다른 결과 모양용 — 교사 '내 시간표'는 학사일정 행을 받음) — ms 안에 끝나지 않으면 onTimeout() 값 */
+export async function withCalendarTimeout<T>(lookup: Promise<T>, onTimeout: () => T, ms: number = CALENDAR_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      console.error('timetable: school schedule timed out', ms)
+      resolve(onTimeout())
+    }, ms)
+  })
+  try {
+    return await Promise.race([lookup, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /**
- * NEIS 학사일정 → 날짜별 쉬는 날. 실패하면 모든 날짜를 calendarErrors로(쉬는 날 아님으로 단정하지 않음).
- * 교사 '내 시간표'(teacherData.ts)도 같은 규칙으로 씀(학년 = 담임 학년, 없으면 학년별 쉬는 날도 쉬는 날)
+ * NEIS 학사일정 행(조회 기간 dates의 처음~끝). 실패하면 null(호출하는 쪽이 calendarErrors로).
+ * 교사 '내 시간표'(teacherData.ts)는 이 행을 teacherOffDaysFromRows로 학교 전체·학년별 쉬는 날로 나눔
  */
-export async function loadOffDays(
-  schoolCode: string,
-  officeCodeHint: string,
-  dates: Ymd[],
-  grade: unknown
-): Promise<OffDaysResult> {
-  const fail = () => ({ offDays: {} as Record<Ymd, { name: string } | null>, calendarErrors: dates.slice() })
-  if (!dates.length) return { offDays: {}, calendarErrors: [] }
+export async function loadSchoolScheduleRows(schoolCode: string, officeCodeHint: string, dates: Ymd[]): Promise<NeisRow[] | null> {
+  if (!dates.length) return []
   try {
     let officeCode = officeCodeHint
     if (!officeCode) {
       const school = await lookupSchool(schoolCode)
-      if (!school.ok || !school.officeCode) return fail()
+      if (!school.ok || !school.officeCode) return null
       officeCode = school.officeCode
     }
     const { ok, rows } = await fetchNeisResult('SchoolSchedule', {
@@ -241,21 +251,37 @@ export async function loadOffDays(
       AA_FROM_YMD: dates[0],
       AA_TO_YMD: dates[dates.length - 1],
     })
-    if (!ok) return fail()
-    const offDays: Record<Ymd, { name: string } | null> = {}
-    for (const ymd of dates) {
-      if (!isOffDay(rows, ymd, grade)) {
-        offDays[ymd] = null
-        continue
-      }
-      const row = rows.find((r: NeisRow) => (!r.AA_YMD || r.AA_YMD === ymd) && isOffDayRow(r, grade))
-      offDays[ymd] = { name: String(row?.EVENT_NM || '').trim() || '쉬는 날' }
-    }
-    return { offDays, calendarErrors: [] }
+    // 모양이 다른 행(객체 아님)은 버림 — 쉬는 날 계산은 이 try 밖에서 함
+    return ok ? rows.filter((r) => !!r && typeof r === 'object') : null
   } catch (e) {
     console.error('timetable/me: school schedule failed', (e as Error)?.message)
-    return fail()
+    return null
   }
+}
+
+/**
+ * NEIS 학사일정 → 날짜별 쉬는 날(학생: 내 학년 기준). 실패하면 모든 날짜를 calendarErrors로(쉬는 날 아님으로 단정하지 않음).
+ * 교사는 학년 하나로 정하지 않음 — teacherData.ts가 loadSchoolScheduleRows + teacherOffDaysFromRows로 계산
+ */
+async function loadOffDays(
+  schoolCode: string,
+  officeCodeHint: string,
+  dates: Ymd[],
+  grade: unknown
+): Promise<OffDaysResult> {
+  if (!dates.length) return { offDays: {}, calendarErrors: [] }
+  const rows = await loadSchoolScheduleRows(schoolCode, officeCodeHint, dates)
+  if (!rows) return { offDays: {}, calendarErrors: dates.slice() }
+  const offDays: Record<Ymd, { name: string } | null> = {}
+  for (const ymd of dates) {
+    if (!isOffDay(rows, ymd, grade)) {
+      offDays[ymd] = null
+      continue
+    }
+    const row = rows.find((r: NeisRow) => (!r.AA_YMD || r.AA_YMD === ymd) && isOffDayRow(r, grade))
+    offDays[ymd] = { name: String(row?.EVENT_NM || '').trim() || '쉬는 날' }
+  }
+  return { offDays, calendarErrors: [] }
 }
 
 const docData = (d: QueryDocumentSnapshot<DocumentData>) => d.data() || {}

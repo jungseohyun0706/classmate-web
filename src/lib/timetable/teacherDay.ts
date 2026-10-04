@@ -15,9 +15,11 @@
  *    - 둘 다 없으면 빈 상태(수업 관리·내 시간표 등록)
  *    - 모든 방식에 예전 교환(품앗이)·보결(SOS) 겹쳐 표시
  *    - 쉬는 날·주말·학기 밖은 학생 화면과 같은 상태
+ *    - 쉬는 날은 학교 전체(offDays)와 일부 학년(gradeOffDays)을 나눔: 교사는 학년 하나에 묶이지 않으므로
+ *      '3학년 재량휴업일'에는 3학년 수업(공통 수업 학급·주간 시간표 칸 '3-2 …')만 열리지 않음. 학년을 모르는 수업은 그대로 보임
  */
-import { baseStateOf, buildDayTimetable, courseActiveOn, parseOccurrenceKey, slotMinutes } from './engine'
-import { addDays, inRange, isYmd, weekdayOf } from './dates'
+import { baseStateOf, buildDayTimetable, courseActiveOn, parseOccurrenceKey, seriesValidOn, slotMinutes } from './engine'
+import { inRange, isYmd, weekdayOf } from './dates'
 import type { ChangeInfo, Course, Enrollment, LessonSeries, LessonView, NoticeView, Override, PeriodTime, SlotState, Ymd } from './types'
 
 // ───────────────────────── 자료 형식 ─────────────────────────
@@ -85,6 +87,13 @@ export interface TeacherCover {
   otherName: string
 }
 
+/** 그 날 일부 학년만 쉬는 날(예: '3학년 재량휴업일'). 학교 전체가 쉬면 offDays에 들어감 */
+export interface TeacherGradeOff {
+  name: string
+  /** 쉬는 학년(오름차순, 1~6) */
+  grades: number[]
+}
+
 export interface TeacherTermSummary {
   termId: string
   name: string
@@ -104,7 +113,10 @@ export interface TeacherTimetablePayload {
   to: Ymd
   /** 학교 학기 문서 + 문서 없는 날짜의 기본 학기(학생 /me와 같은 규칙) */
   terms: TeacherTermSummary[]
+  /** 학교 전체가 쉬는 날(교사는 학년 하나로 정하지 않음 — 일부 학년만 쉬는 날은 gradeOffDays) */
   offDays: Record<Ymd, { name: string } | null>
+  /** 일부 학년만 쉬는 날 — 그 학년 수업만 열리지 않음(날짜에 없으면 해당 없음) */
+  gradeOffDays: Record<Ymd, TeacherGradeOff>
   calendarErrors: Ymd[]
   periodTimes: PeriodTime[]
   /** 날짜별 공식 수업(내 uid 기준, 엔진 계산) */
@@ -142,6 +154,28 @@ export function courseClassLabel(course: Pick<Course, 'commonForHomerooms'>): st
   return labels.length ? labels.join(', ') : null
 }
 
+/** 수업의 학년(공통 수업 학급 id에서). 선택 과목처럼 학급이 없으면 [] — 학년을 모름 */
+export function courseGrades(course: Pick<Course, 'commonForHomerooms'>): number[] {
+  const out = new Set<number>()
+  for (const id of course.commonForHomerooms || []) {
+    if (/_g_/.test(id)) continue
+    const m = /_(\d{1,2})_(\d{1,2})$/.exec(id)
+    if (m) out.add(Number(m[1]))
+  }
+  return Array.from(out).sort((a, b) => a - b)
+}
+
+/** 일부 학년 쉬는 날에 열리지 않는 수업인지: 학년을 알고, 그 학년이 모두 쉬는 학년 */
+export function courseOffForGrades(course: Pick<Course, 'commonForHomerooms'>, offGrades: number[]): boolean {
+  const g = courseGrades(course)
+  return g.length > 0 && g.every((x) => offGrades.includes(x))
+}
+
+/** 쉬는 학년 표시: [3] → '3학년', [1, 2] → '1·2학년' */
+export function gradesLabel(grades: number[]): string {
+  return grades.length ? `${grades.join('·')}학년` : ''
+}
+
 /** 수업 상세를 열 수 있는 계정(담당 교사 또는 관리 교사) */
 export function managesCourse(course: Pick<Course, 'teacherUids' | 'managerUids'>, uid: string): boolean {
   return (course.teacherUids || []).includes(uid) || (course.managerUids || []).includes(uid)
@@ -153,28 +187,18 @@ export function seriesTeacherUids(s: Pick<LessonSeries, 'teacherUids'>, course: 
 }
 
 /**
- * 그 날짜 학기에 내가 맡은 운영 중 공식 수업이 있는지:
- * 수업이 그 날 운영 중(종료 전)이고, 내가 기본 담당인 반복 차시(삭제 제외)의 적용 기간이 그 날짜의 학기와 겹침.
+ * 그 날짜에 내가 맡은 운영 중 공식 수업이 있는지(공식 시간표가 기본 목록인지):
+ * 수업이 그 날 운영 중(종료 전)이고, 내가 기본 담당인 반복 차시(삭제 제외)가 그 날짜에 적용 기간 안(요일 무관 — 주말도 공식 방식).
+ * 학기 중 다음 주부터 적용되는 차시는 그 전 날짜에 세지 않고(그동안은 직접 등록 주간 시간표), 학기 중 끝난 차시도 끝난 뒤에는 세지 않음.
  * uid로만 판정 — 교사 이름이 같아도 계정이 연결되지 않은 수업은 세지 않음
  */
-export function teacherHasOfficialOn(
-  uid: string,
-  date: Ymd,
-  term: { startDate: Ymd; endDate: Ymd } | null,
-  courses: Course[],
-  series: LessonSeries[]
-): boolean {
+export function teacherHasOfficialOn(uid: string, date: Ymd, courses: Course[], series: LessonSeries[]): boolean {
   if (!uid) return false
   const byId = new Map(courses.map((c) => [c.courseId, c]))
-  const lo = term ? term.startDate : date
-  const hi = term ? term.endDate : addDays(date, 1)
   return series.some((s) => {
     const c = byId.get(s.courseId)
     if (!c || !courseActiveOn(c, date)) return false
-    if (s.status === 'retired' && !s.validTo) return false
-    if (s.validTo && s.validTo <= s.validFrom) return false // 학기로 잘려 빈 기간
-    if (!seriesTeacherUids(s, c).includes(uid)) return false
-    return s.validFrom < hi && (!s.validTo || s.validTo > lo)
+    return seriesTeacherUids(s, c).includes(uid) && seriesValidOn(s, date)
   })
 }
 
@@ -185,7 +209,10 @@ export interface TeacherOfficialInput {
   date: Ymd
   /** 그 날짜가 든 학기(없으면 null) */
   term: { startDate: Ymd; endDate: Ymd } | null
+  /** 학교 전체가 쉬는 날 */
   offDay: { name: string } | null
+  /** 일부 학년만 쉬는 날 — 그 학년 수업(courseOffForGrades)만 쉬는 날로 계산 */
+  gradeOff?: TeacherGradeOff | null
   periodTimes?: PeriodTime[]
   /** 후보 수업: 내가 담당인 수업 + 내가 담당인 차시가 있는 수업 + 조회 기간 변경으로 나에게 넘어온 수업 */
   courses: Course[]
@@ -211,19 +238,37 @@ export function computeTeacherOfficialDay(input: TeacherOfficialInput): TeacherO
   const seriesById = new Map(input.series.map((s) => [s.seriesId, s]))
   // 후보 수업을 모두 '수강'처럼 넣어 학생 화면과 같은 엔진으로 하루 시간표(변경·쉬는 날 반영)를 계산
   const enrollments: Enrollment[] = input.courses.map((c) => ({ courseId: c.courseId, uid, status: 'active', source: 'admin', from: null, to: null }))
-  const day = buildDayTimetable({
-    uid,
-    day: { date, term: input.term, offDay: input.offDay, periodTimes: input.periodTimes },
-    homerooms: [],
-    enrollments,
-    courses: input.courses,
-    series: input.series,
-    overrides: input.overrides,
-    personalEntries: [],
-  })
+  const run = (offDay: { name: string } | null) =>
+    buildDayTimetable({
+      uid,
+      day: { date, term: input.term, offDay, periodTimes: input.periodTimes },
+      homerooms: [],
+      enrollments,
+      courses: input.courses,
+      series: input.series,
+      overrides: input.overrides,
+      personalEntries: [],
+    })
+  const day = run(input.offDay)
+  let dayLessons = day.lessons
+  let dayNotices = day.notices
+  // 일부 학년만 쉬는 날: 그 학년 수업만 '쉬는 날' 계산 결과를 씀(학생 화면에서 그 학년 학생이 보는 것과 같음)
+  const gradeOff = !input.offDay && input.gradeOff && input.gradeOff.grades.length ? input.gradeOff : null
+  if (gradeOff) {
+    const offIds = new Set(input.courses.filter((c) => courseOffForGrades(c, gradeOff.grades)).map((c) => c.courseId))
+    if (offIds.size) {
+      const offDay = run({ name: gradeOff.name })
+      const isOff = (courseId: string | null | undefined) => !!courseId && offIds.has(courseId)
+      dayLessons = day.lessons
+        .filter((l) => !isOff(l.courseId))
+        .concat(offDay.lessons.filter((l) => isOff(l.courseId)))
+        .sort((a, b) => sortKey(a, input.periodTimes ?? []) - sortKey(b, input.periodTimes ?? []) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+      dayNotices = day.notices.filter((n) => !isOff(n.courseId)).concat(offDay.notices.filter((n) => isOff(n.courseId)))
+    }
+  }
 
   const lessons: TeacherLesson[] = []
-  for (const l of day.lessons) {
+  for (const l of dayLessons) {
     if (!l.courseId) continue
     const course = courseById.get(l.courseId)
     if (!course) continue
@@ -247,7 +292,7 @@ export function computeTeacherOfficialDay(input: TeacherOfficialInput): TeacherO
   }
 
   const notices: TeacherNotice[] = []
-  for (const n of day.notices) {
+  for (const n of dayNotices) {
     if (!(n.original.teacherUids ?? []).includes(uid)) continue // 원래 내 차시였던 것만
     const course = courseById.get(n.courseId)
     notices.push({
@@ -266,7 +311,7 @@ export function computeTeacherOfficialDay(input: TeacherOfficialInput): TeacherO
   }
 
   return {
-    hasOfficial: teacherHasOfficialOn(uid, date, input.term, input.courses, input.series),
+    hasOfficial: teacherHasOfficialOn(uid, date, input.courses, input.series),
     lessons,
     notices,
     incomplete: day.incompleteChangeSets.length > 0,
@@ -308,6 +353,12 @@ export function parseScheduleCell(text: string): { title: string; classLabel: st
     return { title: (m[3] || '').trim() || `${classLabel} 수업`, classLabel }
   }
   return { title: t, classLabel: null }
+}
+
+/** 주간 시간표 칸의 학년('3-2 국어' → 3). 학반 라벨이 없으면 null(학년을 모름) */
+export function scheduleCellGrade(text: string): number | null {
+  const m = /^(\d{1,2})-(\d{1,2})(?:\s|$)/.exec(String(text || '').trim())
+  return m ? Number(m[1]) : null
 }
 
 /** 그 날짜 요일의 주간 시간표 칸(빈 칸 제외, 교시 순). 주말·자료 없음 → [] */
@@ -380,6 +431,10 @@ export interface TeacherDayView {
   /** 쉬는 날이라 열리지 않는 내 수업(회색 안내 줄) */
   suppressed: TeacherNotice[]
   offDayName: string | null
+  /** 일부 학년만 쉬는 날(학교 전체가 쉬는 날이면 null) */
+  gradeOff: TeacherGradeOff | null
+  /** 일부 학년 쉬는 날이라 열리지 않는 직접 등록 주간 시간표 칸 */
+  suppressedCells: Array<{ period: number; text: string }>
   /** 학사일정(쉬는 날 여부) 확인 실패 */
   calendarFailed: boolean
   outsideTerm: boolean
@@ -427,7 +482,9 @@ export function isOutsideTerms(terms: Array<{ startDate: Ymd; endDate: Ymd }>, d
 export function buildTeacherDay(p: TeacherTimetablePayload, date: Ymd): TeacherDayView {
   const official = p.days[date] || null
   const off = p.offDays[date] ?? null
+  const gradeOff = !off ? (p.gradeOffDays?.[date] ?? null) : null
   const outsideTerm = isOutsideTerms(p.terms, date)
+  const suppressedCells: Array<{ period: number; text: string }> = []
   const schedule = p.mySchedule
   const mode: TeacherDayMode = official?.hasOfficial ? 'official' : schedule ? 'legacy' : 'empty'
   const cells = legacyCellsOn(schedule, date)
@@ -446,6 +503,11 @@ export function buildTeacherDay(p: TeacherTimetablePayload, date: Ymd): TeacherD
   // 3. 직접 등록 주간 시간표(공식 수업이 없는 선생님만 기본 목록). 쉬는 날·학기 밖에는 보이지 않음
   if (mode === 'legacy' && !off && !outsideTerm) {
     for (const c of cells) {
+      const g = scheduleCellGrade(c.text)
+      if (gradeOff && g !== null && gradeOff.grades.includes(g)) {
+        suppressedCells.push(c) // 그 학년이 쉬는 날
+        continue
+      }
       const cell = parseScheduleCell(c.text)
       rows.push({ coveredBy: [], cover: null, key: `w:${c.period}`, kind: 'legacy', lesson: plainLesson(`w:${date}:${c.period}`, cell.title, c.period, 'personal'), role: null, courseId: null, manageable: false, classLabel: cell.classLabel })
     }
@@ -458,13 +520,18 @@ export function buildTeacherDay(p: TeacherTimetablePayload, date: Ymd): TeacherD
   }
   for (const c of covers) {
     if (c.direction !== 'covered') continue
+    // 내 수업 행에만 붙임 — 다른 선생님에게 넘긴 차시·변경으로 내가 대신 들어가는 남의 수업에는 붙이지 않음
     const targets = rows.filter(
-      (r) => r.lesson.period === c.period && (r.kind === 'legacy' || (r.kind === 'official' && r.role !== 'changed-away'))
+      (r) => r.lesson.period === c.period && (r.kind === 'legacy' || (r.kind === 'official' && r.role !== 'changed-away' && r.role !== 'substitute'))
     )
     if (targets.length) {
       targets.forEach((r) => r.coveredBy.push(c))
       continue
     }
+    // 그 교시 수업이 목록에 없으면 따로 행 — 쉬는 날·학기 밖에는 열리지 않는 수업이라 만들지 않음(내가 가르치는 수업도 아님)
+    if (off || outsideTerm) continue
+    const g = scheduleCellGrade(c.subject)
+    if (gradeOff && g !== null && gradeOff.grades.includes(g)) continue
     const cell = c.subject ? parseScheduleCell(c.subject) : { title: '내 수업', classLabel: null }
     rows.push({ coveredBy: [c], cover: c, key: `v:${c.id}`, kind: 'covered-only', lesson: plainLesson(`v:${c.id}`, cell.title || '내 수업', c.period, 'enrolled'), role: null, courseId: null, manageable: false, classLabel: cell.classLabel })
   }
@@ -496,6 +563,8 @@ export function buildTeacherDay(p: TeacherTimetablePayload, date: Ymd): TeacherD
     movedOut: notices.filter((n) => n.kind === 'moved-out'),
     suppressed: notices.filter((n) => n.kind === 'holiday-suppressed'),
     offDayName: off ? off.name : null,
+    gradeOff,
+    suppressedCells,
     calendarFailed: p.calendarErrors.includes(date),
     outsideTerm,
     legacyReference: mode === 'official' ? cells : [],
@@ -563,6 +632,14 @@ export function normalizeTeacherPayload(body: unknown): TeacherTimetablePayload 
     const v = offRaw[k] as { name?: unknown } | null
     offDays[k] = v && typeof v === 'object' ? { name: String(v.name || '쉬는 날') } : null
   })
+  const gradeRaw = b.gradeOffDays && typeof b.gradeOffDays === 'object' ? (b.gradeOffDays as Record<string, unknown>) : {}
+  const gradeOffDays: Record<Ymd, TeacherGradeOff> = {}
+  Object.keys(gradeRaw).forEach((k) => {
+    const v = gradeRaw[k] as { name?: unknown; grades?: unknown } | null
+    if (!isYmd(k) || !v || typeof v !== 'object') return
+    const grades = unique((Array.isArray(v.grades) ? v.grades : []).map(Number).filter((g) => Number.isInteger(g) && g >= 1 && g <= 6)).sort((a, b) => a - b)
+    if (grades.length) gradeOffDays[k] = { name: String(v.name || '쉬는 날'), grades }
+  })
   const daysRaw = b.days && typeof b.days === 'object' ? (b.days as Record<string, unknown>) : {}
   const days: Record<Ymd, TeacherOfficialDay> = {}
   Object.keys(daysRaw).forEach((k) => {
@@ -577,6 +654,7 @@ export function normalizeTeacherPayload(body: unknown): TeacherTimetablePayload 
     to: b.to,
     terms,
     offDays,
+    gradeOffDays,
     calendarErrors: strArr(b.calendarErrors),
     periodTimes: arr<PeriodTime>(b.periodTimes),
     days,

@@ -221,14 +221,14 @@ describe('변경 반영', () => {
 })
 
 describe('공식 시간표 방식 판정(teacherHasOfficialOn)', () => {
-  test('내가 담당인 반복 차시가 그 날짜 학기에 있으면 true(주말·수업 없는 날도)', () => {
+  test('내가 담당인 반복 차시가 그 날짜에 적용 중이면 true(주말·수업 없는 날도)', () => {
     assert.equal(dayOf('20261010').hasOfficial, true, '토요일')
     assert.equal(dayOf(TUE).hasOfficial, true)
   })
 
   test('이름만 같은 수업·다른 교사 차시만 있으면 false', () => {
     const only = [COURSES[1], COURSES[2]]
-    assert.equal(teacherHasOfficialOn(ME, TUE, TERM, only, SERIES), false)
+    assert.equal(teacherHasOfficialOn(ME, TUE, only, SERIES), false)
   })
 
   test('대신 들어가는 수업만 있으면 공식 방식 아님(내 기본 시간표가 없음)', () => {
@@ -239,15 +239,36 @@ describe('공식 시간표 방식 판정(teacherHasOfficialOn)', () => {
 
   test('지난 학기 차시(학기로 잘린 기간)·끝난 수업·삭제된 차시는 세지 않음', () => {
     const old = series('sr_old', 'engB', 2, 1, { validFrom: '20260301', validTo: '20260816' })
-    assert.equal(teacherHasOfficialOn(ME, TUE, TERM, [COURSES[0]], [old]), false)
+    assert.equal(teacherHasOfficialOn(ME, TUE, [COURSES[0]], [old]), false)
     const empty = series('sr_empty', 'engB', 2, 1, { validFrom: '20270301', validTo: '20270301' })
-    assert.equal(teacherHasOfficialOn(ME, TUE, TERM, [COURSES[0]], [empty]), false)
+    assert.equal(teacherHasOfficialOn(ME, TUE, [COURSES[0]], [empty]), false)
     const ended = { ...COURSES[0], endedOn: '20261001' }
-    assert.equal(teacherHasOfficialOn(ME, TUE, TERM, [ended], [SERIES[0]]), false)
+    assert.equal(teacherHasOfficialOn(ME, TUE, [ended], [SERIES[0]]), false)
     const deleted = { ...SERIES[0], status: 'retired' as const, validTo: null }
-    assert.equal(teacherHasOfficialOn(ME, TUE, TERM, [COURSES[0]], [deleted]), false)
-    // 학기 중 나중에 시작하는 차시도 '이 학기 시간표'로 봄
-    const later = series('sr_later', 'engB', 2, 1, { validFrom: '20261201' })
-    assert.equal(teacherHasOfficialOn(ME, TUE, TERM, [COURSES[0]], [later]), true)
+    assert.equal(teacherHasOfficialOn(ME, TUE, [COURSES[0]], [deleted]), false)
+  })
+
+  test('학기 중 다음 주부터 적용되는 차시: 시작 전 날짜는 공식 방식 아님(그동안 직접 등록 주간 시간표), 시작일부터 공식', () => {
+    const later = series('sr_later', 'engB', 2, 1, { validFrom: NEXT_TUE })
+    assert.equal(teacherHasOfficialOn(ME, TUE, [COURSES[0]], [later]), false)
+    assert.equal(teacherHasOfficialOn(ME, '20261010', [COURSES[0]], [later]), false, '시작 전 주말')
+    assert.equal(teacherHasOfficialOn(ME, NEXT_TUE, [COURSES[0]], [later]), true)
+    assert.equal(teacherHasOfficialOn(ME, '20261017', [COURSES[0]], [later]), true, '시작 뒤 주말(요일 무관)')
+  })
+
+  test('학기 중 모든 내 차시가 끝난 수업(운영 중): 끝난 뒤 날짜는 공식 방식 아님', () => {
+    const closed = series('sr_closed', 'engB', 2, 3, { validTo: '20260901' })
+    assert.equal(teacherHasOfficialOn(ME, '20260825', [COURSES[0]], [closed]), true)
+    assert.equal(teacherHasOfficialOn(ME, TUE, [COURSES[0]], [closed]), false)
+    const d = computeTeacherOfficialDay({ uid: ME, date: TUE, term: TERM, offDay: null, courses: [COURSES[0]], series: [closed], overrides: [] })
+    assert.equal(d.hasOfficial, false)
+    assert.deepEqual(d.lessons, [])
+  })
+
+  test('다른 교사 차시(차시 teacherUids)만 적용 중이면 false — 수업 담당이라도 그 차시 기본 담당이 아님', () => {
+    const coT = COURSES[3]
+    const zOnly = series('sr_z', 'coT', 2, 6, { teacherUids: ['tz'] })
+    assert.equal(teacherHasOfficialOn(ME, TUE, [coT], [zOnly]), false)
+    assert.equal(teacherHasOfficialOn('tz', TUE, [coT], [zOnly]), true)
   })
 })
