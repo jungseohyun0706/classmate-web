@@ -17,6 +17,7 @@ import {
   resolveTeacherConfirmations,
   undoSetOf,
   type BuildResult,
+  type CatalogPublishOption,
   type CourseCandidate,
   type ExistingCourse,
   type ImportIssue,
@@ -60,6 +61,10 @@ import type { Ymd } from '../../lib/timetable/types'
 //             넣음(나머지는 무시하고 ignoredTeacherCount로 알려 줌). 이전 형식 confirmTeacherUids(uid만)도 당분간 받되, 그 uid가
 //             발행할 수업의 이름 정확히 하나의 후보일 때만 그 이름으로 해석. 새 수업은 managerUids에 발행 교사.
 //             미리보기 뒤 학교 scheduleRevision이 올랐어도(수강 변경 등) 지금 자료로 다시 계산한 계획 해시가 미리보기와 같으면 진행.
+//             catalog: { visible, policy } — 학생 '수업 담기' 목록 공개·참여 방식('auto' 바로 담기 / 'approval' 선생님 승인 후).
+//             새로 만드는 수업과, 가져오기가 공개 설정을 맡은 기존 가져오기 수업(교사가 수업 화면에서 공개·참여 방식을 바꾸지 않은 수업 —
+//             importManagesCatalog)에만 씀. 없으면 예전처럼 새 수업은 비공개·승인 후, 기존 수업은 그대로.
+//             수업마다 학급 표시(classLabels)에서 대상 학년(grades)을 기록(학급 표시가 없으면 grades 없음)
 // 정책: 공통 수업은 담임이 명시한 경우에만 — 가져오기는 commonForHomerooms를 쓰지 않고 후보(importCommon)만 기록.
 //       교사 이름(masterName)만으로 담당 권한을 연결하지 않음 — 후보로 보여 주고 발행 교사가 확인한 것만 연결.
 //  cancel   → staged 배치만 취소
@@ -292,6 +297,19 @@ function confirmFields(body: Record<string, any>): Confirmations {
   return { pairs, uids }
 }
 
+/**
+ * commit 본문의 학생 '수업 담기' 공개 선택 — catalog: { visible: boolean, policy: 'auto'|'approval' }.
+ * 없으면(null) 예전 동작: 새 수업은 비공개·승인 후, 기존 수업의 공개·참여 방식은 그대로
+ */
+function catalogField(body: Record<string, any>): CatalogPublishOption | null {
+  const v = body.catalog
+  if (v === undefined || v === null) return null
+  if (typeof v !== 'object' || Array.isArray(v) || typeof v.visible !== 'boolean' || (v.policy !== 'auto' && v.policy !== 'approval')) {
+    fail(400, 'invalid-catalog', "학생 수업 담기 공개 설정(catalog) 형식이 올바르지 않아요. { visible: true/false, policy: 'auto'|'approval' }")
+  }
+  return { visible: v.visible, policy: v.policy }
+}
+
 async function loadExisting(db: Firestore, schoolCode: string, termId: string, courseIds: string[], mode: string): Promise<ExistingCourse[]> {
   const sref = schoolRef(db, schoolCode)
   const docs: Record<string, Record<string, unknown>> = Object.create(null)
@@ -366,7 +384,7 @@ async function analyze(ctx: Ctx, ref: DocumentReference, batch: BatchDoc): Promi
  * 확정에 쓸 최종 계획: 비교 해시를 확인한 뒤 연결 확인·발행 교사를 얹어 다시 계산.
  * 연결 확인은 (엑셀 이름키, uid) 쌍으로 — 다시 계산한 그 이름의 후보에 있을 때만, 그 이름이 나오는 수업에만 연결
  */
-function finalPlan(a: Analysis, confirm: Confirmations, publisherUid: string) {
+function finalPlan(a: Analysis, confirm: Confirmations, publisherUid: string, catalog: CatalogPublishOption | null) {
   const courses = a.build.courses.filter((c) => !c.blocked)
   const r = resolveTeacherConfirmations(
     a.build.teacherLinks,
@@ -374,7 +392,7 @@ function finalPlan(a: Analysis, confirm: Confirmations, publisherUid: string) {
     confirm.pairs,
     confirm.uids
   )
-  const plan = planImport({ ...a.base, courses, keepKeys: a.blockedKeys, confirmedTeacherLinks: r.accepted, publisherUid })
+  const plan = planImport({ ...a.base, courses, keepKeys: a.blockedKeys, confirmedTeacherLinks: r.accepted, publisherUid, catalog })
   return { plan, accepted: r.acceptedUids, acceptedLinks: r.accepted, ignored: r.ignored }
 }
 
@@ -587,6 +605,7 @@ function committedResult(batchId: string, b: BatchDoc, extra: Record<string, unk
     confirmedTeacherUids: b.confirmedTeacherUids || [],
     confirmedTeacherLinks: b.confirmedTeacherLinks || [],
     ignoredTeacherCount: Number(b.ignoredTeacherCount) || 0,
+    catalog: b.catalogOption ?? null,
     ...extra,
   }
 }
@@ -673,6 +692,7 @@ async function finishCommit(ctx: Ctx, ref: DocumentReference, attemptId: string)
         confirmedTeacherUids: b.confirmedTeacherUids || [],
         confirmedTeacherLinks: b.confirmedTeacherLinks || [],
         ignoredTeacherCount: Number(b.ignoredTeacherCount) || 0,
+        catalogOption: b.catalogOption ?? null,
       },
     })
     return { ...b, status: 'committed', commitRevision: newRev }
@@ -773,6 +793,7 @@ async function commit(ctx: Ctx) {
   const expectedRevision = expectedRevisionField(ctx.body)
   const acceptReview = ctx.body.acceptReview === true
   const confirm = confirmFields(ctx.body)
+  const catalog = catalogField(ctx.body)
   const { ref, batch } = await loadBatch(ctx)
 
   if (batch.status === 'committed') return committedResult(ref.id, batch, { alreadyCommitted: true })
@@ -829,7 +850,7 @@ async function commit(ctx: Ctx) {
     }
 
     // 해시 확인 뒤 연결 확인((이름키, uid) 쌍 — 서버가 다시 계산한 그 이름의 후보에 있는 것만)·발행 교사를 얹은 최종 계획
-    const fin = finalPlan(a, confirm, ctx.uid)
+    const fin = finalPlan(a, confirm, ctx.uid, catalog)
     // 계획 저장(재시도 시 같은 계획으로 이어서 진행 — 확인 목록도 계획에 들어 있어 이어서 할 때 다시 받지 않음).
     // knownSeries: 묶음의 수업마다 계획 때 있던 차시 id — 이어서 발행할 때 그 뒤 새로 생긴 차시를 찾는 데 씀
     const packs = packOps(fin.plan.items, OPS_PER_WRITE)
@@ -866,6 +887,8 @@ async function commit(ctx: Ctx) {
         confirmedTeacherLinks: fin.acceptedLinks,
         // 받아들이지 않은 확인은 개수만(클라이언트가 보낸 임의 uid — 학생 uid일 수도 있어 저장하지 않음)
         ignoredTeacherCount: fin.ignored,
+        // 학생 '수업 담기' 공개 선택(없으면 null — 예전 동작)
+        catalogOption: catalog,
         progress: 0,
         created: items.filter((i) => i.status === 'new').map((i) => i.courseId),
         updated: items.filter((i) => i.status === 'update').map((i) => i.courseId),

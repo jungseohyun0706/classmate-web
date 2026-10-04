@@ -40,7 +40,8 @@ import {
 //   그 엑셀 이름이 나오는 수업의 담당 교사(일정 변경·수강 관리)가 돼요. 체크는 기본 해제.
 //   체크는 (엑셀 이름, 계정) 쌍으로 보냄 — 미리보기 뒤 누가 엑셀 이름(masterName)을 바꿔도 다른 이름의 수업에 연결되지 않게.
 // 서버 계약: POST /api/timetable-import { action: 'stage'|'preview'|'commit'|'cancel'|'rollback'|'list', ... }
-//            commit { batchId, expectedRevision, acceptReview?, confirmTeacherLinks?: { nameKey, uid }[] }
+//            commit { batchId, expectedRevision, acceptReview?, confirmTeacherLinks?: { nameKey, uid }[],
+//                     catalog?: { visible, policy } — 학생 '수업 담기' 목록 공개(기본 켬)·참여 방식(기본 바로 담기) }
 //            (멈춘 발행 이어서 하기도 commit { batchId, expectedRevision } — 서버가 저장한 계획으로 이어서)
 
 const IMPORT_MAX_ROWS = 5000 // 서버(/api/timetable-import) 한도와 같음
@@ -468,6 +469,9 @@ export default function TimetableImportPage() {
   const [failure, setFailure] = useState<ApiFailure | null>(null)
   const [preview, setPreview] = useState<PreviewView | null>(null)
   const [acceptReview, setAcceptReview] = useState(false)
+  /** 학생 '수업 담기' 목록에 공개(기본 켬) + 참여 방식(기본 바로 담기) — 새 수업과 가져오기가 공개 설정을 맡은 수업에만 적용 */
+  const [publishCatalog, setPublishCatalog] = useState(true)
+  const [catalogPolicy, setCatalogPolicy] = useState<'auto' | 'approval'>('auto')
   /** 교사 계정 연결 확인((엑셀 이름키, uid) → 체크). 기본 해제 */
   const [confirmLinks, setConfirmLinks] = useState<Record<string, boolean>>({})
   const [committed, setCommitted] = useState<{
@@ -480,6 +484,8 @@ export default function TimetableImportPage() {
     ignoredTeachers: number
     /** 담임 확인을 기다리는 공통 수업 후보 수 */
     commonPending: number
+    /** 학생 '수업 담기' 공개 선택(발행할 때 보낸 값) */
+    catalog: { visible: boolean; policy: 'auto' | 'approval' }
   } | null>(null)
   const [rolledBack, setRolledBack] = useState(false)
   const [batches, setBatches] = useState<BatchView[] | null>(null)
@@ -704,7 +710,10 @@ export default function TimetableImportPage() {
         (checkedLinks.length > 0
           ? ` 체크한 교사 계정 ${checkedLinks.length}개를 그 엑셀 이름이 나오는 수업의 담당 교사(일정 변경·수강 관리 권한)로 연결해요.`
           : ' 교사 계정은 연결하지 않아요(이름만 표시).') +
-        ' 학생 시간표에는 이미 수강 중이거나 담임이 공통 수업으로 확인한 수업만 반영돼요.' +
+        (publishCatalog
+          ? ` 학생 '수업 담기' 목록에 공개해 학생이 직접 골라 담을 수 있어요(${catalogPolicy === 'auto' ? '바로 담기' : '선생님 승인 후'}).`
+          : " 학생 '수업 담기' 목록에는 공개하지 않아요.") +
+        ' 학생 시간표에는 학생이 담았거나 이미 수강 중이거나 담임이 공통 수업으로 확인한 수업만 반영돼요.' +
         (pendingCommon > 0 ? ` 공통 수업 후보 ${pendingCommon}개는 담임 확인 전까지 학생에게 보이지 않아요.` : ''),
       confirmText: '발행하기',
       danger: mode === 'replace',
@@ -719,6 +728,7 @@ export default function TimetableImportPage() {
         expectedRevision: preview.revision,
         acceptReview: preview.reviewCount > 0 ? acceptReview : false,
         confirmTeacherLinks: checkedLinks,
+        catalog: { visible: publishCatalog, policy: catalogPolicy },
       })
       const rev = num(raw.revision)
       const nameOfUid: Record<string, string> = {}
@@ -741,6 +751,7 @@ export default function TimetableImportPage() {
           : arr(raw.confirmedTeacherUids).map((u: any) => nameOfUid[String(u)] || '선생님'),
         ignoredTeachers: num(raw.ignoredTeacherCount) ?? 0,
         commonPending: pendingCommon,
+        catalog: { visible: publishCatalog, policy: catalogPolicy },
       })
       toast('시간표를 발행했어요.', 'success')
       loadBatches()
@@ -1433,6 +1444,37 @@ export default function TimetableImportPage() {
                     <span className="break-keep">검토 항목 {preview.reviewCount}건을 제외하고 발행하기 (제외한 수업·차시는 학생에게 보이지 않아요)</span>
                   </label>
                 )}
+                <fieldset className="rounded-lg bg-emerald-50/60 p-3 text-sm text-gray-900 ring-1 ring-emerald-100">
+                  <legend className="sr-only">학생 수업 담기 공개</legend>
+                  <label className="flex min-h-[44px] items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-5 w-5 shrink-0"
+                      checked={publishCatalog}
+                      onChange={(e) => setPublishCatalog(e.target.checked)}
+                      disabled={!!busy}
+                    />
+                    <span className="break-keep">
+                      <b>학생 수업 담기 목록에 공개 (학생이 직접 골라 담기)</b>
+                      <span className="mt-0.5 block text-xs text-gray-600">
+                        학생이 &lsquo;수업 담기&rsquo;에서 학년·요일·교시로 이 수업을 찾아 직접 담아요. 담은 수업은 선생님이 바꾸는 시간표가 자동 반영돼요.
+                        수업 화면에서 선생님이 공개·참여 방식을 직접 바꾼 수업은 그대로 둬요.
+                      </span>
+                    </span>
+                  </label>
+                  {publishCatalog && (
+                    <div role="radiogroup" aria-label="학생이 담을 때" className="mt-1 grid grid-cols-1 gap-1 pl-7 sm:grid-cols-2">
+                      <label className="flex min-h-[44px] items-center gap-2">
+                        <input type="radio" name="catalogPolicy" className="h-5 w-5" checked={catalogPolicy === 'auto'} onChange={() => setCatalogPolicy('auto')} disabled={!!busy} />
+                        <span className="break-keep">바로 담기(기본)</span>
+                      </label>
+                      <label className="flex min-h-[44px] items-center gap-2">
+                        <input type="radio" name="catalogPolicy" className="h-5 w-5" checked={catalogPolicy === 'approval'} onChange={() => setCatalogPolicy('approval')} disabled={!!busy} />
+                        <span className="break-keep">선생님 승인 후</span>
+                      </label>
+                    </div>
+                  )}
+                </fieldset>
                 <div className="grid grid-cols-3 gap-2">
                   <button onClick={cancel} disabled={!!busy} className="rounded-xl bg-white py-3 text-sm font-bold text-gray-600 ring-1 ring-gray-300 disabled:opacity-50">
                     취소
@@ -1471,8 +1513,13 @@ export default function TimetableImportPage() {
                     : '담당 교사로 연결한 계정 없음 — 교사 이름만 표시돼요(발행한 내가 관리 교사).'}
                   {committed.ignoredTeachers > 0 ? ` · 후보가 아니어서 연결하지 않은 계정 ${committed.ignoredTeachers}개` : ''}
                 </p>
+                <p className="mt-2 text-xs text-gray-700 break-keep">
+                  {committed.catalog.visible
+                    ? `학생 '수업 담기' 목록에 공개했어요 — ${committed.catalog.policy === 'auto' ? '학생이 담으면 바로 시간표에 들어가요' : '학생이 담으면 선생님 승인 후 시간표에 들어가요'}.`
+                    : "학생 '수업 담기' 목록에는 공개하지 않았어요."}
+                </p>
                 <div className="mt-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 break-keep">
-                  <b>학생 시간표에 나타나려면:</b> 담임의 공통 수업 확인 또는 수강 명단 가져오기/초대가 필요해요.
+                  <b>학생 시간표에 나타나려면:</b> {committed.catalog.visible ? "학생이 '수업 담기'에서 직접 담거나, " : ''}담임의 공통 수업 확인 또는 수강 명단 가져오기/초대가 필요해요.
                   {committed.commonPending > 0 && <span className="block text-xs mt-1">공통 수업 후보 {committed.commonPending}개가 담임 확인을 기다리고 있어요.</span>}
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">

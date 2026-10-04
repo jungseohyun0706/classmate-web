@@ -6,6 +6,7 @@ import { db } from '../../../lib/firebase'
 import { useUI } from '../../../components/ui/feedback'
 import SeriesEditor from '../../../components/timetable/SeriesEditor'
 import InvitePanel from '../../../components/timetable/InvitePanel'
+import GradePicker from '../../../components/timetable/GradePicker'
 import { formatYmdKo, ymdToIso } from '../../../lib/timetable/dates'
 import {
   asApiError,
@@ -139,7 +140,16 @@ export default function TeacherCourseDetailPage() {
 
   // 수정
   const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState({ title: '', subject: '', section: '', defaultRoomName: '', teacherNames: '', invitePolicy: 'auto' as InvitePolicy, catalogVisible: false })
+  const [form, setForm] = useState({
+    title: '',
+    subject: '',
+    section: '',
+    defaultRoomName: '',
+    teacherNames: '',
+    invitePolicy: 'auto' as InvitePolicy,
+    catalogVisible: false,
+    grades: [] as number[],
+  })
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<TeacherApiError | null>(null)
   // 종료
@@ -251,6 +261,7 @@ export default function TeacherCourseDetailPage() {
       teacherNames: course.teacherNames.join(', '),
       invitePolicy: course.invitePolicy,
       catalogVisible: course.catalogVisible,
+      grades: Array.isArray(course.grades) ? course.grades : [],
     })
     setSaveError(null)
     setEditing(true)
@@ -276,6 +287,7 @@ export default function TeacherCourseDetailPage() {
           .filter(Boolean),
         invitePolicy: form.invitePolicy,
         catalogVisible: form.catalogVisible,
+        grades: form.grades,
       })
       toast(r.already ? '바뀐 내용이 없어요.' : '수업 정보를 저장했어요.', 'success')
       setEditing(false)
@@ -519,8 +531,10 @@ export default function TeacherCourseDetailPage() {
                 <dd className="min-w-0 break-words">{course.defaultRoomName || '미정'}</dd>
                 <dt className="text-gray-500">초대 참여</dt>
                 <dd>{course.invitePolicy === 'approval' ? '선생님 승인 후 참여' : '바로 참여'}</dd>
-                <dt className="text-gray-500">학생 공개 목록</dt>
-                <dd>{course.catalogVisible ? '보임(학생이 찾아 신청 가능)' : '안 보임'}</dd>
+                <dt className="text-gray-500">학생 수업 담기</dt>
+                <dd>{course.catalogVisible ? '공개(학생이 골라 담을 수 있음)' : '공개 안 함'}</dd>
+                <dt className="text-gray-500">대상 학년</dt>
+                <dd>{Array.isArray(course.grades) && course.grades.length ? course.grades.map((g) => `${g}학년`).join(', ') : '정하지 않음(모든 학년)'}</dd>
                 <dt className="text-gray-500">반 전체 공통</dt>
                 <dd className="min-w-0 break-words">{detail.commonHomerooms.length ? detail.commonHomerooms.map((h) => h.label).join(', ') : '없음'}</dd>
                 {course.legacyGroupId && (
@@ -625,9 +639,13 @@ export default function TeacherCourseDetailPage() {
                   <span>선생님 승인 후 참여</span>
                 </label>
               </fieldset>
-              <label className="flex items-center gap-2 text-sm min-h-[44px]">
-                <input type="checkbox" checked={form.catalogVisible} onChange={(e) => setForm({ ...form, catalogVisible: e.target.checked })} className="h-5 w-5" />
-                <span>학생 &apos;공식 수업 찾기&apos; 목록에 보이기</span>
+              <GradePicker name="edit" value={form.grades} onChange={(grades) => setForm({ ...form, grades })} disabled={saving} />
+              <label className="flex items-start gap-2 text-sm min-h-[44px]">
+                <input type="checkbox" checked={form.catalogVisible} onChange={(e) => setForm({ ...form, catalogVisible: e.target.checked })} className="mt-0.5 h-5 w-5 shrink-0" />
+                <span className="break-keep">
+                  학생 수업 담기 목록에 공개
+                  <span className="block text-xs text-gray-500">켜면 학생이 &lsquo;수업 담기&rsquo;에서 찾아 직접 담을 수 있어요. 바꾸면 시간표 가져오기가 이 설정을 다시 덮어쓰지 않아요.</span>
+                </span>
               </label>
               {saveError && <ErrorBox err={saveError} title="저장하지 못했어요" onRetry={() => void save()} />}
               <div className="flex gap-2">

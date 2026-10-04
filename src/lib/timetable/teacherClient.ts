@@ -166,6 +166,8 @@ export type InvitePolicy = 'auto' | 'approval'
 export interface TeacherCourse extends Course {
   invitePolicy: InvitePolicy
   catalogVisible: boolean
+  /** 대상 학년(1~6). 비면 학년 미상 — 학생 '수업 담기'에서 모든 학년에 보임 */
+  grades: number[]
   legacyGroupId: string | null
   managerUids: string[]
   source: string
@@ -220,6 +222,7 @@ export interface CreateCourseInput {
   invitePolicy?: InvitePolicy
   catalogVisible?: boolean
   teacherNames?: string[]
+  grades?: number[]
 }
 
 export interface UpdateCourseInput {
@@ -230,6 +233,7 @@ export interface UpdateCourseInput {
   teacherNames?: string[]
   invitePolicy?: InvitePolicy
   catalogVisible?: boolean
+  grades?: number[]
 }
 
 /** addSeries 충돌(교사 uid 없음) */

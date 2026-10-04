@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { useUI } from '../../../components/ui/feedback'
+import GradePicker from '../../../components/timetable/GradePicker'
 import { formatYmdKo } from '../../../lib/timetable/dates'
 import {
   asApiError,
@@ -147,7 +148,15 @@ export default function TeacherCoursesPage() {
 
   // 수업 만들기
   const [createOpen, setCreateOpen] = useState(false)
-  const [form, setForm] = useState({ title: '', subject: '', section: '', defaultRoomName: '', invitePolicy: 'auto' as InvitePolicy, catalogVisible: false })
+  const [form, setForm] = useState({
+    title: '',
+    subject: '',
+    section: '',
+    defaultRoomName: '',
+    invitePolicy: 'auto' as InvitePolicy,
+    catalogVisible: false,
+    grades: [] as number[],
+  })
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<TeacherApiError | null>(null)
 
@@ -218,6 +227,7 @@ export default function TeacherCoursesPage() {
         defaultRoomName: form.defaultRoomName.trim() || null,
         invitePolicy: form.invitePolicy,
         catalogVisible: form.catalogVisible,
+        ...(form.grades.length ? { grades: form.grades } : {}),
       })
       toast('수업을 만들었어요. 차시와 초대를 설정해 주세요.', 'success')
       router.push(`/teacher/courses/${encodeURIComponent(r.courseId)}`)
@@ -427,11 +437,12 @@ export default function TeacherCoursesPage() {
                   <span>선생님 승인 후 참여</span>
                 </label>
               </fieldset>
+              <GradePicker name="create" value={form.grades} onChange={(grades) => setForm({ ...form, grades })} disabled={creating} />
               <label className="flex items-start gap-2 text-sm min-h-[44px]">
                 <input type="checkbox" checked={form.catalogVisible} onChange={(e) => setForm({ ...form, catalogVisible: e.target.checked })} className="mt-0.5 h-5 w-5 shrink-0" />
                 <span className="break-keep">
-                  학생 &apos;공식 수업 찾기&apos; 목록에 보이기
-                  <span className="block text-xs text-gray-500">켜면 같은 학교 학생이 목록에서 찾아 참여를 신청할 수 있어요.</span>
+                  학생 수업 담기 목록에 공개
+                  <span className="block text-xs text-gray-500">켜면 같은 학교 학생이 &lsquo;수업 담기&rsquo;에서 요일·교시로 찾아 직접 담을 수 있어요(위 참여 방식대로 바로 참여 또는 승인 후).</span>
                 </span>
               </label>
               {createError && <ErrorBox err={createError} title="수업을 만들지 못했어요" onRetry={() => void submitCreate()} />}

@@ -269,6 +269,21 @@ export function classIdFor(schoolCode: string, label: string): string | null {
   return m ? `${schoolCode}_${parseInt(m[1], 10)}_${parseInt(m[2], 10)}` : null
 }
 
+/**
+ * 수업 칸의 학급 표시('3-4' 등) → 대상 학년(1~6, 중복 없이 오름차순). 학년을 알 수 없는 표시는 건너뜀.
+ * 학생 '수업 담기'의 학년 거르기용 — 학급 표시가 하나도 없으면 [](학년 미상: 모든 학년에 보임)
+ */
+export function gradesFromClassLabels(labels: Array<string | null | undefined>): number[] {
+  const out: number[] = []
+  ;(labels || []).forEach((l) => {
+    const norm = normalizeClassLabel(l)
+    if (!norm) return
+    const g = parseInt(norm.split('-')[0], 10)
+    if (g >= 1 && g <= 6 && out.indexOf(g) < 0) out.push(g)
+  })
+  return out.sort((a, b) => a - b)
+}
+
 /** 'A_화작A' → { section: 'A', subject: '화작A' } (기존 cleanSubject와 같은 접두어 규칙 ^[A-Z]{1,2}_) */
 export function splitSectionPrefix(subject: string): { section: string | null; subject: string } {
   const s = cleanSpaces(subject)
@@ -1274,6 +1289,13 @@ export interface ExistingCourse {
   commonForHomerooms: string[]
   importCommon: string[] | null
   classLabels: string[]
+  /** 대상 학년(학급 표시에서 뽑은 값 또는 교사가 정한 값) — 없으면 [] */
+  grades: number[]
+  /** 학생 '수업 담기' 공개 여부·참여 방식(문서 값 그대로, 없으면 null) */
+  catalogVisible: boolean
+  invitePolicy: 'auto' | 'approval' | null
+  /** 공개·참여 방식을 마지막으로 정한 쪽: 'teacher'(수업 화면) / 'import'(가져오기) / null(표시 없는 예전 자료) */
+  catalogBy: string | null
   importBatchId: string | null
   importRetiredOn: Ymd | null
   revision: number | null
@@ -1331,7 +1353,37 @@ export interface PlanInput {
   confirmedTeacherLinks?: Array<{ nameKey: string; uid: string }>
   /** 발행 교사 uid — 이번 가져오기로 '새로 만드는' 수업의 managerUids에 넣음(기존 수업의 managerUids는 그대로) */
   publisherUid?: string | null
+  /**
+   * 학생 '수업 담기' 목록 공개 선택(확정 화면). 없으면(이전 화면·API 호출) 새 수업은 예전처럼 비공개·승인 후, 기존 수업은 그대로.
+   * 있으면 새 수업과 '가져오기가 공개 설정을 맡은' 기존 수업(importManagesCatalog)에만 catalogVisible·invitePolicy를 씀 —
+   * 교사가 수업 화면에서 정한 공개·참여 방식은 덮어쓰지 않음. 미리보기 비교 해시 밖(발행 교사·연결 확인처럼 확정 때만 얹음)
+   */
+  catalog?: CatalogPublishOption | null
 }
+
+export interface CatalogPublishOption {
+  /** 학생 '수업 담기' 목록에 공개 */
+  visible: boolean
+  /** 'auto' 바로 담기 / 'approval' 선생님 승인 후 */
+  policy: 'auto' | 'approval'
+}
+
+/**
+ * 가져오기가 이 기존 수업의 공개·참여 방식(catalogVisible·invitePolicy)을 정해도 되는지.
+ *  - 가져오기로 만든 수업(source 'import')만 — 직접 만든 수업·학급 공통 수업·이전 자료(legacy) 수업은 손대지 않음
+ *  - 교사가 수업 화면에서 공개·참여 방식을 바꾼 수업(catalogBy 'teacher')은 그대로
+ *  - 가져오기가 정한 값(catalogBy 'import')은 다음 가져오기가 다시 정함
+ *  - 표시가 없는 예전 가져오기 수업: 그때 가져오기가 쓰던 기본값(비공개·승인 후) 그대로일 때만 — 공개·바로 참여로 바뀌어 있으면
+ *    교사가 바꾼 것이므로 그대로 둠
+ */
+export function importManagesCatalog(c: Pick<ExistingCourse, 'source' | 'catalogBy' | 'catalogVisible' | 'invitePolicy'>): boolean {
+  if (c.source !== 'import') return false
+  if (c.catalogBy === 'teacher') return false
+  if (c.catalogBy === 'import') return true
+  return c.catalogVisible !== true && c.invitePolicy !== 'auto'
+}
+
+const sameNums = (a: number[], b: number[]): boolean => a.length === b.length && a.every((v, i) => v === b[i])
 
 export interface ImportPlan {
   items: CoursePlan[]
@@ -1408,6 +1460,19 @@ function courseSnapshot(c: ExistingCourse): Record<string, unknown> {
   return out
 }
 
+/**
+ * 수업 갱신 op의 restore: courseSnapshot + 이번에 쓰는 선택 필드(대상 학년·공개·참여 방식)의 이전 값.
+ * 선택 필드는 쓸 때만 restore에 넣음(쓰지 않는 수업의 원복이 그 값을 건드리지 않게)
+ */
+function courseRestore(ex: ExistingCourse, set: Record<string, unknown>): Record<string, unknown> {
+  const out = courseSnapshot(ex)
+  if (own(set, 'grades')) out.grades = ex.grades.length ? ex.grades.slice() : null
+  if (own(set, 'catalogVisible')) out.catalogVisible = ex.catalogVisible
+  if (own(set, 'invitePolicy')) out.invitePolicy = ex.invitePolicy
+  if (own(set, 'catalogBy')) out.catalogBy = ex.catalogBy
+  return out
+}
+
 function pick(obj: Record<string, unknown>, keys: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = dict()
   keys.forEach((k) => (out[k] = obj[k] === undefined ? null : obj[k]))
@@ -1467,6 +1532,10 @@ export function planImport(input: PlanInput): ImportPlan {
     (p) => p && typeof p.nameKey === 'string' && !!p.nameKey && typeof p.uid === 'string' && !!p.uid
   )
   const publisher = typeof input.publisherUid === 'string' && input.publisherUid ? input.publisherUid : null
+  const catalog =
+    input.catalog && typeof input.catalog.visible === 'boolean' && (input.catalog.policy === 'auto' || input.catalog.policy === 'approval')
+      ? { visible: input.catalog.visible, policy: input.catalog.policy }
+      : null
 
   const noteFuture = (c: ExistingCourse, importKey: string) =>
     relevantSeries(c, X)
@@ -1498,6 +1567,8 @@ export function planImport(input: PlanInput): ImportPlan {
       const teacherUids = sortedCopy(uniq(manualUids.concat(linked)))
       // 공통 수업: 가져오기는 후보(importCommon)만 기록. commonForHomerooms는 담임이 setCommon으로 정한 값 그대로(새 수업은 [])
       const importCommon = sortedCopy(cand.commonCandidates)
+      // 대상 학년: 이 수업 칸들의 학급 표시에서(없으면 필드 없음 — 학년 미상)
+      const grades = gradesFromClassLabels(cand.classLabels)
       const courseAfter: Record<string, unknown> = {
         title: cand.title,
         subject: cand.subject,
@@ -1513,12 +1584,24 @@ export function planImport(input: PlanInput): ImportPlan {
         importRetiredOn: null,
         revision: input.revision,
       }
+      if (grades.length) courseAfter.grades = grades
+      else if (ex && ex.grades.length) courseAfter.grades = null
+      // 공개·참여 방식: 기존 수업은 가져오기가 맡은 수업이고 값이 다를 때만(교사가 정한 값은 그대로)
+      const catalogUpdate =
+        !!ex && !!catalog && importManagesCatalog(ex) && (ex.catalogVisible !== catalog.visible || ex.invitePolicy !== catalog.policy)
+      if (catalogUpdate && catalog) {
+        courseAfter.catalogVisible = catalog.visible
+        courseAfter.invitePolicy = catalog.policy
+        courseAfter.catalogBy = 'import'
+      }
       if (ex) {
         if (ex.title !== cand.title || ex.subject !== cand.subject || (ex.section || null) !== (cand.section || null)) changes.push('title')
         if (!sameList(ex.teacherNames, cand.teacherNames) || !sameList(ex.teacherUids, teacherUids) || !sameList(ex.importLinkedUids, linked)) changes.push('teachers')
         // 공통 수업 변경 감지는 후보(importCommon) 차이로만 — commonForHomerooms는 가져오기와 무관
         if (!sameList(ex.importCommon || [], importCommon)) changes.push('common')
         if (!sameList(ex.classLabels, cand.classLabels)) changes.push('labels')
+        if (!sameNums(ex.grades, grades)) changes.push('grades')
+        if (catalogUpdate) changes.push('catalog')
         if (ex.status !== 'active' || ex.endedOn || ex.importRetiredOn) changes.push('reactivate')
       }
 
@@ -1586,7 +1669,7 @@ export function planImport(input: PlanInput): ImportPlan {
       if (status !== 'same') {
         ops.unshift(
           ex
-            ? { target: 'course', kind: 'update', id: courseId, courseId, set: courseAfter, restore: courseSnapshot(ex) }
+            ? { target: 'course', kind: 'update', id: courseId, courseId, set: courseAfter, restore: courseRestore(ex, courseAfter) }
             : {
                 target: 'course',
                 kind: 'create',
@@ -1603,8 +1686,10 @@ export function planImport(input: PlanInput): ImportPlan {
                   importKey: cand.importKey,
                   defaultRoomId: null,
                   defaultRoomName: null,
-                  invitePolicy: 'approval',
-                  catalogVisible: false,
+                  // 학생 '수업 담기' 공개: 확정 화면에서 고른 값(고르지 않은 이전 호출은 예전처럼 비공개·승인 후)
+                  invitePolicy: catalog ? catalog.policy : 'approval',
+                  catalogVisible: catalog ? catalog.visible : false,
+                  catalogBy: 'import',
                 },
                 restore: null,
               }
@@ -1832,6 +1917,15 @@ export function existingFromDocs(
     commonForHomerooms: strList(d.commonForHomerooms),
     importCommon: Array.isArray(d.importCommon) ? strList(d.importCommon) : null,
     classLabels: strList(d.classLabels),
+    grades: Array.isArray(d.grades)
+      ? (d.grades as unknown[])
+          .filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 6)
+          .filter((x, i, a) => a.indexOf(x) === i)
+          .sort((a, b) => a - b)
+      : [],
+    catalogVisible: d.catalogVisible === true,
+    invitePolicy: d.invitePolicy === 'auto' || d.invitePolicy === 'approval' ? d.invitePolicy : null,
+    catalogBy: strOrNull(d.catalogBy),
     importBatchId: strOrNull(d.importBatchId),
     importRetiredOn: ymdOrNull(d.importRetiredOn),
     revision: typeof d.revision === 'number' ? d.revision : null,
