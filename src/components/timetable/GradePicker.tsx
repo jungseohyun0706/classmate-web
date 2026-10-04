@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useId, type JSX } from 'react'
 
 /**
  * 대상 학년(1~6) 여러 개 고르기 — 교사 수업 만들기·정보 수정(선택 항목).
@@ -55,5 +55,46 @@ export default function GradePicker({
         학생 &lsquo;수업 담기&rsquo;에서 이 학년 학생에게 먼저 보여요. 고르지 않으면 모든 학년에 보여요.
       </span>
     </fieldset>
+  )
+}
+
+/** '2-1, 2-3' → ['2-1', '2-3'] (쉼표·가운뎃점·줄바꿈으로 나눔 — '2학년 1반'처럼 띄어 쓴 표시도 그대로 보내 서버가 정리·확인) */
+export function splitClassLabelsText(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .split(/[,，·\n]+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    )
+  )
+}
+
+/**
+ * 대상 반(선택) — 교사 수업 만들기·정보 수정. 학생 '수업 담기'에서 누구에게 보일지:
+ * 한 반이면 그 반 학생에게만(반별 수업 — 다른 반 학생은 '다른 반·학년 수업도 보기'로도 못 봄),
+ * 여러 반이면 그 반 학생에게 먼저(다른 반 학생도 보기로 찾을 수 있음), 비우면 대상 학년 규칙.
+ * 정하면 시간표 가져오기가 덮어쓰지 않음(classLabelsBy 'teacher')
+ */
+export function ClassLabelsInput({ value, onChange, disabled }: { value: string; onChange: (next: string) => void; disabled?: boolean }): JSX.Element {
+  const hintId = useId()
+  return (
+    <label className="block text-sm">
+      <span className="font-semibold">대상 반(선택)</span>
+      <input
+        type="text"
+        value={value}
+        maxLength={200}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="예: 2-1, 2-3"
+        autoComplete="off"
+        aria-describedby={hintId}
+        className="mt-1 block w-full min-h-[44px] rounded-lg border border-gray-300 px-3"
+      />
+      <span id={hintId} className="mt-1 block text-xs text-gray-500 break-keep">
+        한 반만 적으면 그 반 학생에게만 보여요(반별 수업). 여러 반이면 그 반 학생에게 먼저 보이고, 다른 반 학생도 &lsquo;다른 반·학년 수업도 보기&rsquo;로 찾을 수 있어요. 비우면 대상 학년으로 보여요.
+      </span>
+    </label>
   )
 }

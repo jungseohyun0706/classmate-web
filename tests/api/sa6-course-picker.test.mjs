@@ -4,6 +4,9 @@
 // 리뷰 반영: 선생님이 끝낸 수강은 빼고 다시 담아도 승인 대기(reapproval), 같은 수업 하루 한 번 빼기(left-today),
 //           요청 수 제한(정확히 max번까지), 교사가 정한 대상 학년(gradesBy)·수업 그룹 연결 수업은 가져오기가 덮어쓰지 않음,
 //           가져오기가 정리한 수업(importRetiredOn)은 공개 목록·담기에서 빠짐
+// 대상 반: 반별 수업(대상 반 하나 — 학급 시간표 'hr' 수업)은 그 반 학생에게만 보냄(다른 반 학생은 '다른 반·학년 수업도 보기'로도 못 봄 —
+//          공개 목록에 아예 없음, 담기도 other-class), 여러 반 선택 과목은 그 반 학생에게 기본(offer mine)·다른 반은 offer other,
+//          내 수강은 언제나 내 것, 교사가 정한 대상 반(classLabelsBy teacher)은 가져오기가 덮어쓰지 않음
 // 실행 전제: 실제 서버(BASE) + Firebase 에뮬레이터(Firestore 8080, Auth 9099) + NEIS mock
 // 사용: BASE=http://127.0.0.1:3200 node tests/api/sa6-course-picker.test.mjs
 // 모든 데이터는 에뮬레이터의 테스트용 가상 데이터이며 실제 학생 정보가 아닙니다.
@@ -63,6 +66,11 @@ async function seed() {
     { uid: 'stu1', email: 'stu1@sa6.kr', doc: St('박학생', 'S1_1_2', 1, 2, 3) },
     { uid: 'stuR', email: 'stur@sa6.kr', doc: St('정학생', 'S1_3_4', 3, 4, 9) }, // 요청 수 제한 확인용
     { uid: 'stuL', email: 'stul@sa6.kr', doc: St('한학생', 'S1_3_4', 3, 4, 10) }, // 빼기 요청 수 제한 확인용
+    // 대상 반 확인용 2학년 1·2·3반 학생 + 반 정보가 없는 2학년 학생
+    { uid: 's21', email: 's21@sa6.kr', doc: St('가이일', 'S1_2_1', 2, 1, 1) },
+    { uid: 's22', email: 's22@sa6.kr', doc: St('나이이', 'S1_2_2', 2, 2, 1) },
+    { uid: 's23', email: 's23@sa6.kr', doc: St('다이삼', 'S1_2_3', 2, 3, 1) },
+    { uid: 's2x', email: 's2x@sa6.kr', doc: { role: 'student', status: 'pending', name: '라반없', displayName: '라반없', grade: 2, ...S1 } },
   ])
   const now = Timestamp.now()
   await db.doc('classes/S1_3_4').set({ classId: 'S1_3_4', grade: 3, classNm: 4, teacherId: 'hr4', teacherName: '박담임', createdAt: now, ...S1 })
@@ -148,7 +156,10 @@ async function main() {
     JSON.stringify({ sci: byId[sci]?.grades, phys: byId[phys]?.grades, math1: byId[math1]?.grades, art: byId[art]?.grades }))
   check('C3', '칸 보기 자료: 요일·교시·교실', JSON.stringify(byId[sci]?.slots) === JSON.stringify([{ weekday: 2, period: 4, roomName: '과학실' }, { weekday: 4, period: 2, roomName: '과학실' }]), JSON.stringify(byId[sci]?.slots))
   const catKeys = byId[sci] ? Object.keys(byId[sci]).sort().join(',') : ''
-  check('C4', '공개 목록 수업 키: 학생 자료 없음(수강 인원·명단·교사 uid 없음, 내 상태만)', catKeys === 'courseId,defaultRoomName,grades,invitePolicy,myStatus,section,slots,subject,teacherNames,title', catKeys)
+  check('C4', '공개 목록 수업 키: 학생 자료 없음(수강 인원·명단·교사 uid 없음, 내 상태·보이는 방식만)', catKeys === 'courseId,defaultRoomName,grades,invitePolicy,myStatus,offer,section,slots,subject,teacherNames,title', catKeys)
+  check('C4b', "공개 목록의 '나'(판정에 쓴 내 학년·반)와 보내지 않은 수 — 직접 만든 수업(대상 반 없음)은 학년 규칙(3학년 학생: 1학년 수업은 offer other)",
+    JSON.stringify(cat.j.me) === JSON.stringify({ grade: 3, classLabel: '3-4' }) && cat.j.withheld === 0 && byId[sci]?.offer === 'mine' && byId[art]?.offer === 'mine' && byId[math1]?.offer === 'other',
+    JSON.stringify({ me: cat.j.me, withheld: cat.j.withheld, offers: [byId[sci]?.offer, byId[art]?.offer, byId[math1]?.offer] }))
   check('C5', '공개 목록에 다른 학생 uid·이름 없음', !/stuB|stu1|이학생|박학생|"tx"|"tz"/.test(JSON.stringify(cat.j)), '')
   const tGet = await courses('tx@sa6.kr', { action: 'get', courseId: sci })
   check('C6', '교사 상세에 대상 학년(grades)', tGet.status === 200 && JSON.stringify(tGet.j.course?.grades) === '[3]', JSON.stringify(tGet.j.course?.grades))
@@ -433,6 +444,86 @@ async function main() {
   check('R1', '정리된 수업(importRetiredOn ≤ 오늘)은 공개 목록에 없고 담기 course-ended(한 개 request 409), 앞으로 정리될 수업은 아직 보임',
     !idsR.includes(F1[K_ENG].id) && idsR.includes(F1[K_CLUB].id) && reqR.j.results?.[0]?.code === 'course-ended' && oneR.status === 409 && oneR.j.code === 'course-ended',
     JSON.stringify({ r: reqR.j.results, one: [oneR.status, oneR.j.code] }))
+
+  // ───── 8. 대상 반: 반별 수업은 그 반 학생에게만, 선택 과목은 그 반 학생에게 기본 ─────
+  // 같은 학년 학급 시간표 가져오기 → 반마다 국어 하나('hr|2-1|국어|국선생' …) + 2-1·2-3 선택 과목 고전 B
+  const PROWS = [
+    row(21, 1, 1, '국어', '국선생', '2-1'),
+    row(22, 1, 2, '국어', '국선생', '2-2'),
+    row(23, 1, 3, '국어', '국선생', '2-3'),
+    row(24, 3, 3, 'B_고전', '고전쌤', '2-1'),
+    row(25, 3, 3, 'B_고전', '고전쌤', '2-3'),
+  ]
+  const ip = await publish(PROWS, { visible: true, policy: 'auto' }, addDays(NEXT_MON, 29))
+  const P = await imported()
+  const K21 = P['hr|2-1|국어|국선생']
+  const K22 = P['hr|2-2|국어|국선생']
+  const K23 = P['hr|2-3|국어|국선생']
+  const EL = P['sec|고전|B|고전쌤']
+  check('P0', "가져오기: 반별 국어 3개도 공개(학생 목록은 반마다 거름) — 대상 반 classLabels(한 반)·classLabelsBy import, 선택 과목은 두 반",
+    ip.c.status === 200 && [K21, K22, K23, EL].every((c) => c && c.catalogVisible === true && c.classLabelsBy === 'import') &&
+      JSON.stringify(K21.classLabels) === '["2-1"]' && JSON.stringify(K22.classLabels) === '["2-2"]' && JSON.stringify(EL.classLabels) === '["2-1","2-3"]',
+    `${ip.c.status} ${ip.c.j.code || ''} ${JSON.stringify([K21, K22, K23, EL].map((c) => c && [c.title, c.catalogVisible, c.classLabels, c.classLabelsBy]))}`)
+  const catOf = async (email) => {
+    const r = await courses(email, { action: 'catalog' })
+    return { r, by: Object.fromEntries((r.j.courses || []).map((c) => [c.courseId, c])) }
+  }
+  const c21 = await catOf('s21@sa6.kr')
+  check('P1', "2-1 학생 공개 목록: 2-1 국어는 받음(offer mine·대상 반 2-1), 2-2·2-3 국어는 아예 없음('다른 반·학년 수업도 보기'로도 볼 수 없음) — 보내지 않은 수만 withheld",
+    c21.r.status === 200 && c21.by[K21.id]?.offer === 'mine' && JSON.stringify(c21.by[K21.id]?.classLabels) === '["2-1"]' && !c21.by[K22.id] && !c21.by[K23.id] &&
+      c21.r.j.withheld >= 2 && JSON.stringify(c21.r.j.me) === JSON.stringify({ grade: 2, classLabel: '2-1' }),
+    JSON.stringify({ ids: Object.keys(c21.by).length, k21: c21.by[K21.id]?.offer, k22: !!c21.by[K22.id], k23: !!c21.by[K23.id], withheld: c21.r.j.withheld, me: c21.r.j.me }))
+  check('P1b', '다른 반 국어의 내용(제목·교사·교실·id)은 응답 어디에도 없음', !JSON.stringify(c21.r.j).includes(K22.id) && !JSON.stringify(c21.r.j).includes(K23.id), '')
+  const c22 = await catOf('s22@sa6.kr')
+  const c23 = await catOf('s23@sa6.kr')
+  check('P2', "선택 과목(대상 반 2-1·2-3): 2-1·2-3 학생에게 기본(offer mine), 2-2 학생에게는 offer other(보기를 켜야 보임)",
+    c21.by[EL.id]?.offer === 'mine' && c23.by[EL.id]?.offer === 'mine' && c22.by[EL.id]?.offer === 'other' && JSON.stringify(c22.by[EL.id]?.classLabels) === '["2-1","2-3"]' &&
+      !!c22.by[K22.id] && !c22.by[K21.id] && !!c23.by[K23.id] && !c23.by[K22.id],
+    JSON.stringify({ s21: c21.by[EL.id]?.offer, s23: c23.by[EL.id]?.offer, s22: c22.by[EL.id]?.offer }))
+  const revP = await revNow()
+  const reqOther = await enroll('s21@sa6.kr', { action: 'requestMany', courseIds: [K22.id, K21.id, EL.id] })
+  const resP = Object.fromEntries((reqOther.j.results || []).map((r) => [r.courseId, r]))
+  const oneOther = await enroll('s21@sa6.kr', { action: 'request', courseId: K23.id })
+  const docOther = await db.doc(`schools/S1/enrollments/${K22.id}__s21`).get()
+  check('P3', '담기: 다른 반 국어는 other-class(수강 문서 없음 — 한 개 request도 403), 우리 반 국어·선택 과목은 담김',
+    reqOther.status === 200 && resP[K22.id]?.ok === false && resP[K22.id]?.code === 'other-class' && resP[K21.id]?.status === 'active' && resP[EL.id]?.status === 'active' &&
+      !docOther.exists && oneOther.status === 403 && oneOther.j.code === 'other-class' && (await revNow()) === revP + 1,
+    JSON.stringify({ r: reqOther.j.results, one: [oneOther.status, oneOther.j.code] }))
+  const reqOtherElect = await enroll('s22@sa6.kr', { action: 'requestMany', courseIds: [EL.id] })
+  check('P3b', "다른 반 학생도 선택 과목(여러 반 수업)은 담을 수 있음('보기'로 찾은 수업)", reqOtherElect.j.results?.[0]?.status === 'active', JSON.stringify(reqOtherElect.j.results))
+  const c2x = await catOf('s2x@sa6.kr')
+  const req2x = await enroll('s2x@sa6.kr', { action: 'requestMany', courseIds: [K21.id] })
+  check('P4', '반 정보가 없는 2학년 학생: 반별 국어 3개는 보내지 않음(내 반을 확인할 수 없음 — 담기도 other-class), 선택 과목은 학년으로 offer mine',
+    c2x.r.status === 200 && !c2x.by[K21.id] && !c2x.by[K22.id] && !c2x.by[K23.id] && c2x.r.j.withheld >= 3 && c2x.by[EL.id]?.offer === 'mine' &&
+      JSON.stringify(c2x.r.j.me) === JSON.stringify({ grade: 2, classLabel: null }) && req2x.j.results?.[0]?.code === 'other-class',
+    JSON.stringify({ me: c2x.r.j.me, withheld: c2x.r.j.withheld, el: c2x.by[EL.id]?.offer, req: req2x.j.results }))
+  // 선생님이 넣어 준 다른 반 수업(예: 반을 옮긴 학생)은 내 수강이라 언제나 내 것으로 보임
+  const addOther = await enroll('kim@sa6.kr', { action: 'add', courseId: K23.id, uid: 's21' })
+  const c21b = await catOf('s21@sa6.kr')
+  check('P5', '내 수강(선생님 추가)인 다른 반 반별 수업은 공개 목록에 내 것으로(myStatus active·offer mine) — 거르기와 상관없음',
+    addOther.status === 200 && c21b.by[K23.id]?.myStatus === 'active' && c21b.by[K23.id]?.offer === 'mine' && !c21b.by[K22.id],
+    `${addOther.status} ${addOther.j.code || ''} ${JSON.stringify(c21b.by[K23.id] && [c21b.by[K23.id].myStatus, c21b.by[K23.id].offer])}`)
+  // 교사가 대상 반을 정함 → classLabelsBy teacher, 다시 가져와도 그대로
+  const badL = await courses('kim@sa6.kr', { action: 'update', courseId: K22.id, classLabels: ['2반'] })
+  const setL = await courses('kim@sa6.kr', { action: 'update', courseId: K22.id, classLabels: ['2학년 2반', '203', '2-2'] })
+  const sameL = await courses('kim@sa6.kr', { action: 'update', courseId: K21.id, classLabels: ['2-1'] })
+  const K22a = (await db.doc(`schools/S1/courses/${K22.id}`).get()).data() || {}
+  check('P6', "교사 대상 반 수정: 알 수 없는 표시 400 invalid-class-label, '2학년 2반'·'203'·'2-2' → ['2-2','2-3'] classLabelsBy teacher, 같은 값은 변경 없음",
+    badL.status === 400 && badL.j.code === 'invalid-class-label' && setL.status === 200 && JSON.stringify(K22a.classLabels) === '["2-2","2-3"]' && K22a.classLabelsBy === 'teacher' &&
+      JSON.stringify(setL.j.course?.classLabels) === '["2-2","2-3"]' && sameL.status === 200 && sameL.j.already === true,
+    `${badL.status} ${badL.j.code} / ${setL.status} ${JSON.stringify(K22a.classLabels)} ${K22a.classLabelsBy} / ${sameL.j.already}`)
+  const ip2 = await publish(PROWS.concat([row(26, 4, 4, '국어', '국선생', '2-2')]), { visible: true, policy: 'auto' }, addDays(NEXT_MON, 36))
+  const P2 = await imported()
+  const c23b = await catOf('s23@sa6.kr')
+  const c21c = await catOf('s21@sa6.kr')
+  check('P7', '다시 가져오기(2-2 국어 차시 추가): 교사가 정한 대상 반은 그대로 → 2-2 국어는 이제 2-2·2-3 수업(2-3 학생 offer mine, 2-1 학생 offer other)',
+    ip2.c.status === 200 && JSON.stringify(P2['hr|2-2|국어|국선생'].classLabels) === '["2-2","2-3"]' && P2['hr|2-2|국어|국선생'].classLabelsBy === 'teacher' &&
+      c23b.by[K22.id]?.offer === 'mine' && c21c.by[K22.id]?.offer === 'other' && JSON.stringify(P2['hr|2-1|국어|국선생'].classLabels) === '["2-1"]',
+    `${ip2.c.status} ${ip2.c.j.code || ''} ${JSON.stringify([P2['hr|2-2|국어|국선생']?.classLabels, P2['hr|2-2|국어|국선생']?.classLabelsBy, c23b.by[K22.id]?.offer, c21c.by[K22.id]?.offer])}`)
+  const rbP = await api(API, kimTok, { action: 'rollback', batchId: ip2.c.j.batchId, expectedRevision: await revNow() })
+  const K22r = (await db.doc(`schools/S1/courses/${K22.id}`).get()).data() || {}
+  check('P8', '그 가져오기를 원복해도 교사가 정한 대상 반은 그대로', rbP.status === 200 && JSON.stringify(K22r.classLabels) === '["2-2","2-3"]' && K22r.classLabelsBy === 'teacher',
+    `${rbP.status} ${rbP.j.code || ''} ${JSON.stringify([K22r.classLabels, K22r.classLabelsBy])}`)
 
   for (const s of Object.values(sessions)) await s.close()
 }

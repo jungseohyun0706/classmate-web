@@ -304,11 +304,11 @@ async function main() {
   check('T39', '학생 공개 목록: 공개 수업만(영어 B·C), 비공개 생활과 과학 A·다른 학교 없음', cat.status === 200 && catIds.includes(engBId) && catIds.includes(engCId) && !catIds.includes(sciAId) && !catIds.includes(s2c.j.courseId), JSON.stringify(catIds))
   const catB = (cat.j.courses || []).find((c) => c.courseId === engBId)
   const catKeys = catB ? Object.keys(catB).sort().join(',') : ''
-  check('T46', '공개 목록에는 제목·과목·분반·교사 이름·요일 교시·교실만(명단·인원·uid 없음)',
+  check('T46', '공개 목록에는 제목·과목·분반·교사 이름·요일 교시·교실·나에게 보이는 방식(offer)만(명단·인원·uid 없음)',
     catB &&
       JSON.stringify(catB.slots.map((x) => [x.weekday, x.period])) === JSON.stringify([[2, 3], [4, 4]]) &&
       catB.slots[0].roomName === '3학년 5반 교실' &&
-      catKeys === 'courseId,defaultRoomName,invitePolicy,myStatus,section,slots,subject,teacherNames,title' &&
+      catKeys === 'courseId,defaultRoomName,invitePolicy,myStatus,offer,section,slots,subject,teacherNames,title' &&
       !JSON.stringify(cat.j).includes('stuA'),
     JSON.stringify(catB))
   const rq1 = await enroll('d@e2e.kr', { action: 'request', courseId: engBId })

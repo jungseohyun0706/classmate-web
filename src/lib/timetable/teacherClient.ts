@@ -168,6 +168,8 @@ export interface TeacherCourse extends Course {
   catalogVisible: boolean
   /** 대상 학년(1~6). 비면 학년 미상 — 학생 '수업 담기'에서 모든 학년에 보임 */
   grades: number[]
+  /** 대상 반('2-1'). 하나면 그 반 학생에게만, 여러 반이면 그 반 학생에게 먼저, 비면 대상 학년 규칙 */
+  classLabels?: string[]
   legacyGroupId: string | null
   managerUids: string[]
   source: string
@@ -223,6 +225,7 @@ export interface CreateCourseInput {
   catalogVisible?: boolean
   teacherNames?: string[]
   grades?: number[]
+  classLabels?: string[]
 }
 
 export interface UpdateCourseInput {
@@ -234,6 +237,7 @@ export interface UpdateCourseInput {
   invitePolicy?: InvitePolicy
   catalogVisible?: boolean
   grades?: number[]
+  classLabels?: string[]
 }
 
 /** addSeries 충돌(교사 uid 없음) */

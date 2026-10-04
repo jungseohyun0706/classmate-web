@@ -1458,6 +1458,7 @@ export default function TimetableImportPage() {
                       <b>학생 수업 담기 목록에 공개 (학생이 직접 골라 담기)</b>
                       <span className="mt-0.5 block text-xs text-gray-600">
                         학생이 &lsquo;수업 담기&rsquo;에서 학년·요일·교시로 이 수업을 찾아 직접 담아요. 담은 수업은 선생님이 바꾸는 시간표가 자동 반영돼요.
+                        한 반의 수업(예: 2-1 국어)은 그 반 학생에게만 보이고, 여러 반 수업(이동·선택)은 그 반 학생에게 먼저 보여요.
                         수업 화면에서 선생님이 공개·참여 방식을 직접 바꾼 수업은 그대로 둬요.
                       </span>
                     </span>

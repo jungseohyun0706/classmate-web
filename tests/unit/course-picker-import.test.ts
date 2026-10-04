@@ -7,6 +7,8 @@
  *    · 표시가 없는 예전 가져오기 수업은 기본값(비공개·승인 후) 그대로일 때만 — 공개 여부만 따르고 참여 방식은 '승인 후'
  *      (catalogBy 'import-legacy' — 다음 가져오기도 바로 담기로 올리지 않음). 공개·바로 참여로 바뀌어 있으면 교사가 바꾼 것으로 봄
  *  - 공개 선택이 없으면(이전 호출) 새 수업은 예전처럼 비공개·승인 후, 기존 수업은 그대로
+ *  - 대상 반(classLabels): 수업 칸들의 학급 표시(중복 없이 학년·반 순, classLabelsBy 'import') — 학생 '수업 담기'의 반 거르기
+ *    (하나면 그 반 학생에게만). 교사가 수업 화면에서 정한 대상 반(classLabelsBy 'teacher', 비운 값 포함)은 다시 가져와도·원복해도 그대로
  *  - 원복은 이전 값으로
  */
 import { describe, test } from 'node:test'
@@ -174,6 +176,75 @@ describe('가져오기 수업의 대상 학년(grades)', () => {
     assert.equal(db.courses[cid(K_KOR)].gradesBy, 'import')
     db.undo(p, X2)
     assert.equal(db.courses[cid(K_KOR)].grades, null)
+  })
+})
+
+describe('가져오기 수업의 대상 반(classLabels) — 출처 표시와 교사 값 보호', () => {
+  const r = build()
+  test("새 수업: 한 반 수업은 그 반 하나(반별 수업), 이동수업은 여러 반, classLabelsBy 'import' — 학급 표시가 없으면 표시도 없음", () => {
+    const db = new FakeDb()
+    db.apply(plan(r, db))
+    assert.deepEqual(db.courses[cid(K_KOR)].classLabels, ['3-4'])
+    assert.equal(db.courses[cid(K_KOR)].classLabelsBy, 'import')
+    assert.deepEqual(db.courses[cid(K_ENG)].classLabels, ['3-4', '3-5'])
+    assert.deepEqual(db.courses[cid(K_MATH)].classLabels, ['1-2'])
+    const club = db.courses[cid(noClassKey(r))]
+    assert.deepEqual(club.classLabels, [])
+    assert.ok(!('classLabelsBy' in club), JSON.stringify(club))
+  })
+  test("학급 표시가 바뀌면 함께 바뀜(변경 'labels') → 원복하면 이전 반으로", () => {
+    const db = new FakeDb()
+    db.apply(plan(r, db))
+    const moved = build(ROWS.concat([row(9, 4, 5, 'A_영어', '이영희', '3-6')]))
+    const p = plan(moved, db, { validFrom: X2, batchId: 'b2' })
+    const it = p.items.find((i) => i.importKey === K_ENG)
+    assert.ok(it?.changes.includes('labels'), JSON.stringify(it?.changes))
+    db.apply(p)
+    assert.deepEqual(db.courses[cid(K_ENG)].classLabels, ['3-4', '3-5', '3-6'])
+    db.undo(p, X2)
+    assert.deepEqual(db.courses[cid(K_ENG)].classLabels, ['3-4', '3-5'])
+    assert.equal(db.courses[cid(K_ENG)].classLabelsBy, 'import')
+  })
+  test("교사가 정한 대상 반(classLabelsBy teacher)은 다시 가져와도 그대로 — 학급 표시가 바뀌어도, 비운 값도. 쓰지도 원복하지도 않음", () => {
+    const db = new FakeDb()
+    db.apply(plan(r, db))
+    // 3-4 국어를 교사가 3-4·3-5 공동 수업으로, 영어 A는 교사가 대상 반을 비움(학년 규칙으로)
+    db.courses[cid(K_KOR)] = { ...db.courses[cid(K_KOR)], classLabels: ['3-4', '3-5'], classLabelsBy: 'teacher' }
+    db.courses[cid(K_ENG)] = { ...db.courses[cid(K_ENG)], classLabels: [], classLabelsBy: 'teacher' }
+    const same = plan(r, db, { validFrom: X2, batchId: 'b2' })
+    for (const k of [K_KOR, K_ENG]) assert.equal(same.items.find((i) => i.importKey === k)?.status, 'same', k)
+    // 다른 변경(차시 추가·학급 표시 변경)이 있어 수업을 갱신해도 대상 반은 쓰지 않음
+    const more = build(ROWS.concat([row(9, 4, 4, '국어', '김민수', '3-4'), row(10, 4, 5, 'A_영어', '이영희', '3-6')]))
+    const p2 = plan(more, db, { validFrom: X2, batchId: 'b3' })
+    for (const k of [K_KOR, K_ENG]) {
+      const it = p2.items.find((i) => i.importKey === k)
+      assert.equal(it?.status, 'update', k)
+      assert.ok(!it?.changes.includes('labels'), `${k} ${JSON.stringify(it?.changes)}`)
+      const op = it?.ops.find((o) => o.target === 'course')
+      assert.ok(op && !('classLabels' in op.set) && !('classLabelsBy' in op.set), JSON.stringify(op?.set))
+      assert.ok(op && !('classLabels' in (op.restore || {})) && !('classLabelsBy' in (op.restore || {})), JSON.stringify(op?.restore))
+    }
+    db.apply(p2)
+    assert.deepEqual(db.courses[cid(K_KOR)].classLabels, ['3-4', '3-5'])
+    assert.deepEqual(db.courses[cid(K_ENG)].classLabels, [])
+    db.undo(p2, X2)
+    assert.deepEqual(db.courses[cid(K_KOR)].classLabels, ['3-4', '3-5'], '원복도 교사가 정한 대상 반을 건드리지 않음')
+    assert.equal(db.courses[cid(K_KOR)].classLabelsBy, 'teacher')
+  })
+  test("예전 가져오기 수업(classLabelsBy 없음)은 가져오기가 맡음 — 다시 써도 'import' 표시, 원복하면 표시 없음(null)", () => {
+    const db = new FakeDb()
+    db.apply(plan(r, db))
+    delete db.courses[cid(K_KOR)].classLabelsBy
+    db.courses[cid(K_KOR)].classLabels = ['3-5']
+    const p = plan(r, db, { validFrom: X2, batchId: 'b2' })
+    const it = p.items.find((i) => i.importKey === K_KOR)
+    assert.deepEqual(it?.changes, ['labels'])
+    db.apply(p)
+    assert.deepEqual(db.courses[cid(K_KOR)].classLabels, ['3-4'])
+    assert.equal(db.courses[cid(K_KOR)].classLabelsBy, 'import')
+    db.undo(p, X2)
+    assert.deepEqual(db.courses[cid(K_KOR)].classLabels, ['3-5'])
+    assert.equal(db.courses[cid(K_KOR)].classLabelsBy, null)
   })
 })
 

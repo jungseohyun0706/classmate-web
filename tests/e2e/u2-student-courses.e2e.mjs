@@ -732,10 +732,37 @@ async function t34States(browser) {
   check('T34.8', '다시 시도 → 목록 복구', (await visible(art(mine, '문학'), 15000)) && (await visible(art(cat, '물리 D'), 15000)))
   await a.ctx.close()
 
-  // #invite 앵커: 초대 코드 입력칸으로 바로
-  const inv = await openAs(browser, 'k@u2.e2e.kr', '/student/courses#invite')
-  const invInput = region(inv.page, '초대 코드로 참여').getByLabel('초대 코드')
+  // #invite 앵커: 초대 코드 입력칸으로 바로. 초대 코드 섹션은 수업 담기 아래라, 공개 목록이 늦게 와서(여기서는 2.5초 늦춤)
+  // 위 섹션이 커져도 마지막에 초대 코드 섹션 자리(scroll-mt-20 = 80px)에 있어야 함 — 공개 목록이 자리 잡은 뒤 다시 맞춤
+  // Chrome의 스크롤 고정(overflow-anchor)이 위 섹션 변화를 대신 메워 주지 않게 끔 — iOS Safari처럼(스크롤 고정 없음) 확인
+  let catalogDelayed = 0
+  const slowCatalog = async (page) => {
+    await page.addInitScript(() => {
+      document.addEventListener('DOMContentLoaded', () => {
+        const st = document.createElement('style')
+        st.textContent = 'html, body, * { overflow-anchor: none !important; }'
+        document.head.appendChild(st)
+      })
+    })
+    await page.route('**/api/courses', async (route) => {
+      if ((route.request().postData() || '').includes('"catalog"')) {
+        catalogDelayed++
+        await sleep(2500)
+      }
+      return route.continue()
+    })
+  }
+  const inv = await openAs(browser, 'k@u2.e2e.kr', '/student/courses#invite', slowCatalog)
+  const invRegion = region(inv.page, '초대 코드로 참여')
+  const invInput = invRegion.getByLabel('초대 코드')
   await visible(invInput, 15000)
+  const pickerReady = await visible(region(inv.page, PICKER).getByRole('table', { name: '수업 담기 시간표 칸' }), 20000)
+  await sleep(700)
+  const ib = await invRegion.boundingBox()
+  const sc = await inv.page.evaluate(() => ({ y: Math.round(window.scrollY), max: Math.round(document.documentElement.scrollHeight - window.innerHeight), vh: window.innerHeight }))
+  check('U2.invite.0', '#invite로 열면 늦게 온 수업 담기 목록(위 섹션)이 그려진 뒤에도 초대 코드 섹션이 제자리(화면 위쪽 80px 또는 맨 아래까지 스크롤)에 보임',
+    catalogDelayed > 0 && pickerReady && !!ib && ib.y >= 0 && ib.y + ib.height <= sc.vh + 1 && (Math.abs(ib.y - 80) <= 24 || sc.y >= sc.max - 2),
+    JSON.stringify({ catalogDelayed, pickerReady, top: ib && Math.round(ib.y), h: ib && Math.round(ib.height), scrollY: sc.y, maxScroll: sc.max, vh: sc.vh }))
   check('U2.invite', '#invite → 초대 코드 입력칸에 바로 입력 가능(포커스)', await invInput.evaluate((el) => el === document.activeElement).catch(() => false))
   await invInput.fill('ABCD2345')
   await region(inv.page, '초대 코드로 참여').getByRole('button', { name: '초대 확인하기' }).click()

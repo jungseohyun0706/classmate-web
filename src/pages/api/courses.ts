@@ -39,6 +39,8 @@ import {
   toStudentNo,
 } from '../../lib/timetable/studentData'
 import { homeroomCourseId, homeroomSeriesId } from '../../lib/timetable/ids'
+import { normalizeClassLabel } from '../../lib/timetable/importMatch'
+import { cleanClassLabels, offerCatalog, studentScopeOf, type StudentScope } from '../../lib/timetable/coursePicker'
 import { planHomeroomSeries } from '../../lib/timetable/changes'
 import type { Course, LessonSeries, Weekday, Ymd } from '../../lib/timetable/types'
 
@@ -55,11 +57,18 @@ import type { Course, LessonSeries, Weekday, Ymd } from '../../lib/timetable/typ
 //                          기본 시간표 변경으로 옮긴 칸은 그대로 두고 학급 시간표가 바뀐 칸만 적용일부터 반영)
 // - list            교사: 내가 담당·관리하는 수업 + 내가 담임인 학급의 공통 수업
 // - get             담당 교사: 수업·차시·수강 인원·승인 대기 명단(명단은 담당 교사에게만)
-// - catalog         같은 학교 사용자(학생): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시·교실·대상 학년(grades, 알 때만)과
-//                   본인 수강 상태(myStatus)만 — 수강 인원·명단·교사 계정 없음. 학생 '수업 담기'(시간표 칸 보기·과목으로 찾기)가 씀.
-//                   시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남)은 빠짐
+// - catalog         같은 학교 사용자(학생): 현재 학기 공개 수업의 제목·과목·분반·교사 이름·요일 교시·교실·대상 학년(grades, 알 때만)·
+//                   대상 반(classLabels, 알 때만)·나에게 보이는 방식(offer 'mine'|'other')과 본인 수강 상태(myStatus)만 —
+//                   수강 인원·명단·교사 계정 없음. 학생 '수업 담기'(시간표 칸 보기·과목으로 찾기)가 씀.
+//                   시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남)은 빠짐.
+//                   학생에게는 다른 반의 반별 수업(대상 반이 하나이고 내 반이 아님 — courseOfferFor 'never')을 보내지 않음(개수만 withheld) —
+//                   '다른 반·학년 수업도 보기'로도 보이지 않음. 이미 내 수강(참여·승인 대기)인 수업은 언제나 보냄(offer 'mine').
+//                   me: { grade, classLabel } — 판정에 쓴 내 학년·반(users.grade·classNm)
 // create/update의 grades: 대상 학년(1~6) 목록 — 학생 '수업 담기'의 학년 거르기용(없으면 모든 학년에 보임).
 //   교사가 정하면 gradesBy:'teacher' → 시간표 가져오기가 다시 덮어쓰거나 지우지 않음.
+// create/update의 classLabels: 대상 반('2-1', '2학년 1반'·'201'도 받아 정리) 목록 — 하나면 그 반 학생에게만, 둘 이상이면 기본은 그 반 학생
+//   ('다른 반·학년 수업도 보기'로 다른 반도), 비면 대상 학년 규칙. 가져오기는 수업 칸의 학급 표시로 채움(classLabelsBy:'import').
+//   교사가 정하면 classLabelsBy:'teacher' → 시간표 가져오기가 다시 덮어쓰거나 지우지 않음.
 //   공개·참여 방식(catalogVisible·invitePolicy)이나 예전 수업 그룹(legacyGroupId)을 바꾸면 catalogBy:'teacher' → 가져오기가 공개 설정을 건드리지 않음
 // 모든 쓰기는 트랜잭션에서 schools/{s}.scheduleRevision을 1 올리고 감사 로그를 남깁니다.
 // 오류: { error, code } — 400 입력, 401, 403 권한, 404 대상 없음, 409 충돌·중복·종료, 500 server-error
@@ -142,6 +151,30 @@ function gradesField(body: Record<string, any>): number[] | undefined {
   return Array.from(out).sort((a, b) => a - b)
 }
 
+/**
+ * 대상 반 목록 — '2-1'·'2학년 1반'·'201'·'2-01'을 '2-1'로 정리(중복 없이 학년·반 순). 없으면 undefined, null·[]이면 [](지우기 —
+ * 대상 학년 규칙으로). 알 수 없는 표시는 400(다른 반으로 잘못 저장하지 않게)
+ */
+function classLabelsField(body: Record<string, any>): string[] | undefined {
+  if (!has(body, 'classLabels')) return undefined
+  const v = body.classLabels
+  if (v === null) return []
+  if (!Array.isArray(v) || v.length > 40) fail(400, 'invalid-field', '대상 반 형식이 올바르지 않아요.')
+  const out: string[] = []
+  for (const x of v as unknown[]) {
+    if (typeof x !== 'string' || x.length > 20) fail(400, 'invalid-field', '대상 반 형식이 올바르지 않아요.')
+    const l = normalizeClassLabel(x)
+    if (!l) fail(400, 'invalid-class-label', `대상 반 '${String(x).trim().slice(0, 12)}'을(를) 알 수 없어요. 예: 2-1`)
+    if (!out.includes(l as string)) out.push(l as string)
+  }
+  return cleanClassLabels(out)
+}
+
+/** 문서의 대상 반('2-1' 모양만, 중복 없이 학년·반 순). 없거나 비면 [] */
+function classLabelsOf(d: Record<string, any>): string[] {
+  return cleanClassLabels(d.classLabels)
+}
+
 /** 문서의 대상 학년(1~6 정수만, 중복 없이 오름차순). 없거나 비면 [] — 학년 미상 */
 function gradesOf(d: Record<string, any>): number[] {
   if (!Array.isArray(d.grades)) return []
@@ -176,6 +209,7 @@ function courseView(id: string, d: Record<string, any>) {
     invitePolicy: d.invitePolicy === 'approval' ? 'approval' : 'auto',
     catalogVisible: d.catalogVisible === true,
     grades: gradesOf(d),
+    classLabels: classLabelsOf(d),
     legacyGroupId: typeof d.legacyGroupId === 'string' ? d.legacyGroupId : null,
     managerUids: Array.isArray(d.managerUids) ? d.managerUids.filter((x: unknown) => typeof x === 'string') : [],
     source: typeof d.source === 'string' ? d.source : 'manual',
@@ -238,6 +272,7 @@ async function createCourse(ctx: Ctx) {
   const invitePolicy = policyField(b) ?? 'auto'
   const catalogVisible = boolField(b, 'catalogVisible') ?? false
   const grades = gradesField(b) ?? []
+  const classLabels = classLabelsField(b) ?? []
   const termDocs = await readTermDocs(ctx.db, ctx.schoolCode)
   const termId = has(b, 'termId') && b.termId !== null && b.termId !== '' ? termIdField(termDocs, b.termId) : termForDateFromDocs(termDocs, ctx.today).termId
   const legacyGroupId = has(b, 'legacyGroupId') && b.legacyGroupId ? await checkGroupOwner(ctx, idField(b.legacyGroupId, '수업 그룹')) : null
@@ -265,6 +300,8 @@ async function createCourse(ctx: Ctx) {
     catalogBy: 'teacher',
     // 대상 학년을 교사가 정함(가져오기가 덮어쓰지 않음)
     ...(grades.length ? { grades, gradesBy: 'teacher' } : {}),
+    // 대상 반을 교사가 정함(가져오기가 덮어쓰지 않음)
+    ...(classLabels.length ? { classLabels, classLabelsBy: 'teacher' } : {}),
     legacyGroupId,
     source: 'manual',
     createdBy: ctx.uid,
@@ -278,7 +315,7 @@ async function createCourse(ctx: Ctx) {
       actorUid: ctx.uid,
       target: `courses/${ref.id}`,
       revision: rev,
-      after: { title, subject, section, termId, commonForHomerooms, legacyGroupId, catalogVisible, invitePolicy, grades },
+      after: { title, subject, section, termId, commonForHomerooms, legacyGroupId, catalogVisible, invitePolicy, grades, classLabels },
     })
     return rev
   })
@@ -312,6 +349,8 @@ async function updateCourse(ctx: Ctx) {
   if (visible !== undefined) patch.catalogVisible = visible
   const grades = gradesField(b)
   if (grades !== undefined) patch.grades = grades
+  const classLabels = classLabelsField(b)
+  if (classLabels !== undefined) patch.classLabels = classLabels
   if (has(b, 'legacyGroupId')) patch.legacyGroupId = b.legacyGroupId ? await checkGroupOwner(ctx, idField(b.legacyGroupId, '수업 그룹')) : null
   if (!Object.keys(patch).length) fail(400, 'nothing-to-update', '바꿀 내용이 없어요.')
 
@@ -325,8 +364,8 @@ async function updateCourse(ctx: Ctx) {
     const before: Record<string, unknown> = {}
     const after: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(patch)) {
-      // 대상 학년은 정리한 값으로 비교(없음 = [] — 학년을 고르지 않은 수업을 저장해도 바뀐 것으로 보지 않음)
-      const curVal = k === 'grades' ? gradesOf(cur) : cur[k] ?? null
+      // 대상 학년·반은 정리한 값으로 비교(없음 = [] — 고르지 않은 수업을 저장해도 바뀐 것으로 보지 않음)
+      const curVal = k === 'grades' ? gradesOf(cur) : k === 'classLabels' ? classLabelsOf(cur) : cur[k] ?? null
       if (JSON.stringify(curVal) !== JSON.stringify(v ?? null)) {
         before[k] = curVal
         after[k] = v
@@ -335,10 +374,11 @@ async function updateCourse(ctx: Ctx) {
     if (!Object.keys(after).length) return { ok: true, already: true, courseId, course: courseView(courseId, cur), revision: rev0 }
     const rev = rev0 + 1
     // 교사가 공개·참여 방식이나 예전 수업 그룹(톡방·공지 — 학생이 담으면 그 그룹에도 들어감)을 바꾸면 표시 —
-    // 시간표 가져오기가 그 뒤로는 공개·참여 방식을 덮어쓰지 않음. 대상 학년을 바꾸면 gradesBy 표시(가져오기가 학년을 덮어쓰지 않음)
+    // 시간표 가져오기가 그 뒤로는 공개·참여 방식을 덮어쓰지 않음. 대상 학년·반을 바꾸면 gradesBy·classLabelsBy 표시(가져오기가 덮어쓰지 않음)
     const marker: Record<string, string> = {}
     if ('catalogVisible' in after || 'invitePolicy' in after || 'legacyGroupId' in after) marker.catalogBy = 'teacher'
     if ('grades' in after) marker.gradesBy = 'teacher'
+    if ('classLabels' in after) marker.classLabelsBy = 'teacher'
     tx.set(ref, { ...after, ...marker, revision: rev, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
     writeRevision(tx, ctx.db, ctx.schoolCode, rev)
     writeAudit(tx, ctx.db, ctx.schoolCode, { action: 'course.update', actorUid: ctx.uid, target: `courses/${courseId}`, revision: rev, before, after })
@@ -981,10 +1021,22 @@ async function catalog(ctx: Ctx) {
     const e = enrollmentFromDoc(d.data() || {})
     if (e.uid === ctx.uid) myStatus.set(e.courseId, e.status)
   })
+  // 대상 반·학년 판정(학생만 — 교사 등은 거르지 않음): 내 학년·반은 프로필(users.grade·classNm)
+  const me: StudentScope | null = ctx.u.user.role === 'student' ? studentScopeOf(ctx.u.user) : null
   // 운영 중인 수업만: 종료·종료일 지남, 시간표 가져오기(replace)가 정리한 수업(importRetiredOn 지남 — 차시 없는 빈 수업) 제외
-  const open = snap.docs.filter((d) => courseActiveOn(courseFromDoc(d.id, d.data() || {}), ctx.today) && !importRetiredBy(d.data() || {}, ctx.today))
+  const running = snap.docs
+    .filter((d) => courseActiveOn(courseFromDoc(d.id, d.data() || {}), ctx.today) && !importRetiredBy(d.data() || {}, ctx.today))
+    .map((d) => {
+      const v = d.data() || {}
+      return { courseId: d.id, v, classLabels: v.classLabels, grades: v.grades }
+    })
+  // 다른 반의 반별 수업(대상 반 하나·내 반 아님)은 보내지 않음 — '다른 반·학년 수업도 보기'로도 보이지 않음(그 반의 정규 수업).
+  // 이미 내 수강(참여·승인 대기)이면 언제나 보냄. 보내지 않은 수는 빈 화면 구분용으로만(withheld)
+  const { sent, withheld } = offerCatalog(running, me, (id) => myStatus.get(id))
+  const open = sent.map((x) => x.course)
+  const offerById = new Map(sent.map((x) => [x.course.courseId, x.offer] as const))
   const seriesSnaps = await Promise.all(
-    chunk(open.map((d) => d.id), 30).map((ids) => sref.collection('series').where('courseId', 'in', ids).get())
+    chunk(open.map((d) => d.courseId), 30).map((ids) => sref.collection('series').where('courseId', 'in', ids).get())
   )
   const slots = new Map<string, Array<{ weekday: number; period: number; roomName: string | null }>>()
   seriesSnaps.forEach((s) =>
@@ -999,23 +1051,32 @@ async function catalog(ctx: Ctx) {
   // 학생에게는 수업을 고르는 데 필요한 최소 정보만(수강 인원·명단·교사 계정은 없음)
   const courses = open
     .map((d) => {
-      const v = d.data() || {}
+      const v = d.v
       return {
-        courseId: d.id,
+        courseId: d.courseId,
         title: String(v.title || v.subject || '수업'),
         subject: String(v.subject || ''),
         section: v.section ? String(v.section) : null,
         teacherNames: Array.isArray(v.teacherNames) ? v.teacherNames.filter((x: unknown) => typeof x === 'string') : [],
         defaultRoomName: v.defaultRoomName ? String(v.defaultRoomName) : null,
         invitePolicy: v.invitePolicy === 'approval' ? 'approval' : 'auto',
-        slots: (slots.get(d.id) || []).sort((a, b) => a.weekday - b.weekday || a.period - b.period),
-        myStatus: myStatus.get(d.id) || null,
+        slots: (slots.get(d.courseId) || []).sort((a, b) => a.weekday - b.weekday || a.period - b.period),
+        myStatus: myStatus.get(d.courseId) || null,
         // 대상 학년(알 때만). 없으면 학년 미상 — 학생 화면이 모든 학년에 보여 줌
         ...(gradesOf(v).length ? { grades: gradesOf(v) } : {}),
+        // 대상 반(알 때만)
+        ...(classLabelsOf(v).length ? { classLabels: classLabelsOf(v) } : {}),
+        // 기본 보기에 보임('mine') / '다른 반·학년 수업도 보기'에서만('other')
+        offer: offerById.get(d.courseId) === 'other' ? 'other' : 'mine',
       }
     })
     .sort((a, b) => a.title.localeCompare(b.title, 'ko') || a.courseId.localeCompare(b.courseId))
-  return { term: { termId: term.termId, name: term.name, startDate: term.startDate, endDate: term.endDate, isDefault: term.isDefault }, courses }
+  return {
+    term: { termId: term.termId, name: term.name, startDate: term.startDate, endDate: term.endDate, isDefault: term.isDefault },
+    courses,
+    me: me || { grade: null, classLabel: null },
+    withheld,
+  }
 }
 
 // ───────────────────────── 핸들러 ─────────────────────────

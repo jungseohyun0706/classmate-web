@@ -29,6 +29,7 @@ import {
   toStudentNo,
 } from '../../lib/timetable/studentData'
 import { AttemptLimiter } from '../../lib/invitations'
+import { courseOfferFor, studentScopeOf } from '../../lib/timetable/coursePicker'
 import type { EnrollmentStatus, Ymd } from '../../lib/timetable/types'
 
 // POST /api/enrollments  { action, ... }
@@ -37,7 +38,7 @@ import type { EnrollmentStatus, Ymd } from '../../lib/timetable/types'
 // - request {courseId}            학생: 같은 학교·공개(catalogVisible)·운영 중(가져오기 종료일 지남 아님)·지금 학기 수업만.
 //                                  invitePolicy 'auto'면 active, 아니면 pending. 이미 active/pending이면 같은 결과(already).
 //                                  선생님이 끝내거나 거절한 수강은 다시 신청하면 승인 대기 — 표시(reapproval)가 남아 학생이 빼고 다시 담아도
-//                                  승인 대기(선생님이 승인·추가하면 표시를 지움)
+//                                  승인 대기(선생님이 승인·추가하면 표시를 지움). 다른 반의 반별 수업(대상 반 하나·내 반 아님)은 403 other-class
 // - requestMany {courseIds}       학생 '수업 담기': 최대 20개, 수업마다 request와 같은 규칙으로 따로 판정(일부 성공 가능) →
 //                                  results[{courseId, ok, status?, already?, code?, error?}]. 바뀐 게 있으면 scheduleRevision +1·감사 1건
 // - leave {courseId}              학생: 내가 직접 담은(source 'request') active·pending 수강만 빼기(to=오늘, 지난 날짜 그대로).
@@ -198,6 +199,7 @@ type RequestPlan =
  *  - 학교가 공개(catalogVisible)한 수업만, 운영 중(종료·종료일 지남·가져오기 종료일(importRetiredOn) 지남 아님),
  *    지금 학기 수업만(공개 목록과 같은 학기)
  *  - 수강 문서 id는 courseId__uid(결정적) — 이미 active/pending이면 같은 결과(already, 쓰기 없음)
+ *  - 다른 반의 반별 수업(courseOfferFor 'never' — 대상 반이 하나이고 내 반(users.grade·classNm)이 아님)은 other-class
  *  - invitePolicy 'auto'면 active(오늘부터), 아니면 pending. 선생님이 끝내거나 거절한 수강(ended + decidedBy)은 다시 승인 대기.
  *    그 표시(reapproval)는 다시 신청한 문서에도 남김 — 학생이 승인 대기를 빼도(leave는 decidedBy를 비움) 다음 신청이 다시 승인 대기.
  *    선생님이 승인·추가하면 표시를 지움(decide)
@@ -214,6 +216,11 @@ function planRequest(ctx: Ctx, courseId: string, course: Record<string, any> | n
     return { kind: 'error', status: 409, code: 'other-term', message: '이번 학기 수업만 담을 수 있어요.' }
   }
   if (cur && (cur.status === 'active' || cur.status === 'pending')) return { kind: 'already', status: cur.status as EnrollmentStatus }
+  // 다른 반의 반별 수업(대상 반이 하나이고 내 반이 아님 — 공개 목록에도 오지 않음)은 담을 수 없음. 그 반의 정규 수업이라
+  // 담으면 남의 반 시간표가 내 시간표가 됨. 내 반을 모르면(프로필에 반 없음) 확인할 수 없어 같은 판정
+  if (courseOfferFor({ classLabels: course.classLabels, grades: course.grades }, studentScopeOf(ctx.u.user)) === 'never') {
+    return { kind: 'error', status: 403, code: 'other-class', message: '다른 반의 반별 수업이라 담을 수 없어요. 우리 반 수업을 골라 주세요.' }
+  }
   // 선생님이 끝내거나 거절한 수강은 자동 참여 수업이어도 다시 승인을 받아야 함. 학생이 스스로 뺀 수강은 decidedBy가 없어 처음처럼 —
   // 단 선생님이 끝낸 뒤 다시 신청한 승인 대기를 학생이 뺀 경우는 reapproval 표시가 남아 있어 여전히 승인 대기
   const removedByTeacher = needsReapproval(cur)

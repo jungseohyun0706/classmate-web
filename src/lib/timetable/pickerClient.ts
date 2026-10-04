@@ -1,13 +1,14 @@
 /**
  * 학생 '수업 담기' — 클라이언트 API 호출(로그인 사용자 토큰) + 공개 목록 훅
- *  - POST /api/courses {action:'catalog'}            지금 학기 학교 공개 수업(대상 학년·요일 교시·교실·내 상태)
+ *  - POST /api/courses {action:'catalog'}            지금 학기 학교 공개 수업(대상 학년·대상 반·나에게 보이는 방식·요일 교시·교실·내 상태)
+ *                                                    — 다른 반의 반별 수업은 서버가 보내지 않음(개수만 withheld)
  *  - POST /api/enrollments {action:'requestMany'}     골라 담은 수업 한 번에(최대 20개) → 수업마다 결과
  *  - POST /api/enrollments {action:'leave'}           내가 직접 담은 수업 빼기
  * 계산은 coursePicker.ts(순수 함수)에 있습니다. 서버 전용 모듈을 import하지 마세요.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { auth } from '../firebase'
-import { mapRequestResults, normalizeCatalog, type PickerCourse, type PickerTerm, type PickResult } from './coursePicker'
+import { mapRequestResults, normalizeCatalog, type CatalogMe, type PickerCourse, type PickerTerm, type PickResult } from './coursePicker'
 
 export interface ApiFailure {
   ok: false
@@ -119,6 +120,8 @@ export function pickRequestErrorText(f: ApiFailure): string {
       return '학교 정보가 없어요. 초대 링크나 코드로 학급·수업에 먼저 참여해 주세요.'
     case 'course-ended':
       return '이미 끝난 수업이에요.'
+    case 'other-class':
+      return '다른 반의 반별 수업이라 담을 수 없어요. 우리 반 수업을 골라 주세요.'
     default:
       break
   }
@@ -170,7 +173,15 @@ export async function leaveCourse(courseId: string): Promise<{ ok: true; already
 
 export type CatalogState =
   | { status: 'loading' }
-  | { status: 'ready'; term: PickerTerm | null; courses: PickerCourse[] }
+  | {
+      status: 'ready'
+      term: PickerTerm | null
+      courses: PickerCourse[]
+      /** 서버가 판정에 쓴 내 학년·반 */
+      me: CatalogMe
+      /** 보내지 않은 다른 반의 반별 수업 수(빈 화면 구분용) */
+      withheld: number
+    }
   | { status: 'error'; failure: ApiFailure }
 
 /**
@@ -195,7 +206,9 @@ export function useCatalog(uid: string | null): { state: CatalogState; refreshin
       const n = normalizeCatalog(r.data)
       setLoaded({
         key: k,
-        value: n ? { status: 'ready', term: n.term, courses: n.courses } : { status: 'error', failure: { ok: false, status: 200, code: 'bad-response' } },
+        value: n
+          ? { status: 'ready', term: n.term, courses: n.courses, me: n.me, withheld: n.withheld }
+          : { status: 'error', failure: { ok: false, status: 200, code: 'bad-response' } },
       })
     })()
     return () => {

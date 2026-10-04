@@ -6,7 +6,7 @@ import { db } from '../../../lib/firebase'
 import { useUI } from '../../../components/ui/feedback'
 import SeriesEditor from '../../../components/timetable/SeriesEditor'
 import InvitePanel from '../../../components/timetable/InvitePanel'
-import GradePicker from '../../../components/timetable/GradePicker'
+import GradePicker, { ClassLabelsInput, splitClassLabelsText } from '../../../components/timetable/GradePicker'
 import { formatYmdKo, ymdToIso } from '../../../lib/timetable/dates'
 import {
   asApiError,
@@ -149,6 +149,7 @@ export default function TeacherCourseDetailPage() {
     invitePolicy: 'auto' as InvitePolicy,
     catalogVisible: false,
     grades: [] as number[],
+    classLabels: '',
   })
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<TeacherApiError | null>(null)
@@ -262,6 +263,7 @@ export default function TeacherCourseDetailPage() {
       invitePolicy: course.invitePolicy,
       catalogVisible: course.catalogVisible,
       grades: Array.isArray(course.grades) ? course.grades : [],
+      classLabels: Array.isArray(course.classLabels) ? course.classLabels.join(', ') : '',
     })
     setSaveError(null)
     setEditing(true)
@@ -288,6 +290,7 @@ export default function TeacherCourseDetailPage() {
         invitePolicy: form.invitePolicy,
         catalogVisible: form.catalogVisible,
         grades: form.grades,
+        classLabels: splitClassLabelsText(form.classLabels),
       })
       toast(r.already ? '바뀐 내용이 없어요.' : '수업 정보를 저장했어요.', 'success')
       setEditing(false)
@@ -535,6 +538,12 @@ export default function TeacherCourseDetailPage() {
                 <dd>{course.catalogVisible ? '공개(학생이 골라 담을 수 있음)' : '공개 안 함'}</dd>
                 <dt className="text-gray-500">대상 학년</dt>
                 <dd>{Array.isArray(course.grades) && course.grades.length ? course.grades.map((g) => `${g}학년`).join(', ') : '정하지 않음(모든 학년)'}</dd>
+                <dt className="text-gray-500">대상 반</dt>
+                <dd className="min-w-0 break-words">
+                  {Array.isArray(course.classLabels) && course.classLabels.length
+                    ? `${course.classLabels.join(', ')}${course.classLabels.length === 1 ? ' (이 반 학생에게만 보임)' : ''}`
+                    : '정하지 않음'}
+                </dd>
                 <dt className="text-gray-500">반 전체 공통</dt>
                 <dd className="min-w-0 break-words">{detail.commonHomerooms.length ? detail.commonHomerooms.map((h) => h.label).join(', ') : '없음'}</dd>
                 {course.legacyGroupId && (
@@ -640,6 +649,7 @@ export default function TeacherCourseDetailPage() {
                 </label>
               </fieldset>
               <GradePicker name="edit" value={form.grades} onChange={(grades) => setForm({ ...form, grades })} disabled={saving} />
+              <ClassLabelsInput value={form.classLabels} onChange={(classLabels) => setForm({ ...form, classLabels })} disabled={saving} />
               <label className="flex items-start gap-2 text-sm min-h-[44px]">
                 <input type="checkbox" checked={form.catalogVisible} onChange={(e) => setForm({ ...form, catalogVisible: e.target.checked })} className="mt-0.5 h-5 w-5 shrink-0" />
                 <span className="break-keep">

@@ -26,6 +26,8 @@ function pc(id: string, slots: Array<[number, number]>, extra: Partial<PickerCou
     slots: slots.map(([weekday, period]) => ({ weekday, period, roomName: null })),
     myStatus: null,
     grades: [],
+    classLabels: [],
+    offer: 'mine',
     ...extra,
   }
 }

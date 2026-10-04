@@ -1,9 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import {
+  activeOrPendingIds,
   buildPickerGrid,
   cartConflicts,
+  catalogEmptyState,
   cellKey,
-  filterByGrade,
+  filterForStudent,
   myCourseIds,
   pickerTitle,
   type CartConflict,
@@ -21,7 +23,11 @@ import { catalogLoadErrorText, type CatalogState } from '../../lib/timetable/pic
  *  - 시간표 칸 보기: 요일 × 교시 칸. 칸을 누르면 그 시간에 열리는 수업(제목·분반·선생님·교실)이 보이고 거기서 담음.
  *    칸에는 이미 내 시간표에 있는 수업(참여·시작 예정·승인 대기·반 공통)과 담은 수업이 표시됨
  *  - 과목으로 찾기: 과목명 검색 목록(검색은 목록만 좁힘 — 이름이 같다고 자동으로 담지 않음)
- *  - 기본은 내 학년 수업 + 대상 학년을 정하지 않은 수업. '다른 학년 수업도 보기'로 전부
+ *  - 기본은 내 학년·반 수업(서버가 정한 offer 'mine' — 대상 반·학년을 정하지 않은 수업 포함) + 이미 내 것인 수업.
+ *    '다른 반·학년 수업도 보기'로 다른 반·학년의 여러 반(선택·이동) 수업·다른 학년 수업도. 다른 반의 반별 수업은 서버가 보내지 않아
+ *    보기를 켜도 없음(그 반의 정규 수업)
+ *  - 빈 화면 구분: 학교에 공개 수업이 없음 / 내 학년·반 수업이 없음('다른 반·학년 수업도 보기' 버튼) / 요일·교시가 등록된 수업이 없음
+ *  - 390px: 칸 버튼은 44×44 이상 — 토·일까지 7칸이면 표가 자기 상자 안에서만 옆으로 밀리고(교시 열 고정) 화면은 옆으로 밀리지 않음
  *  - 담은 수업(장바구니): 같은 요일·교시 겹침(담은 수업끼리, 이미 듣는 수업과)을 경고로 보여 줌 — 그대로 담거나 뺄 수 있음
  *  - '내 시간표에 담기' → 화면(부모)이 확인 시트를 띄우고 한 번에 요청(requestMany) → 수업마다 결과
  *    (추가됨 / 선생님 승인 대기 / 이미 있음 / 담지 못함 + 이유)
@@ -48,8 +54,6 @@ export interface CoursePickerProps {
    * 아직 못 받았으면 null — 목록 응답의 myStatus를 씀
    */
   myStates: Map<string, MyCourseState> | null
-  /** 학생 학년(users.grade) — 모르면 null(학년 거르기 없음) */
-  studentGrade: number | null
   /**
    * 담은 수업 한 번에 담기(부모: 확인 시트 → requestMany → 내 시간표 다시 받기).
    * 수업마다 결과 / 요청 전체 실패면 { error } / 취소면 null
@@ -80,6 +84,22 @@ function teacherText(names: string[]): string {
 }
 
 const norm = (s: string): string => s.toLowerCase().replace(/\s+/g, '')
+
+/** '3-4' → '3학년 4반' */
+const labelKo = (l: string): string => {
+  const [g, c] = l.split('-')
+  return `${g}학년 ${c}반`
+}
+
+/** 대상 반 표시: '3-4반' / '3-4·3-5반' */
+function classesText(labels: string[]): string {
+  return `${labels.join('·')}반`
+}
+
+/** 칸 표 최소 너비: 교시 열(1.5rem) + 요일마다 44px 버튼 + 칸 사이(2px) — 이보다 좁으면 표 상자 안에서만 옆으로 밀림 */
+export function gridMinWidthPx(days: number): number {
+  return 24 + days * 44 + (days + 2) * 2
+}
 
 function Pill({ tone, children }: { tone: 'emerald' | 'amber' | 'sky' | 'gray' | 'white' | 'rose'; children: ReactNode }): JSX.Element {
   const cls = {
@@ -131,12 +151,13 @@ function CourseCard({
           <p className="mt-0.5 text-xs text-gray-600 break-keep wrap-anywhere">
             과목 {c.subject || c.title}
             {c.section ? ` · 분반 ${c.section}` : ''}
-            {c.grades.length ? ` · ${c.grades.map((g) => `${g}학년`).join(', ')}` : ''}
+            {c.classLabels.length ? ` · ${classesText(c.classLabels)}` : c.grades.length ? ` · ${c.grades.map((g) => `${g}학년`).join(', ')}` : ''}
           </p>
           <p className="text-xs text-gray-600 break-keep wrap-anywhere">{teacherText(c.teacherNames)}</p>
           <p className="text-xs text-gray-600 break-keep wrap-anywhere">{slotsText(c.slots)}</p>
           <div className="mt-1.5 flex flex-wrap gap-1">
             {c.invitePolicy === 'approval' ? <Pill tone="white">선생님 승인 필요</Pill> : <Pill tone="sky">바로 담기</Pill>}
+            {c.offer === 'other' && status !== 'active' && status !== 'pending' && <Pill tone="gray">다른 반·학년 수업</Pill>}
             {status === 'active' && <Pill tone="emerald">참여 중</Pill>}
             {status === 'pending' && <Pill tone="amber">승인 대기</Pill>}
             {inCart && <Pill tone="sky">담음</Pill>}
@@ -172,13 +193,14 @@ function CourseCard({
   )
 }
 
-export default function CoursePicker({ catalog, refreshing, onReloadCatalog, mine, myStates, studentGrade, onSubmit, onLeave, busy }: CoursePickerProps): JSX.Element {
+export default function CoursePicker({ catalog, refreshing, onReloadCatalog, mine, myStates, onSubmit, onLeave, busy }: CoursePickerProps): JSX.Element {
   const searchId = useId()
   const hintId = useId()
   const panelId = useId()
   const gradeId = useId()
   const [view, setView] = useState<PickerView>('grid')
-  const [showAllGrades, setShowAllGrades] = useState(false)
+  /** '다른 반·학년 수업도 보기' */
+  const [showOthers, setShowOthers] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [cart, setCart] = useState<string[]>([])
@@ -194,12 +216,25 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
   /** 방금 담은 결과 안내('내 시간표에 추가됐어요' 등) — 지금 상태와 같을 때만 보임(빼면 자연히 사라짐) */
   const [notice, setNotice] = useState<Record<string, 'active' | 'pending'>>({})
   const panelRef = useRef<HTMLDivElement | null>(null)
+  const cartRef = useRef<HTMLElement | null>(null)
+  /** 담은 수업 막대 높이(보일 때만) — 칸 목록·포커스가 막대 뒤로 숨지 않게 */
+  const [cartH, setCartH] = useState(0)
 
   const all = useMemo(() => (catalog.status === 'ready' ? catalog.courses : []), [catalog])
+  const me = catalog.status === 'ready' ? catalog.me : null
+  const withheld = catalog.status === 'ready' ? catalog.withheld : 0
   const byId = useMemo(() => new Map(all.map((c) => [c.courseId, c] as const)), [all])
-  const { shown, hidden } = useMemo(() => filterByGrade(all, studentGrade, showAllGrades), [all, studentGrade, showAllGrades])
   const mineList = useMemo(() => mine || [], [mine])
   const mineIds = useMemo(() => myCourseIds(mineList), [mineList])
+  // 거르기와 상관없이 내 것으로 보이는 수업: 칸에 있는 내 수업 + 내 시간표 자료의 참여·승인 대기(차시 없는 수업 포함) + 방금 담은 수업
+  const keepIds = useMemo(() => {
+    const out = activeOrPendingIds(myStates)
+    mineIds.forEach((id) => out.add(id))
+    Object.keys(recent).forEach((id) => out.add(id))
+    return out
+  }, [myStates, mineIds, recent])
+  const { shown, hidden } = useMemo(() => filterForStudent(all, showOthers, keepIds), [all, showOthers, keepIds])
+  const empty = catalogEmptyState({ total: all.length, withheld, shown: shown.length, hidden, showAll: showOthers })
   const grid = useMemo(() => buildPickerGrid(shown, mineList), [shown, mineList])
   const picks = useMemo(() => cart.map((id) => byId.get(id)).filter((c): c is PickerCourse => !!c), [cart, byId])
   const conflicts = useMemo(() => cartConflicts(picks, mineList), [picks, mineList])
@@ -263,6 +298,30 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
     return () => window.cancelAnimationFrame(raf)
   }, [selected])
 
+  // 담은 수업 막대 높이 — 보이는 동안만 잼(내용이 바뀌면 다시)
+  const cartShown = cart.length > 0 || !!results
+  useEffect(() => {
+    const el = cartRef.current
+    if (!cartShown || !el) return
+    const update = (): void => setCartH(Math.ceil(el.getBoundingClientRect().height))
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [cartShown])
+  const barH = cartShown ? cartH : 0
+  // 막대가 보이는 동안 문서 아래쪽 scroll-padding: 키보드로 옮겨 간 칸·버튼이 화면 아래 붙은 막대 뒤로 숨지 않게(사라지면 되돌림)
+  useEffect(() => {
+    if (!barH) return
+    const root = document.documentElement
+    const prev = root.style.scrollPaddingBottom
+    root.style.scrollPaddingBottom = `${barH + 8}px`
+    return () => {
+      root.style.scrollPaddingBottom = prev
+    }
+  }, [barH])
+
   const submit = async (): Promise<void> => {
     if (!picks.length || submitting) return
     setSubmitting(true)
@@ -291,7 +350,29 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
 
   const disabled = !!busy || submitting
   const q = norm(query)
-  const listShown = q ? shown.filter((c) => norm(`${c.title} ${c.subject}`).includes(q)) : shown
+  const matches = (c: PickerCourse): boolean => norm(`${c.title} ${c.subject}`).includes(q)
+  const listShown = q ? shown.filter(matches) : shown
+  // 검색어와 맞지만 기본 보기에서 숨긴(다른 반·학년) 수업 수 — '다른 반·학년 수업도 보기' 안내
+  const hiddenMatches = q && !showOthers ? all.filter(matches).length - listShown.length : 0
+
+  /** 내 학년·반 수업이 없을 때(공개 수업은 있음) — 칸 보기·과목으로 찾기 공통 */
+  const noMineBox = (canShowOthers: boolean): JSX.Element => (
+    <div role="status" className="rounded-xl bg-gray-50 px-4 py-5 text-center ring-1 ring-gray-100">
+      <p className="text-sm font-semibold text-gray-900 break-keep">내 학년·반 수업이 아직 없어요</p>
+      <p className="mt-1 text-xs leading-relaxed text-gray-500 break-keep">
+        {canShowOthers
+          ? `다른 반·학년 수업 ${hidden}개가 공개돼 있어요. 선택·이동 수업이면 아래 버튼을 눌러 찾아 담을 수 있어요.`
+          : me && me.classLabel === null && withheld > 0
+            ? '내 반 정보가 없어 반별 수업이 보이지 않아요. 담임 선생님의 학급 초대로 소속 학급을 등록해 주세요.'
+            : '다른 반의 반별 수업은 그 반 학생만 담을 수 있어요. 선생님께 받은 초대 코드로 참여하거나, 학교 밖 일정은 직접 입력할 수 있어요.'}
+      </p>
+      {canShowOthers && (
+        <button type="button" onClick={() => setShowOthers(true)} className={`${btnSecondary} mt-3`}>
+          다른 반·학년 수업도 보기
+        </button>
+      )}
+    </div>
+  )
   const selCell: GridCell | null = selected ? grid.cells[selected] || null : null
 
   const conflictText = (x: CartConflict): string => {
@@ -369,19 +450,26 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
 
       <div className="text-xs text-gray-600 break-keep" aria-live="polite">
         {catalog.term ? `${catalog.term.name} · ` : ''}
-        {studentGrade !== null && !showAllGrades
-          ? `${studentGrade}학년 수업과 학년을 정하지 않은 수업 ${shown.length}개`
-          : `학교가 공개한 수업 ${shown.length}개`}
-        {hidden > 0 ? ` · 다른 학년 수업 ${hidden}개 숨김` : ''}
+        {showOthers || !me || (me.grade === null && me.classLabel === null)
+          ? `학교가 공개한 수업 ${shown.length}개`
+          : me.classLabel
+            ? `내 학년·반(${labelKo(me.classLabel)}) 수업 ${shown.length}개`
+            : `내 학년(${me.grade}학년) 수업 ${shown.length}개`}
+        {hidden > 0 ? ` · 다른 반·학년 수업 ${hidden}개 숨김` : ''}
       </div>
-      {studentGrade !== null && (
+      {(hidden > 0 || showOthers) && (
         <label htmlFor={gradeId} className="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-gray-700">
-          <input id={gradeId} type="checkbox" checked={showAllGrades} onChange={(e) => setShowAllGrades(e.target.checked)} className="h-5 w-5 accent-emerald-600" />
-          다른 학년 수업도 보기
+          <input id={gradeId} type="checkbox" checked={showOthers} onChange={(e) => setShowOthers(e.target.checked)} className="h-5 w-5 accent-emerald-600" />
+          다른 반·학년 수업도 보기
         </label>
       )}
+      {withheld > 0 && me && me.classLabel === null && (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200 break-keep">
+          내 반 정보가 없어 반별 수업(한 반만 듣는 수업)은 보이지 않아요. 담임 선생님의 학급 초대로 소속 학급을 등록하면 우리 반 수업이 보여요.
+        </p>
+      )}
 
-      {all.length === 0 ? (
+      {empty?.kind === 'no-public' ? (
         <div role="status" className="rounded-xl bg-gray-50 px-4 py-5 text-center ring-1 ring-gray-100">
           <p className="text-sm font-semibold text-gray-900 break-keep">지금 학교에 공개된 수업이 없어요</p>
           <p className="mt-1 text-xs leading-relaxed text-gray-500 break-keep">
@@ -390,118 +478,135 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
         </div>
       ) : view === 'grid' ? (
         <div className="space-y-2">
-          {grid.periods.length === 0 ? (
-            <p role="status" className="rounded-xl bg-gray-50 px-4 py-4 text-center text-sm text-gray-600 ring-1 ring-gray-100 break-keep">
-              요일·교시가 등록된 수업이 아직 없어요 — &lsquo;과목으로 찾기&rsquo;에서 볼 수 있어요.
-            </p>
+          {empty?.kind === 'no-mine' ? (
+            noMineBox(empty.canShowOthers)
           ) : (
-            <table className="w-full table-fixed border-separate border-spacing-0.5" aria-label="수업 담기 시간표 칸">
-              <thead>
-                <tr>
-                  <th scope="col" className="w-7 text-[11px] font-medium text-gray-400">
-                    <span className="sr-only">교시</span>
-                  </th>
-                  {grid.weekdays.map((w) => (
-                    <th key={w} scope="col" className="py-1 text-xs font-semibold text-gray-600">
-                      {WD[w]}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {grid.periods.map((p) => (
-                  <tr key={p}>
-                    <th scope="row" className="text-center text-xs font-semibold text-gray-500">
-                      {p}
+            grid.periods.length === 0 && (
+              <p role="status" className="rounded-xl bg-gray-50 px-4 py-4 text-center text-sm text-gray-600 ring-1 ring-gray-100 break-keep">
+                요일·교시가 등록된 수업이 아직 없어요 — &lsquo;과목으로 찾기&rsquo;에서 볼 수 있어요.
+              </p>
+            )
+          )}
+          {grid.periods.length > 0 && (
+            // 칸 버튼은 44×44 이상: 요일이 많아(토·일) 상자보다 넓으면 이 상자 안에서만 옆으로 밀리고 교시 열은 고정(화면은 옆으로 밀리지 않음)
+            <div className="-mx-1 overflow-x-auto overscroll-x-contain px-1 pb-1" data-testid="picker-grid-scroll">
+              <table
+                className="w-full table-fixed border-separate border-spacing-0.5"
+                style={{ minWidth: `${gridMinWidthPx(grid.weekdays.length)}px` }}
+                aria-label="수업 담기 시간표 칸"
+              >
+                <thead>
+                  <tr>
+                    <th scope="col" className="sticky left-0 z-[1] w-6 bg-white text-[11px] font-medium text-gray-400">
                       <span className="sr-only">교시</span>
                     </th>
-                    {grid.weekdays.map((w) => {
-                      const k = cellKey(w, p)
-                      const cell = grid.cells[k]
-                      const mineHere = cell ? cell.mine : []
-                      const offered = cell ? cell.offered : []
-                      const others = offered.filter((c) => !mineIds.has(c.courseId) && statusOf(c) !== 'active' && statusOf(c) !== 'pending')
-                      const picked = offered.filter((c) => cart.includes(c.courseId))
-                      const conflict = conflictCells.has(k)
-                      const isSel = selected === k
-                      if (!mineHere.length && !offered.length) {
+                    {grid.weekdays.map((w) => (
+                      <th key={w} scope="col" className="py-1 text-xs font-semibold text-gray-600">
+                        {WD[w]}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {grid.periods.map((p) => (
+                    <tr key={p}>
+                      <th scope="row" className="sticky left-0 z-[1] bg-white text-center text-xs font-semibold text-gray-500">
+                        {p}
+                        <span className="sr-only">교시</span>
+                      </th>
+                      {grid.weekdays.map((w) => {
+                        const k = cellKey(w, p)
+                        const cell = grid.cells[k]
+                        const mineHere = cell ? cell.mine : []
+                        const offered = cell ? cell.offered : []
+                        const others = offered.filter((c) => !mineIds.has(c.courseId) && statusOf(c) !== 'active' && statusOf(c) !== 'pending')
+                        const picked = offered.filter((c) => cart.includes(c.courseId))
+                        const conflict = conflictCells.has(k)
+                        const isSel = selected === k
+                        if (!mineHere.length && !offered.length) {
+                          return (
+                            <td key={w} className="p-0">
+                              <span aria-hidden="true" className="block h-14 rounded-md bg-gray-50" />
+                            </td>
+                          )
+                        }
+                        const first = mineHere[0]
+                        const tone = conflict
+                          ? 'bg-rose-50 ring-rose-300'
+                          : picked.length
+                            ? 'bg-sky-50 ring-sky-300'
+                            : first
+                              ? first.status === 'pending'
+                                ? 'bg-amber-50 ring-amber-200'
+                                : 'bg-emerald-50 ring-emerald-200'
+                              : 'bg-white ring-gray-200'
+                        const label = [
+                          `${WD[w]}요일 ${p}교시`,
+                          mineHere.length ? `내 수업 ${mineHere.map((m) => `${m.title}${m.status === 'pending' ? '(승인 대기)' : ''}`).join(', ')}` : '',
+                          picked.length ? `담은 수업 ${picked.map((c) => pickerTitle(c)).join(', ')}` : '',
+                          others.length ? `고를 수 있는 수업 ${others.length}개` : '',
+                          conflict ? '겹침' : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')
                         return (
                           <td key={w} className="p-0">
-                            <span aria-hidden="true" className="block h-14 rounded-md bg-gray-50" />
+                            <button
+                              type="button"
+                              onClick={() => pickCell(k)}
+                              aria-label={label}
+                              aria-expanded={isSel}
+                              aria-controls={isSel ? panelId : undefined}
+                              className={`flex h-14 w-full min-w-11 flex-col items-stretch justify-between rounded-md px-1 py-1 text-left ring-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${tone} ${
+                                isSel ? 'outline-2 -outline-offset-2 outline-emerald-600' : ''
+                              }`}
+                            >
+                              <span className="block min-w-0 truncate text-[11px] font-semibold leading-tight text-gray-900">
+                                {first ? first.title : picked[0] ? pickerTitle(picked[0]) : ''}
+                              </span>
+                              <span className="flex min-w-0 items-center gap-0.5 text-[10px] leading-tight">
+                                {/* 좁은 칸이라 한 가지만: 겹침 > 담음 > 승인 대기 */}
+                                {conflict ? (
+                                  <span className="truncate font-bold text-rose-700">겹침</span>
+                                ) : picked.length > 0 ? (
+                                  <span className="truncate font-semibold text-sky-800">담음</span>
+                                ) : first?.status === 'pending' ? (
+                                  <span className="truncate font-semibold text-amber-800">대기</span>
+                                ) : null}
+                                {others.length > picked.length && (
+                                  <span className="ml-auto shrink-0 rounded bg-white px-1 font-semibold text-gray-600 ring-1 ring-gray-200">+{others.length - picked.length}</span>
+                                )}
+                              </span>
+                            </button>
                           </td>
                         )
-                      }
-                      const first = mineHere[0]
-                      const tone = conflict
-                        ? 'bg-rose-50 ring-rose-300'
-                        : picked.length
-                          ? 'bg-sky-50 ring-sky-300'
-                          : first
-                            ? first.status === 'pending'
-                              ? 'bg-amber-50 ring-amber-200'
-                              : 'bg-emerald-50 ring-emerald-200'
-                            : 'bg-white ring-gray-200'
-                      const label = [
-                        `${WD[w]}요일 ${p}교시`,
-                        mineHere.length ? `내 수업 ${mineHere.map((m) => `${m.title}${m.status === 'pending' ? '(승인 대기)' : ''}`).join(', ')}` : '',
-                        picked.length ? `담은 수업 ${picked.map((c) => pickerTitle(c)).join(', ')}` : '',
-                        others.length ? `고를 수 있는 수업 ${others.length}개` : '',
-                        conflict ? '겹침' : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')
-                      return (
-                        <td key={w} className="p-0">
-                          <button
-                            type="button"
-                            onClick={() => pickCell(k)}
-                            aria-label={label}
-                            aria-expanded={isSel}
-                            aria-controls={isSel ? panelId : undefined}
-                            className={`flex h-14 w-full min-w-0 flex-col items-stretch justify-between rounded-md px-1 py-1 text-left ring-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 ${tone} ${
-                              isSel ? 'outline-2 outline-offset-1 outline-emerald-600' : ''
-                            }`}
-                          >
-                            <span className="block min-w-0 truncate text-[11px] font-semibold leading-tight text-gray-900">
-                              {first ? first.title : picked[0] ? pickerTitle(picked[0]) : ''}
-                            </span>
-                            <span className="flex min-w-0 items-center gap-0.5 text-[10px] leading-tight">
-                              {/* 좁은 칸이라 한 가지만: 겹침 > 담음 > 승인 대기 */}
-                              {conflict ? (
-                                <span className="truncate font-bold text-rose-700">겹침</span>
-                              ) : picked.length > 0 ? (
-                                <span className="truncate font-semibold text-sky-800">담음</span>
-                              ) : first?.status === 'pending' ? (
-                                <span className="truncate font-semibold text-amber-800">대기</span>
-                              ) : null}
-                              {others.length > picked.length && (
-                                <span className="ml-auto shrink-0 rounded bg-white px-1 font-semibold text-gray-600 ring-1 ring-gray-200">+{others.length - picked.length}</span>
-                              )}
-                            </span>
-                          </button>
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
-          <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-600" aria-label="칸 표시 안내">
-            <li className="flex items-center gap-1">
-              <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-emerald-50 ring-1 ring-emerald-200" />내 수업
-            </li>
-            <li className="flex items-center gap-1">
-              <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-amber-50 ring-1 ring-amber-200" />승인 대기
-            </li>
-            <li className="flex items-center gap-1">
-              <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-sky-50 ring-1 ring-sky-300" />담음
-            </li>
-            <li className="flex items-center gap-1">
-              <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-rose-50 ring-1 ring-rose-300" />겹침
-            </li>
-            <li>+숫자: 고를 수 있는 수업</li>
-          </ul>
+          {grid.periods.length > 0 && grid.weekdays.length >= 7 && (
+            <p className="text-[11px] text-gray-500 break-keep sm:hidden">좁은 화면에서는 표를 옆으로 밀면 주말 칸이 보여요.</p>
+          )}
+          {grid.periods.length > 0 && (
+            <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-600" aria-label="칸 표시 안내">
+              <li className="flex items-center gap-1">
+                <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-emerald-50 ring-1 ring-emerald-200" />내 수업
+              </li>
+              <li className="flex items-center gap-1">
+                <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-amber-50 ring-1 ring-amber-200" />승인 대기
+              </li>
+              <li className="flex items-center gap-1">
+                <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-sky-50 ring-1 ring-sky-300" />담음
+              </li>
+              <li className="flex items-center gap-1">
+                <span aria-hidden="true" className="h-3 w-3 rounded-sm bg-rose-50 ring-1 ring-rose-300" />겹침
+              </li>
+              <li>+숫자: 고를 수 있는 수업</li>
+            </ul>
+          )}
           {noSlotCount > 0 && (
             <p className="text-xs text-gray-500 break-keep">요일·교시가 아직 없는 수업 {noSlotCount}개는 &lsquo;과목으로 찾기&rsquo;에서 볼 수 있어요.</p>
           )}
@@ -513,6 +618,7 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
               role="region"
               aria-label={`${WD[selCell.weekday]}요일 ${selCell.period}교시 수업`}
               className="scroll-mt-20 space-y-2 rounded-xl bg-gray-50 p-3 ring-1 ring-gray-200"
+              style={barH ? { scrollMarginBottom: `${barH + 8}px` } : undefined}
             >
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-bold text-gray-900">
@@ -566,16 +672,26 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
             </p>
           </div>
           {listShown.length === 0 ? (
-            <div role="status" className="rounded-xl bg-gray-50 px-4 py-5 text-center ring-1 ring-gray-100">
-              <p className="text-sm font-semibold text-gray-900 break-keep wrap-anywhere">
-                {q ? `‘${query.trim()}’와(과) 맞는 수업이 없어요` : '이 학년에 보이는 수업이 없어요'}
-              </p>
-              {q && (
-                <button type="button" onClick={() => setQuery('')} className={`${btnSecondary} mt-3`}>
-                  검색 지우기
-                </button>
-              )}
-            </div>
+            q ? (
+              <div role="status" className="rounded-xl bg-gray-50 px-4 py-5 text-center ring-1 ring-gray-100">
+                <p className="text-sm font-semibold text-gray-900 break-keep wrap-anywhere">{`‘${query.trim()}’와(과) 맞는 ${showOthers ? '' : '내 학년·반 '}수업이 없어요`}</p>
+                {hiddenMatches > 0 && (
+                  <p className="mt-1 text-xs leading-relaxed text-gray-500 break-keep">다른 반·학년 수업 중 {hiddenMatches}개가 맞아요.</p>
+                )}
+                <div className="mt-3 flex flex-wrap justify-center gap-2">
+                  {hiddenMatches > 0 && (
+                    <button type="button" onClick={() => setShowOthers(true)} className={btnPrimary}>
+                      다른 반·학년 수업도 보기
+                    </button>
+                  )}
+                  <button type="button" onClick={() => setQuery('')} className={btnSecondary}>
+                    검색 지우기
+                  </button>
+                </div>
+              </div>
+            ) : (
+              noMineBox(!showOthers && hidden > 0)
+            )
           ) : (
             <ul className="space-y-2" aria-label="학교 수업 목록">
               {listShown.map((c) => (
@@ -588,7 +704,13 @@ export default function CoursePicker({ catalog, refreshing, onReloadCatalog, min
 
       {/* 담은 수업(장바구니) — 섹션 아래쪽에 붙어 따라옴 */}
       {(cart.length > 0 || results) && (
-        <section aria-label="담은 수업" className="sticky bottom-0 z-10 -mx-4 border-t border-gray-200 bg-white/95 px-4 pb-3 pt-2 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur">
+        // 홈 표시줄(iPhone) 위로: 아래 여백은 safe-area와 0.75rem 중 큰 값. 막대 높이만큼 문서 scroll-padding을 두어(아래 effect)
+        // 키보드로 옮겨 간 칸·열린 칸 목록이 막대 뒤로 숨지 않음. 이 화면(/student/courses)에는 아래쪽 탭 막대가 없음
+        <section
+          ref={cartRef}
+          aria-label="담은 수업"
+          className="sticky bottom-0 z-10 -mx-4 border-t border-gray-200 bg-white/95 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-4px_12px_rgba(0,0,0,0.06)] backdrop-blur"
+        >
           {cart.length > 0 && (
             <>
               <div className="flex flex-wrap items-center gap-2">

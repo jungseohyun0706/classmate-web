@@ -11,7 +11,8 @@ import {
   buildPickerGrid,
   cellKey,
   cleanGrades,
-  filterByGrade,
+  courseOfferFor,
+  filterForStudent,
   myCourseStates,
   myLessonsFrom,
   normalizeCatalog,
@@ -38,6 +39,8 @@ function pc(id: string, slots: Array<[number, number, string?]>, extra: Partial<
     slots: slots.map(([weekday, period, roomName]) => ({ weekday, period, roomName: roomName ?? null })),
     myStatus: null,
     grades: [],
+    classLabels: [],
+    offer: 'mine',
     ...extra,
   }
 }
@@ -87,25 +90,25 @@ describe('공개 목록 정리(normalizeCatalog)', () => {
   })
 })
 
-describe('학년 거르기(filterByGrade)', () => {
+describe('학년 거르기 — 대상 반이 없는 수업(courseOfferFor 학년 규칙 → filterForStudent)', () => {
   const g3 = pc('g3', [[1, 1]], { grades: [3] })
   const g12 = pc('g12', [[1, 2]], { grades: [1, 2] })
   const unknown = pc('unknown', [[1, 3]])
   const g23 = pc('g23', [[1, 4]], { grades: [2, 3] })
-  const all = [g3, g12, unknown, g23]
+  const withOffer = (grade: number | null) => [g3, g12, unknown, g23].map((c) => ({ ...c, offer: courseOfferFor(c, { grade, classLabel: null }) as 'mine' | 'other' }))
 
   test('기본: 내 학년(3) 수업 + 학년 미상 수업은 언제나 보임', () => {
-    const r = filterByGrade(all, 3, false)
+    const r = filterForStudent(withOffer(3), false)
     assert.deepEqual(r.shown.map((c) => c.courseId), ['g3', 'unknown', 'g23'])
     assert.equal(r.hidden, 1)
   })
-  test('다른 학년 수업도 보기 → 전부', () => {
-    const r = filterByGrade(all, 3, true)
+  test('다른 반·학년 수업도 보기 → 전부', () => {
+    const r = filterForStudent(withOffer(3), true)
     assert.equal(r.shown.length, 4)
     assert.equal(r.hidden, 0)
   })
   test('내 학년을 모르면 거르지 않음', () => {
-    assert.equal(filterByGrade(all, null, false).shown.length, 4)
+    assert.equal(filterForStudent(withOffer(null), false).shown.length, 4)
   })
   test('학생 학년 값: 1~6 숫자·숫자 문자열만', () => {
     assert.equal(studentGradeOf(3), 3)

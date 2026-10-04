@@ -1288,7 +1288,10 @@ export interface ExistingCourse {
   /** 담임이 setCommon으로 정한 값 — 가져오기는 읽기만(미리보기 표시용) */
   commonForHomerooms: string[]
   importCommon: string[] | null
+  /** 대상 반(수업 칸의 학급 표시 '3-4' 또는 교사가 정한 값) — 학생 '수업 담기'의 반 거르기. 없으면 [] */
   classLabels: string[]
+  /** 대상 반을 정한 쪽: 'teacher'(수업 화면 — 가져오기가 덮어쓰거나 지우지 않음) / 'import' / null(표시 없음 — 가져오기가 맡음) */
+  classLabelsBy: string | null
   /** 대상 학년(학급 표시에서 뽑은 값 또는 교사가 정한 값) — 없으면 [] */
   grades: number[]
   /** 대상 학년을 정한 쪽: 'teacher'(수업 화면 — 가져오기가 덮어쓰거나 지우지 않음) / 'import' / null(표시 없음 — 가져오기가 맡음) */
@@ -1447,7 +1450,8 @@ function seriesSnapshot(s: ExistingSeries): Record<string, unknown> {
 
 /**
  * 가져오기가 기존 수업에 쓰는(그래서 원복 때 되돌리는) 필드. commonForHomerooms·managerUids는 담임·사람이 정하는 값이라
- * 가져오기가 쓰지도 되돌리지도 않습니다(공통 수업 후보는 importCommon).
+ * 가져오기가 쓰지도 되돌리지도 않습니다(공통 수업 후보는 importCommon). 대상 반(classLabels)·대상 학년·공개 설정은
+ * 교사가 정했으면 쓰지 않으므로 쓸 때만 restore에 넣음(courseRestore)
  */
 const COURSE_FIELDS = [
   'title',
@@ -1457,7 +1461,6 @@ const COURSE_FIELDS = [
   'teacherUids',
   'importLinkedUids',
   'importCommon',
-  'classLabels',
   'status',
   'endedOn',
   'importBatchId',
@@ -1474,7 +1477,6 @@ function courseSnapshot(c: ExistingCourse): Record<string, unknown> {
     teacherUids: c.teacherUids.slice(),
     importLinkedUids: c.importLinkedUids.slice(),
     importCommon: c.importCommon ? c.importCommon.slice() : null,
-    classLabels: c.classLabels.slice(),
     status: c.status,
     endedOn: c.endedOn,
     importBatchId: c.importBatchId,
@@ -1487,11 +1489,13 @@ function courseSnapshot(c: ExistingCourse): Record<string, unknown> {
 }
 
 /**
- * 수업 갱신 op의 restore: courseSnapshot + 이번에 쓰는 선택 필드(대상 학년·공개·참여 방식)의 이전 값.
- * 선택 필드는 쓸 때만 restore에 넣음(쓰지 않는 수업의 원복이 그 값을 건드리지 않게)
+ * 수업 갱신 op의 restore: courseSnapshot + 이번에 쓰는 선택 필드(대상 반·대상 학년·공개·참여 방식)의 이전 값.
+ * 선택 필드는 쓸 때만 restore에 넣음(쓰지 않는 수업의 원복이 그 값을 건드리지 않게 — 교사가 정한 대상 반 등)
  */
 function courseRestore(ex: ExistingCourse, set: Record<string, unknown>): Record<string, unknown> {
   const out = courseSnapshot(ex)
+  if (own(set, 'classLabels')) out.classLabels = ex.classLabels.slice()
+  if (own(set, 'classLabelsBy')) out.classLabelsBy = ex.classLabelsBy
   if (own(set, 'grades')) out.grades = ex.grades.length ? ex.grades.slice() : null
   if (own(set, 'gradesBy')) out.gradesBy = ex.gradesBy
   if (own(set, 'catalogVisible')) out.catalogVisible = ex.catalogVisible
@@ -1598,6 +1602,9 @@ export function planImport(input: PlanInput): ImportPlan {
       // 교사가 수업 화면에서 정한 대상 학년(gradesBy 'teacher')은 그대로 — 덮어쓰지도 지우지도 않음
       const teacherGrades = !!ex && ex.gradesBy === 'teacher'
       const grades = teacherGrades && ex ? ex.grades : gradesFromClassLabels(cand.classLabels)
+      // 대상 반: 이 수업 칸들의 학급 표시('3-4', 중복 없이 학년·반 순) — 학생 '수업 담기'의 반 거르기(하나면 그 반 학생에게만).
+      // 교사가 수업 화면에서 정한 대상 반(classLabelsBy 'teacher', 비운 값 포함)은 그대로 — 덮어쓰지도 지우지도 않음
+      const teacherLabels = !!ex && ex.classLabelsBy === 'teacher'
       const courseAfter: Record<string, unknown> = {
         title: cand.title,
         subject: cand.subject,
@@ -1606,12 +1613,16 @@ export function planImport(input: PlanInput): ImportPlan {
         teacherUids,
         importLinkedUids: linked,
         importCommon,
-        classLabels: cand.classLabels.slice(),
         status: 'active',
         endedOn: null,
         importBatchId: input.batchId,
         importRetiredOn: null,
         revision: input.revision,
+      }
+      if (!teacherLabels) {
+        courseAfter.classLabels = cand.classLabels.slice()
+        if (cand.classLabels.length) courseAfter.classLabelsBy = 'import'
+        else if (ex && ex.classLabelsBy) courseAfter.classLabelsBy = null
       }
       if (!teacherGrades) {
         if (grades.length) {
@@ -1635,7 +1646,7 @@ export function planImport(input: PlanInput): ImportPlan {
         if (!sameList(ex.teacherNames, cand.teacherNames) || !sameList(ex.teacherUids, teacherUids) || !sameList(ex.importLinkedUids, linked)) changes.push('teachers')
         // 공통 수업 변경 감지는 후보(importCommon) 차이로만 — commonForHomerooms는 가져오기와 무관
         if (!sameList(ex.importCommon || [], importCommon)) changes.push('common')
-        if (!sameList(ex.classLabels, cand.classLabels)) changes.push('labels')
+        if (!teacherLabels && !sameList(ex.classLabels, cand.classLabels)) changes.push('labels')
         if (!sameNums(ex.grades, grades)) changes.push('grades')
         if (catalogUpdate) changes.push('catalog')
         if (ex.status !== 'active' || ex.endedOn || ex.importRetiredOn) changes.push('reactivate')
@@ -1953,6 +1964,7 @@ export function existingFromDocs(
     commonForHomerooms: strList(d.commonForHomerooms),
     importCommon: Array.isArray(d.importCommon) ? strList(d.importCommon) : null,
     classLabels: strList(d.classLabels),
+    classLabelsBy: strOrNull(d.classLabelsBy),
     grades: Array.isArray(d.grades)
       ? (d.grades as unknown[])
           .filter((x): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= 6)

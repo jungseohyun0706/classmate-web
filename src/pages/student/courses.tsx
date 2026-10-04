@@ -35,7 +35,6 @@ import {
   myLessonsFrom,
   pickerTitle,
   pickSummaryText,
-  studentGradeOf,
   type CartConflict,
   type PickerCourse,
   type PickResult,
@@ -561,13 +560,14 @@ export default function StudentCoursesPage(): JSX.Element {
   // 수업 담기 카드의 내 상태·출처(차시 없는 수업·끝낸 수강 포함)
   const myStates = useMemo(() => (payload && uid ? myCourseStates(payload, uid, today) : null), [payload, uid, today])
   const catalogCourses = useMemo(() => (catalog.state.status === 'ready' ? catalog.state.courses : null), [catalog.state])
-  const studentGrade = studentGradeOf(profile?.grade)
   const activeIds = useMemo(() => (payload ? new Set(activeCoursesOn(payload, today, uid).map((c) => c.courseId)) : null), [payload, today, uid])
   const canLinkAny = useMemo(() => (payload ? linkableCourses(payload, today, uid).length > 0 : false), [payload, today, uid])
   const entries = useMemo(() => sortEntries(entriesState.entries), [entriesState.entries])
   const editingEntry = editor && editor.mode !== 'create' ? entries.find((e) => e.entryId === editor.entryId) ?? null : null
 
-  // 해시 앵커(#invite·#mine·#catalog·#personal)로 들어오면 그 섹션으로. 자료가 들어와 위 섹션 높이가 바뀌면 한 번 더 맞춤(사용자가 스크롤하기 전까지)
+  // 해시 앵커(#invite·#mine·#catalog·#personal)로 들어오면 그 섹션으로. 자료가 들어와 위 섹션 높이가 바뀌면 한 번 더 맞춤(사용자가 스크롤하기 전까지).
+  // 위쪽 섹션은 따로따로 늦게 채워짐 — 참여 중인 수업(내 시간표 자료)·수업 담기(공개 목록, 칸 표가 그 뒤에 그려짐)·직접 입력 —
+  // 그래서 셋이 각각 자리를 잡을 때마다 다시 맞춤(#invite는 수업 담기 아래라, 공개 목록이 늦게 오면 밀려 내려가므로)
   const userScrolledRef = useRef(false)
   const scrolledForRef = useRef<string>('')
   useEffect(() => {
@@ -585,17 +585,25 @@ export default function StudentCoursesPage(): JSX.Element {
   }, [])
   const mineSettled = !!payload || (!!tt.error && !tt.loading)
   const entriesSettled = entriesState.status !== 'loading'
+  const catalogSettled = catalog.state.status !== 'loading'
   useEffect(() => {
     if (gate.kind !== 'ok') return
     const id = hash.replace(/^#/, '')
     if (!(SECTION_IDS as readonly string[]).includes(id)) return
-    const stage = `${id}|${mineSettled ? 1 : 0}|${entriesSettled ? 1 : 0}`
+    const stage = `${id}|${mineSettled ? 1 : 0}|${entriesSettled ? 1 : 0}|${catalogSettled ? 1 : 0}`
     if (scrolledForRef.current === stage) return
     if (scrolledForRef.current && userScrolledRef.current) return
     scrolledForRef.current = stage
-    const raf = window.requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start' }))
-    return () => window.cancelAnimationFrame(raf)
-  }, [gate.kind, hash, mineSettled, entriesSettled])
+    // 두 프레임 뒤: 자료가 들어온 렌더 다음에 그려지는 칸 표·목록까지 자리를 잡은 뒤 맞춤
+    let raf2 = 0
+    const raf = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start' }))
+    })
+    return () => {
+      window.cancelAnimationFrame(raf)
+      window.cancelAnimationFrame(raf2)
+    }
+  }, [gate.kind, hash, mineSettled, entriesSettled, catalogSettled])
 
   // 같은 화면 안에서 앵커를 바꾸면(상태 카드의 버튼 등) 기억해 둠
   useEffect(() => {
@@ -978,7 +986,6 @@ export default function StudentCoursesPage(): JSX.Element {
             onReloadCatalog={catalog.reload}
             mine={myLessons}
             myStates={myStates}
-            studentGrade={studentGrade}
             busy={!!leaving}
             onSubmit={pickCourses}
             onLeave={leavePicked}

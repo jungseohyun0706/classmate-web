@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { useUI } from '../../../components/ui/feedback'
-import GradePicker from '../../../components/timetable/GradePicker'
+import GradePicker, { ClassLabelsInput, splitClassLabelsText } from '../../../components/timetable/GradePicker'
 import { formatYmdKo } from '../../../lib/timetable/dates'
 import {
   asApiError,
@@ -156,6 +156,7 @@ export default function TeacherCoursesPage() {
     invitePolicy: 'auto' as InvitePolicy,
     catalogVisible: false,
     grades: [] as number[],
+    classLabels: '',
   })
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<TeacherApiError | null>(null)
@@ -228,6 +229,7 @@ export default function TeacherCoursesPage() {
         invitePolicy: form.invitePolicy,
         catalogVisible: form.catalogVisible,
         ...(form.grades.length ? { grades: form.grades } : {}),
+        ...(splitClassLabelsText(form.classLabels).length ? { classLabels: splitClassLabelsText(form.classLabels) } : {}),
       })
       toast('수업을 만들었어요. 차시와 초대를 설정해 주세요.', 'success')
       router.push(`/teacher/courses/${encodeURIComponent(r.courseId)}`)
@@ -438,6 +440,7 @@ export default function TeacherCoursesPage() {
                 </label>
               </fieldset>
               <GradePicker name="create" value={form.grades} onChange={(grades) => setForm({ ...form, grades })} disabled={creating} />
+              <ClassLabelsInput value={form.classLabels} onChange={(classLabels) => setForm({ ...form, classLabels })} disabled={creating} />
               <label className="flex items-start gap-2 text-sm min-h-[44px]">
                 <input type="checkbox" checked={form.catalogVisible} onChange={(e) => setForm({ ...form, catalogVisible: e.target.checked })} className="mt-0.5 h-5 w-5 shrink-0" />
                 <span className="break-keep">

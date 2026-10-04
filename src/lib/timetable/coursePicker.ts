@@ -2,9 +2,12 @@
  * 학생 '수업 담기(골라 담기)' — 순수 함수 (Firebase·React 의존 없음, 단위 테스트 대상)
  *
  * 학생은 학교가 공개한 공식 수업(/api/courses catalog) 중에서 골라 담고, 담은 수업은 선생님이 발행한 변경이 자동 반영됩니다.
- * 이 모듈은 화면이 쓰는 계산만 합니다.
- *  - normalizeCatalog: 공개 목록 응답 정리(대상 학년 grades 포함)
- *  - filterByGrade: 내 학년 수업 + 학년 미상 수업(기본), '다른 학년 수업도 보기'면 전부
+ * 이 모듈은 화면이 쓰는 계산만 합니다(서버 catalog도 대상 반·학년 판정 courseOfferFor를 같이 씀).
+ *  - normalizeCatalog: 공개 목록 응답 정리(대상 학년 grades·대상 반 classLabels·나에게 보이는 방식 offer 포함)
+ *  - courseOfferFor: 수업을 이 학생에게 기본으로 보일지('mine') / '다른 반·학년 수업도 보기'에서만('other') / 절대 안 보일지('never' —
+ *    다른 반의 반별 수업). 서버가 'never'는 보내지 않음
+ *  - filterForStudent: 기본은 'mine' + 이미 내 것인 수업, '다른 반·학년 수업도 보기'면 전부 — 수업 담기 화면과 직접 입력 안내가 같이 씀
+ *  - catalogEmptyState: 빈 화면 구분(학교에 공개 수업이 없음 / 내 학년·반 수업이 없음 / 요일·교시가 없음)
  *  - myLessonsFrom: 내 시간표 자료(/api/timetable/me)에서 이미 내 것인 수업의 요일·교시(참여·시작 예정·승인 대기·반 공통)
  *  - myCourseStates: 수업별 내 상태·출처(차시 없는 수업·끝낸 수강 포함) — 카드 상태와 '빼기' 표시
  *  - buildPickerGrid: 요일 × 교시 칸(월~금, 토·일은 차시가 있을 때만, 교시는 있는 것 중 가장 큰 교시까지)
@@ -42,6 +45,21 @@ export interface PickerCourse {
   myStatus: PickStatus | null
   /** 대상 학년(1~6). 비면 학년 미상 — 모든 학년에 보임 */
   grades: number[]
+  /** 대상 반('2-1'). 하나면 그 반의 반별 수업(그 반 학생에게만 옴), 둘 이상이면 이동·선택 수업, 비면 반 정보 없음 */
+  classLabels: string[]
+  /**
+   * 서버가 정한 나에게 보이는 방식: 'mine' 기본으로 보임(내 반·학년, 반·학년 미상, 이미 내 수강) /
+   * 'other' '다른 반·학년 수업도 보기'에서만. 다른 반의 반별 수업('never')은 서버가 보내지 않음
+   */
+  offer: 'mine' | 'other'
+}
+
+/** catalog 응답의 '나'(학생 프로필 기준 — 거르기 안내 문구용) */
+export interface CatalogMe {
+  /** 내 학년(users.grade) — 모르면 null */
+  grade: number | null
+  /** 내 반('2-1' — users.grade + users.classNm) — 모르면 null(반별 수업이 보이지 않음) */
+  classLabel: string | null
 }
 
 export interface PickerTerm {
@@ -98,11 +116,22 @@ export function normalizeCatalogCourse(v: unknown): PickerCourse | null {
     slots,
     myStatus: st === 'active' || st === 'pending' || st === 'ended' ? st : null,
     grades: cleanGrades(c.grades),
+    classLabels: cleanClassLabels(c.classLabels),
+    // 서버가 'other'라고 한 수업만 기본 보기에서 숨김(값이 없거나 다르면 기본으로 보임 — 숨길 근거가 없으므로)
+    offer: c.offer === 'other' ? 'other' : 'mine',
   }
 }
 
+export interface NormalizedCatalog {
+  term: PickerTerm | null
+  courses: PickerCourse[]
+  me: CatalogMe
+  /** 보내지 않은 다른 반의 반별 수업 수('학교에 공개 수업이 없어요'와 '내 학년·반 수업이 없어요'를 구분하는 데만 씀) */
+  withheld: number
+}
+
 /** catalog 응답 → 학기·수업 목록. 모양이 다르면 null(빈 목록으로 위장하지 않음) */
-export function normalizeCatalog(data: Record<string, unknown> | null | undefined): { term: PickerTerm | null; courses: PickerCourse[] } | null {
+export function normalizeCatalog(data: Record<string, unknown> | null | undefined): NormalizedCatalog | null {
   if (!data || !Array.isArray(data.courses)) return null
   const t = data.term as Partial<PickerTerm> | null | undefined
   const term =
@@ -110,7 +139,13 @@ export function normalizeCatalog(data: Record<string, unknown> | null | undefine
       ? { termId: String(t.termId || ''), name: t.name, startDate: String(t.startDate || ''), endDate: String(t.endDate || ''), isDefault: t.isDefault === true }
       : null
   const courses = (data.courses as unknown[]).map(normalizeCatalogCourse).filter((c): c is PickerCourse => !!c)
-  return { term, courses }
+  const m = data.me as { grade?: unknown; classLabel?: unknown } | null | undefined
+  const me: CatalogMe = {
+    grade: m && typeof m === 'object' ? studentGradeOf(m.grade) : null,
+    classLabel: m && typeof m === 'object' ? cleanClassLabels([m.classLabel])[0] ?? null : null,
+  }
+  const w = Number(data.withheld)
+  return { term, courses, me, withheld: Number.isInteger(w) && w > 0 ? w : 0 }
 }
 
 /** 화면 제목: 제목에 분반이 없으면 '영어 · B' (LessonCard.lessonTitle과 같은 규칙) */
@@ -125,14 +160,164 @@ export function studentGradeOf(v: unknown): number | null {
   return Number.isInteger(n) && n >= 1 && n <= 6 ? n : null
 }
 
+// ───────────────────────── 대상 반·학년(누구에게 보여 줄지) ─────────────────────────
+
+const CLASS_LABEL_RE = /^([1-6])-([1-9][0-9]?)$/
+
+const labelParts = (l: string): [number, number] => {
+  const i = l.indexOf('-')
+  return [Number(l.slice(0, i)), Number(l.slice(i + 1))]
+}
+
+/** 학급 표시 '2-1' 순서: 학년 → 반(숫자) */
+export function compareClassLabels(a: string, b: string): number {
+  const [ga, ca] = labelParts(a)
+  const [gb, cb] = labelParts(b)
+  return ga - gb || ca - cb
+}
+
 /**
- * 학년 거르기: 기본은 내 학년 수업 + 학년 미상 수업(대상 학년을 모르는 수업은 언제나 보임).
- * 내 학년을 모르거나 '다른 학년 수업도 보기'면 전부. hidden = 거른 수업 수
+ * 대상 반 값 정리: 'g-c'(1~6학년·1~99반, 앞자리 0 없음 — 가져오기·교사 입력이 저장하는 모양)만, 중복 없이 학년·반 순.
+ * 형식이 다른 값은 버림(다른 반 수업을 내 반 수업으로 잘못 읽지 않게 — 읽을 수 없는 표시는 없는 것으로)
  */
-export function filterByGrade<T extends { grades: number[] }>(courses: T[], grade: number | null, showAll: boolean): { shown: T[]; hidden: number } {
-  if (showAll || grade === null) return { shown: courses.slice(), hidden: 0 }
-  const shown = courses.filter((c) => !c.grades.length || c.grades.indexOf(grade) >= 0)
+export function cleanClassLabels(v: unknown): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  v.forEach((x) => {
+    if (typeof x !== 'string') return
+    const m = CLASS_LABEL_RE.exec(x.trim())
+    if (!m) return
+    const l = `${m[1]}-${m[2]}`
+    if (out.indexOf(l) < 0) out.push(l)
+  })
+  return out.sort(compareClassLabels)
+}
+
+/**
+ * 학생 프로필(users.grade·users.classNm) → 내 반 '2-1'. 학년 1~6·반 1~99(숫자·'4'·'4반')가 아니면 null.
+ * 서버 catalog·requestMany와 화면이 같은 값으로 판정
+ */
+export function studentClassLabelOf(grade: unknown, classNm: unknown): string | null {
+  const g = studentGradeOf(grade)
+  let c = NaN
+  if (typeof classNm === 'number') c = classNm
+  else if (typeof classNm === 'string') {
+    const m = /^(\d{1,2})반?$/.exec(classNm.trim())
+    if (m) c = Number(m[1])
+  }
+  if (g === null || !Number.isInteger(c) || c < 1 || c > 99) return null
+  return `${g}-${c}`
+}
+
+/**
+ * 수업의 대상 범위:
+ *  - 'homeroom' 반별 수업 — 대상 반이 정확히 하나(가져오기의 한 학급 수업 'hr|2-1|국어|…'처럼 칸이 모두 한 반에서 나온 수업,
+ *    또는 교사가 대상 반을 하나만 정한 수업). 그 반의 정규 수업이라 그 반 학생만 담을 수 있음
+ *  - 'classes' 여러 반 수업 — 대상 반이 둘 이상(이동·선택·합반 수업). 기본은 그 반 학생, 다른 반 학생도 '보기'로 찾을 수 있음
+ *  - 'grades' 대상 반은 없고 대상 학년만 앎 / 'all' 반·학년 모두 모름(모든 학생에게 보임)
+ */
+export type CourseAudienceKind = 'homeroom' | 'classes' | 'grades' | 'all'
+
+export function courseAudienceKind(c: { classLabels?: unknown; grades?: unknown }): CourseAudienceKind {
+  const labels = cleanClassLabels(c.classLabels)
+  if (labels.length === 1) return 'homeroom'
+  if (labels.length > 1) return 'classes'
+  return cleanGrades(c.grades).length ? 'grades' : 'all'
+}
+
+/** 'mine' 기본으로 보임 · 'other' '다른 반·학년 수업도 보기'에서만 · 'never' 이 학생에게는 보이지 않음(담을 수도 없음) */
+export type CourseOffer = 'mine' | 'other' | 'never'
+
+export interface StudentScope {
+  /** 내 학년(users.grade) — 모르면 null */
+  grade: number | null
+  /** 내 반('2-1') — 모르면 null */
+  classLabel: string | null
+}
+
+/** 학생 프로필(users 문서) → 판정에 쓰는 내 학년·반 */
+export function studentScopeOf(user: { grade?: unknown; classNm?: unknown } | null | undefined): StudentScope {
+  return { grade: studentGradeOf(user?.grade), classLabel: studentClassLabelOf(user?.grade, user?.classNm) }
+}
+
+/**
+ * 수업을 이 학생에게 어떻게 보여 줄지 — 서버 catalog(보낼지·offer)와 requestMany(다른 반의 반별 수업 거절)가 이 함수를 씀.
+ *  - 반별 수업(대상 반 하나): 내 반이면 'mine', 아니면 'never'. **'다른 반·학년 수업도 보기'로도 보이지 않음** —
+ *    다른 반의 정규 수업(같은 학년 2-2의 국어 등)이라 담으면 남의 반 시간표가 내 시간표가 되기 때문.
+ *    내 반을 모르면(프로필에 반이 없음) 어느 반 수업인지 확인할 수 없어 'never'(소속 학급을 등록하면 보임)
+ *  - 여러 반 수업: 내 반이 대상 반에 있으면 'mine', 아니면 'other'(보기로 찾을 수 있음 — 선택 과목은 다른 반 학생도 들을 수 있음).
+ *    내 반을 모르면 대상 반들의 학년으로(내 학년이 있으면 'mine', 내 학년도 모르면 'mine')
+ *  - 대상 반이 없는 수업은 예전 학년 규칙: 대상 학년이 없거나 내 학년을 모르거나 내 학년이 들어 있으면 'mine', 아니면 'other'
+ * 이미 내 수강(참여·승인 대기)인 수업은 이 판정과 상관없이 내 것으로 보임(호출하는 쪽이 먼저 확인 — catalog·filterForStudent)
+ */
+export function courseOfferFor(c: { classLabels?: unknown; grades?: unknown }, me: StudentScope): CourseOffer {
+  const labels = cleanClassLabels(c.classLabels)
+  if (labels.length === 1) return me.classLabel !== null && me.classLabel === labels[0] ? 'mine' : 'never'
+  if (labels.length > 1) {
+    if (me.classLabel !== null) return labels.indexOf(me.classLabel) >= 0 ? 'mine' : 'other'
+    if (me.grade === null) return 'mine'
+    return labels.some((l) => labelParts(l)[0] === me.grade) ? 'mine' : 'other'
+  }
+  const grades = cleanGrades(c.grades)
+  if (!grades.length || me.grade === null) return 'mine'
+  return grades.indexOf(me.grade) >= 0 ? 'mine' : 'other'
+}
+
+/**
+ * 서버 catalog가 보낼 수업과 수업마다 offer — me가 null(학생이 아님)이면 거르지 않음(모두 'mine').
+ * 이미 내 수강(참여·승인 대기)인 수업은 판정과 상관없이 'mine'으로 보냄(내 수업은 언제나 내 것으로 보임).
+ * 'never'(다른 반의 반별 수업)는 보내지 않고 개수만(withheld) — 학교에 공개 수업이 없다는 안내와 구분하는 데만 씀
+ */
+export function offerCatalog<T extends { courseId: string; classLabels?: unknown; grades?: unknown }>(
+  courses: T[],
+  me: StudentScope | null,
+  myStatusOf: (courseId: string) => string | null | undefined
+): { sent: Array<{ course: T; offer: 'mine' | 'other' }>; withheld: number } {
+  const sent: Array<{ course: T; offer: 'mine' | 'other' }> = []
+  let withheld = 0
+  courses.forEach((c) => {
+    const st = myStatusOf(c.courseId)
+    const offer: CourseOffer = !me || st === 'active' || st === 'pending' ? 'mine' : courseOfferFor(c, me)
+    if (offer === 'never') withheld++
+    else sent.push({ course: c, offer })
+  })
+  return { sent, withheld }
+}
+
+/**
+ * 공개 목록 거르기 — 수업 담기 화면(칸 보기·과목으로 찾기)과 직접 입력 안내('이 시간 학교 수업'·'학교 수업과 시간이 겹쳐요')가
+ * 같은 함수를 씀. 기본은 서버가 'mine'이라고 한 수업 + 이미 내 것인 수업(myIds — 참여·시작 예정·승인 대기·반 공통),
+ * showAll('다른 반·학년 수업도 보기')이면 받은 수업 전부(다른 반의 반별 수업은 서버가 보내지 않아 여기에도 없음).
+ * hidden = 기본 보기에서 숨긴 수(보기를 켜면 보이는 수)
+ */
+export function filterForStudent<T extends { courseId: string; offer: 'mine' | 'other' }>(
+  courses: T[],
+  showAll: boolean,
+  myIds?: Set<string> | null
+): { shown: T[]; hidden: number } {
+  if (showAll) return { shown: courses.slice(), hidden: 0 }
+  const shown = courses.filter((c) => c.offer === 'mine' || (!!myIds && myIds.has(c.courseId)))
   return { shown, hidden: courses.length - shown.length }
+}
+
+/** 수업별 내 상태 중 지금 내 것(참여 중·시작 예정·반 공통·승인 대기)인 수업 id */
+export function activeOrPendingIds(states: Map<string, { status: PickStatus }> | null | undefined): Set<string> {
+  const out = new Set<string>()
+  if (states) states.forEach((s, id) => s.status !== 'ended' && out.add(id))
+  return out
+}
+
+/**
+ * 수업 담기 빈 화면 구분(칸 보기·과목으로 찾기 공통):
+ *  - 'no-public'  학교에 이번 학기 공개 수업이 하나도 없음(받은 수업 0개이고 보내지 않은 다른 반 반별 수업도 0개)
+ *  - 'no-mine'    공개 수업은 있지만 지금 보기에 보이는 수업이 없음(모두 다른 반·학년 수업) — canShowOthers면
+ *                 '다른 반·학년 수업도 보기'를 켜면 보이는 수업이 있음(없으면 다른 반의 반별 수업뿐이라 켜도 안 보임)
+ *  - null         보이는 수업이 있음
+ */
+export function catalogEmptyState(x: { total: number; withheld: number; shown: number; hidden: number; showAll: boolean }): { kind: 'no-public' } | { kind: 'no-mine'; canShowOthers: boolean } | null {
+  if (x.total === 0 && x.withheld === 0) return { kind: 'no-public' }
+  if (x.shown > 0) return null
+  return { kind: 'no-mine', canShowOthers: !x.showAll && x.hidden > 0 }
 }
 
 // ───────────────────────── 내 시간표에 이미 있는 수업 ─────────────────────────
@@ -372,6 +557,8 @@ export function pickFailureText(code: string): string {
       return '이미 끝난 수업이에요.'
     case 'other-term':
       return '이번 학기 수업이 아니에요.'
+    case 'other-class':
+      return '다른 반의 반별 수업이라 담을 수 없어요. 우리 반 수업을 골라 주세요.'
     case 'course-not-found':
       return '수업을 찾을 수 없어요. 목록을 새로 고쳐 주세요.'
     case 'invalid-id':
@@ -474,15 +661,16 @@ export interface SlotSuggestions {
 }
 
 /**
- * 직접 입력 화면의 '이 시간 학교 수업': 요일·교시로만 찾음(입력한 제목과 무관). 자동으로 담거나 연결하지 않고 후보만 돌려줌
+ * 직접 입력 화면의 '이 시간 학교 수업': 요일·교시로만 찾음(입력한 제목과 무관). 자동으로 담거나 연결하지 않고 후보만 돌려줌.
+ * 담기 후보는 수업 담기의 기본 보기와 같은 거르기(filterForStudent — 내 반·학년 수업, 다른 반·학년 수업은 빠짐)를 거친 수업만
  */
 export function slotSuggestions(e: EntrySlotLike, catalog: PickerCourse[], mine: MyLesson[], periodTimes: PeriodTime[]): SlotSuggestions {
   const { weekday, periods } = entrySchoolSlot(e, periodTimes)
   if (!weekday || !periods.length) return { weekday, periods, offered: [], linkable: [] }
   const at = (s: { weekday: number; period: number }) => s.weekday === weekday && periods.indexOf(s.period) >= 0
   const mineIds = myCourseIds(mine)
-  const offered = catalog
-    .filter((c) => !mineIds.has(c.courseId) && c.myStatus !== 'active' && c.myStatus !== 'pending' && c.slots.some(at))
+  const offered = filterForStudent(catalog, false, mineIds)
+    .shown.filter((c) => !mineIds.has(c.courseId) && c.myStatus !== 'active' && c.myStatus !== 'pending' && c.slots.some(at))
     .sort((a, b) => pickerTitle(a).localeCompare(pickerTitle(b), 'ko') || a.courseId.localeCompare(b.courseId))
   const seen = new Set<string>()
   const linkable = mine.filter((m) => {
@@ -495,7 +683,8 @@ export function slotSuggestions(e: EntrySlotLike, catalog: PickerCourse[], mine:
 
 /**
  * 연결되지 않은 직접 입력 일정이 같은 요일·교시의 학교 수업(내 수업 또는 공개 수업)과 겹치는지 —
- * '학교 수업과 시간이 겹쳐요 — 담기/연결하면 변경이 자동 반영돼요' 안내용. 연결된 일정·제목은 보지 않음
+ * '학교 수업과 시간이 겹쳐요 — 담기/연결하면 변경이 자동 반영돼요' 안내용. 연결된 일정·제목은 보지 않음.
+ * 공개 수업은 수업 담기의 기본 보기와 같은 거르기(filterForStudent)를 거친 수업만 — 다른 반·학년 수업 때문에 안내하지 않음
  */
 export function entryOverlapsSchool(
   e: EntrySlotLike & { linkedCourseId?: string | null },
@@ -507,5 +696,5 @@ export function entryOverlapsSchool(
   const { weekday, periods } = entrySchoolSlot(e, periodTimes)
   if (!weekday || !periods.length) return false
   const at = (s: { weekday: number; period: number }) => s.weekday === weekday && periods.indexOf(s.period) >= 0
-  return mine.some((m) => m.status !== 'pending' && at(m)) || catalog.some((c) => c.slots.some(at))
+  return mine.some((m) => m.status !== 'pending' && at(m)) || filterForStudent(catalog, false, myCourseIds(mine)).shown.some((c) => c.slots.some(at))
 }

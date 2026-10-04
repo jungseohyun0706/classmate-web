@@ -2,12 +2,16 @@
  * 학생 '수업 담기' — 직접 입력 화면의 '이 시간 학교 수업'과 직접 입력 목록의 겹침 안내 (순수 함수, 가상 데이터)
  *  - 요일·교시(또는 학교 교시 안의 시각)로만 찾음. 입력한 제목은 함수에 들어가지도 않음(이름 기반 연결 금지)
  *  - 아직 내 것이 아닌 공개 수업 → '담기', 이미 듣는(연결 가능한) 수업 → '연결'
+ *  - 담기 후보·겹침 안내도 수업 담기의 기본 보기와 같은 거르기(filterForStudent — 서버가 정한 offer)를 거침:
+ *    다른 반·학년 수업(offer 'other')은 후보가 아니고, 그 수업 때문에 겹침 안내를 하지 않음
  */
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   entryOverlapsSchool,
   entrySchoolSlot,
+  filterForStudent,
+  offerCatalog,
   slotSuggestions,
   type EntrySlotLike,
   type MyLesson,
@@ -37,6 +41,8 @@ function pc(id: string, title: string, slots: Array<[number, number]>, extra: Pa
     slots: slots.map(([weekday, period]) => ({ weekday, period, roomName: null })),
     myStatus: null,
     grades: [],
+    classLabels: [],
+    offer: 'mine',
     ...extra,
   }
 }
@@ -130,5 +136,41 @@ describe("직접 입력 목록의 '학교 수업과 시간이 겹쳐요'(entryOv
   })
   test('승인 대기 수업만 있는 칸은 안내하지 않음(공개 목록에도 없을 때)', () => {
     assert.equal(entryOverlapsSchool(weekly(2, 4), [], MINE, PT), false)
+  })
+})
+
+describe('담기 후보·겹침 안내도 수업 담기 기본 보기와 같은 거르기(내 학년·반 수업만)', () => {
+  // 2-1 학생: 화 5교시에 2-2 학생 선택 과목(다른 반·학년 — other)과 3학년 수업(other), 목 5교시에 2-1 선택 과목(mine)
+  const OTHER_ELECT = pc('elect22', '심화 국어', [[2, 5]], { classLabels: ['2-2', '2-3'], offer: 'other' })
+  const OTHER_GRADE = pc('g3', '3학년 진로', [[2, 5]], { grades: [3], offer: 'other' })
+  const MY_ELECT = pc('elect21', '고전 읽기', [[4, 5]], { classLabels: ['2-1', '2-4'], offer: 'mine' })
+  const CAT2 = [OTHER_ELECT, OTHER_GRADE, MY_ELECT]
+  test("다른 반·학년 수업(offer other)은 '이 시간 학교 수업' 담기 후보가 아님 — 피커 기본 보기와 같은 목록", () => {
+    assert.deepEqual(slotSuggestions(weekly(2, 5), CAT2, [], PT).offered, [])
+    assert.deepEqual(slotSuggestions(weekly(4, 5), CAT2, [], PT).offered.map((c) => c.courseId), ['elect21'])
+    // 같은 순수 함수: 피커 기본 보기(filterForStudent(..., false))에 없는 수업은 후보에도 없음
+    const pickerDefault = new Set(filterForStudent(CAT2, false).shown.map((c) => c.courseId))
+    ;[weekly(2, 5), weekly(4, 5)].forEach((e) =>
+      slotSuggestions(e, CAT2, [], PT).offered.forEach((c) => assert.ok(pickerDefault.has(c.courseId), c.courseId))
+    )
+  })
+  test("다른 반·학년 수업만 있는 칸은 '학교 수업과 시간이 겹쳐요'를 띄우지 않음, 내 학년·반 수업 칸은 띄움", () => {
+    assert.equal(entryOverlapsSchool(weekly(2, 5), CAT2, [], PT), false)
+    assert.equal(entryOverlapsSchool(weekly(4, 5), CAT2, [], PT), true)
+  })
+  test('다른 학년 수업이어도 이미 내 수업이면(칸에 있는 내 수업) 연결 후보·겹침 안내 그대로', () => {
+    const mine = [ml('g3', '3학년 진로', 2, 5)]
+    assert.deepEqual(slotSuggestions(weekly(2, 5), CAT2, mine, PT).linkable.map((m) => m.courseId), ['g3'])
+    assert.equal(entryOverlapsSchool(weekly(2, 5), CAT2, mine, PT), true)
+  })
+  test('다른 반의 반별 수업은 서버가 보내지 않으므로 같은 칸이어도 후보·안내 없음(제목이 같아도)', () => {
+    const raw = [
+      { courseId: 'kor22', classLabels: ['2-2'], grades: [2] },
+      { courseId: 'kor21', classLabels: ['2-1'], grades: [2] },
+    ]
+    const { sent } = offerCatalog(raw, { grade: 2, classLabel: '2-1' }, () => null)
+    const cat = sent.map(({ course, offer }) => pc(course.courseId, '국어', [[1, 1]], { classLabels: course.classLabels, offer }))
+    assert.deepEqual(cat.map((c) => c.courseId), ['kor21'])
+    assert.deepEqual(slotSuggestions(weekly(1, 1), cat, [], PT).offered.map((c) => c.courseId), ['kor21'])
   })
 })

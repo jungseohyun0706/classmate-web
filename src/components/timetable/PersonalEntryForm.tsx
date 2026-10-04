@@ -272,7 +272,10 @@ export interface PersonalEntryFormProps {
   /** /api/timetable/me 자료 — 연결할 수 있는 수업·차시 비교용(없으면 연결 선택 불가 안내) */
   payload: MyTimetablePayload | null
   today: Ymd
-  /** 학교 공개 수업 목록(수업 담기와 같은 자료) — 있으면 '이 시간 학교 수업' 빠른 담기를 보여 줌 */
+  /**
+   * 학교 공개 수업 목록(수업 담기와 같은 자료) — 있으면 '이 시간 학교 수업' 빠른 담기를 보여 줌.
+   * 후보는 수업 담기 기본 보기와 같은 거르기(slotSuggestions 안의 filterForStudent — 내 학년·반 수업)를 거침
+   */
   catalog?: PickerCourse[] | null
   /** '이 시간 학교 수업' 담기 — 화면의 담기 흐름(확인 시트 → requestMany). 취소·실패면 null */
   onQuickPick?: (c: PickerCourse) => Promise<PickResult | null>
