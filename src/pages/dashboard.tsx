@@ -245,10 +245,20 @@ export default function Dashboard() {
       path: '/teacher/roster-import',
       needSchool: true
     },
+    // 보기 전용 주간 시간표(공식 수업·변경 반영). '내 수업 및 교환'(직접 등록 편집·교환 요청)과 나란히 두고 이름으로 구분
+    {
+      id: 'my-timetable',
+      title: '내 시간표 (주간)',
+      desc: '이번 주 내 수업을 요일·교시로 — 변경은 빨갛게.',
+      icon: <svg className="h-8 w-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3M3 10h18M9 10v11m6-11v11M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>,
+      bgColor: 'bg-blue-100',
+      path: '/teacher/timetable',
+      needSchool: true
+    },
     {
       id: 'my-schedule',
       title: '내 수업 및 교환',
-      desc: '개인 시간표 관리 및 수업 교환 요청.',
+      desc: '직접 등록 주간 시간표 고치기·수업 교환 요청.',
       icon: <svg className="h-8 w-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>,
       bgColor: 'bg-red-100',
       path: '/teacher/my-schedule',
