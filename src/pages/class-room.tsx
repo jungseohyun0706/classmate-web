@@ -27,6 +27,9 @@ import {
 } from '../lib/notices'
 import { CHAT_MAX_LEN, deleteChat, sendChat, watchChat, type ChatMessage } from '../lib/classChat'
 import { setActiveRoom } from '../lib/messaging'
+import ChatAttachments, { AttachmentDrafts } from '../components/ChatAttachments'
+import { CHAT_FILE_ACCEPT, validateChatFiles } from '../lib/chatAttachments'
+import { sendAttachments } from '../lib/chatAttachmentClient'
 
 // 우리 반 이야기방 — 카카오톡 오픈채팅 스타일의 반 단톡방.
 // 공지도 여기서 보냅니다(선생님 입력창의 📢 토글). 알림장 별도 화면은 관리(명단)용만 유지.
@@ -119,6 +122,24 @@ export default function ClassRoom(): JSX.Element {
   const [receipts, setReceipts] = useState<Record<string, Receipt>>({})
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [files, setFiles] = useState<File[]>([])
+  const [attachOpen, setAttachOpen] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<{ percent: number; saving: boolean } | null>(null)
+  const photoInput = useRef<HTMLInputElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const uploadController = useRef<AbortController | null>(null)
+  const uploadRequestId = useRef<string | null>(null)
+  useEffect(() => () => uploadController.current?.abort(), [])
+
+  const selectFiles = (picked: File[]) => {
+    if (sending || !picked.length) return
+    const combined = [...files, ...picked]
+    const error = validateChatFiles(combined)
+    if (error) { toast(error, 'error'); return }
+    setFiles(combined)
+    setAttachOpen(false)
+    uploadRequestId.current = null
+  }
   const [consentBusy, setConsentBusy] = useState<string | null>(null)
 
   // 공지 배너 + 공지 작성 토글
@@ -154,7 +175,11 @@ export default function ClassRoom(): JSX.Element {
 
   // 반 전환 (교사)
   const switchRoom = (id: string) => {
-    if (id === roomClassId) return
+    if (id === roomClassId || sending) return
+    setFiles([])
+    setText('')
+    setAttachOpen(false)
+    uploadRequestId.current = null
     setNotices([])
     setChat([])
     setReceipts({})
@@ -425,6 +450,10 @@ export default function ClassRoom(): JSX.Element {
     stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120
   }
 
+  const onAttachmentLoad = () => {
+    if (feedRef.current && stickBottom.current) feedRef.current.scrollTop = feedRef.current.scrollHeight
+  }
+
   // 반 구성원들에게 푸시 fan-out (실패해도 무시 — 방을 열어둔 사람은 실시간으로 받음)
   // 서버는 docId로 저장된 문서를 직접 읽어 작성자와 내용을 확인한 뒤 보냅니다.
   const firePush = (kind: 'chat' | 'notice', docId: string) => {
@@ -443,10 +472,24 @@ export default function ClassRoom(): JSX.Element {
   const handleSend = async () => {
     if (!uid || !classId || sending) return
     const t = text.trim()
-    if (!t) return
+    if (!t && files.length === 0) return
     setSending(true)
     try {
-      if (isTeacher && noticeMode) {
+      if (files.length > 0) {
+        const controller = new AbortController()
+        uploadController.current = controller
+        if (!uploadRequestId.current) uploadRequestId.current = crypto.randomUUID()
+        setUploadProgress({ percent: 0, saving: false })
+        const result = await sendAttachments({
+          classId, requestId: uploadRequestId.current, files, text: t,
+          kind: isTeacher && noticeMode ? 'notice' : 'chat', signal: controller.signal,
+          onProgress: (percent, saving) => setUploadProgress({ percent, saving }),
+        })
+        firePush(result.kind, result.messageId)
+        setFiles([])
+        uploadRequestId.current = null
+        setNoticeMode(false)
+      } else if (isTeacher && noticeMode) {
         // 📢 공지로 보내기 — 알림장(announcements)으로 저장되어 읽음/동의 추적
         const firstLine = t.split('\n')[0].slice(0, 30)
         const ref = await addDoc(collection(db, 'classes', classId, 'announcements'), {
@@ -470,9 +513,12 @@ export default function ClassRoom(): JSX.Element {
       stickBottom.current = true
     } catch (e) {
       console.error(e)
-      toast('보내지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
+      if (e instanceof Error && e.name === 'AbortError') toast('전송을 취소했어요. 선택한 파일은 그대로예요.', 'info')
+      else toast(e instanceof Error ? e.message : '보내지 못했어요. 잠시 후 다시 시도해 주세요.', 'error')
     } finally {
       setSending(false)
+      setUploadProgress(null)
+      uploadController.current = null
     }
   }
 
@@ -660,6 +706,7 @@ export default function ClassRoom(): JSX.Element {
                 <div className="flex items-center gap-1.5">
                   <select
                     value={classId}
+                    disabled={sending}
                     onChange={(e) => switchRoom(e.target.value)}
                     className="max-w-[13rem] truncate appearance-none rounded-xl border border-black/10 bg-white/70 pl-3 pr-8 py-2 text-base font-bold text-gray-900 shadow-sm focus:outline-none"
                     style={{
@@ -805,6 +852,7 @@ export default function ClassRoom(): JSX.Element {
                         <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-gray-800 break-keep">
                           {item.notice.body}
                         </p>
+                        {!!item.notice.attachments?.length && <div className="mt-2"><ChatAttachments classId={classId} messageId={item.notice.id} kind="notice" attachments={item.notice.attachments} onImageLoad={onAttachmentLoad} /></div>}
                         {item.notice.attachmentUrl && (
                           <a
                             href={item.notice.attachmentUrl}
@@ -885,6 +933,7 @@ export default function ClassRoom(): JSX.Element {
                               style={{ background: '#fee500' }}
                             >
                               {m.text}
+                              {!!m.attachments?.length && <div className={m.text ? 'mt-2' : ''}><ChatAttachments classId={classId} messageId={m.id} attachments={m.attachments} onImageLoad={onAttachmentLoad} /></div>}
                             </div>
                             <button
                               onClick={() => void handleDelete(m.id)}
@@ -920,6 +969,7 @@ export default function ClassRoom(): JSX.Element {
                             <div className="group relative">
                               <div className="inline-block whitespace-pre-wrap rounded-2xl rounded-tl-md bg-white px-3 py-1.5 text-left text-[13.5px] leading-relaxed text-gray-900 break-keep shadow-sm">
                                 {m.text}
+                                {!!m.attachments?.length && <div className={m.text ? 'mt-2' : ''}><ChatAttachments classId={classId} messageId={m.id} attachments={m.attachments} onImageLoad={onAttachmentLoad} /></div>}
                               </div>
                               {isTeacher && roomTeacherId === uid && (
                                 <button
@@ -951,9 +1001,23 @@ export default function ClassRoom(): JSX.Element {
         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.375rem)' }}
       >
         <div className="mx-auto max-w-2xl">
+          {files.length > 0 && <AttachmentDrafts files={files} disabled={sending} onRemove={(index) => { setFiles((prev) => prev.filter((_, i) => i !== index)); uploadRequestId.current = null }} />}
+          {uploadProgress && <div className="px-2 pb-2" aria-live="polite">
+            <div className="flex items-center justify-between text-xs text-gray-600"><span>{uploadProgress.saving ? '메시지 보내는 중…' : `파일 올리는 중 ${uploadProgress.percent}%`}</span>
+              {!uploadProgress.saving && <button type="button" className="min-h-[44px] px-3 font-semibold" onClick={() => uploadController.current?.abort()}>취소</button>}
+            </div>
+            <progress max={100} value={uploadProgress.percent} aria-label="파일 업로드 진행률" className="h-1.5 w-full accent-blue-600" />
+          </div>}
+          {attachOpen && <div className="mb-2 rounded-xl bg-gray-50 p-3">
+            <div className="flex gap-2"><button type="button" onClick={() => photoInput.current?.click()} className="min-h-[48px] flex-1 rounded-xl bg-white text-sm font-semibold text-gray-800 shadow-sm">🖼️ 사진</button><button type="button" onClick={() => fileInput.current?.click()} className="min-h-[48px] flex-1 rounded-xl bg-white text-sm font-semibold text-gray-800 shadow-sm">📄 파일</button></div>
+            <p className="mt-2 text-center text-[11px] text-gray-500">최대 5개 · 파일당 20MB · 합계 50MB</p>
+          </div>}
+          <input ref={photoInput} type="file" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,image/avif" className="hidden" onChange={(e) => { const picked = Array.from(e.target.files || []); e.target.value = ''; selectFiles(picked) }} />
+          <input ref={fileInput} type="file" multiple accept={CHAT_FILE_ACCEPT} className="hidden" onChange={(e) => { const picked = Array.from(e.target.files || []); e.target.value = ''; selectFiles(picked) }} />
           {isTeacher && (
             <div className="flex items-center gap-2 px-1 pb-1">
               <button
+                disabled={sending}
                 onClick={() => setNoticeMode((v) => !v)}
                 className={`rounded-full px-3 py-1.5 text-xs font-bold transition ${
                   noticeMode ? 'bg-amber-400 text-gray-900' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
@@ -967,8 +1031,10 @@ export default function ClassRoom(): JSX.Element {
             </div>
           )}
           <div className="flex items-end gap-1.5">
+            <button type="button" aria-label="사진이나 파일 첨부" aria-expanded={attachOpen} disabled={sending} onClick={() => setAttachOpen((open) => !open)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-2xl text-gray-500 hover:bg-gray-100 disabled:opacity-30">{attachOpen ? '×' : '+'}</button>
             <textarea
               value={text}
+              disabled={sending}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -985,11 +1051,11 @@ export default function ClassRoom(): JSX.Element {
             />
             <button
               onClick={() => void handleSend()}
-              disabled={sending || !text.trim()}
+              disabled={sending || (!text.trim() && files.length === 0)}
               className={`shrink-0 rounded-full px-3.5 py-2.5 text-sm font-bold transition disabled:opacity-30 ${
-                text.trim() ? 'text-gray-900' : 'text-gray-400'
+                text.trim() || files.length ? 'text-gray-900' : 'text-gray-400'
               }`}
-              style={{ background: text.trim() ? '#fee500' : '#f3f4f6' }}
+              style={{ background: text.trim() || files.length ? '#fee500' : '#f3f4f6' }}
             >
               전송
             </button>

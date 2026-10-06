@@ -17,6 +17,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import type { ChatAttachment } from './chatAttachments'
 
 /**
  * 알림장(announcements) 조회 + 읽음 확인(receipts) 유틸.
@@ -39,6 +40,7 @@ export interface Announcement {
   authorName: string
   attachmentUrl: string | null
   attachmentName: string | null
+  attachments?: ChatAttachment[]
   createdAt: Timestamp | null
   readCount: number
   checkCount: number
@@ -62,6 +64,7 @@ function toAnnouncement(id: string, data: Record<string, unknown>): Announcement
     attachmentUrl: typeof data.attachmentUrl === 'string' && data.attachmentUrl ? data.attachmentUrl : null,
     attachmentName:
       typeof data.attachmentName === 'string' && data.attachmentName ? data.attachmentName : null,
+    attachments: Array.isArray(data.attachments) ? data.attachments : [],
     createdAt: data.createdAt instanceof Timestamp ? data.createdAt : null,
     readCount: typeof data.readCount === 'number' ? data.readCount : 0,
     checkCount: typeof data.checkCount === 'number' ? data.checkCount : 0,

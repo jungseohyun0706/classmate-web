@@ -90,7 +90,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       if (d.pushedAt) return { ok: false as const, status: 200, reason: 'already-pushed' }
       tx.update(docRef, { pushedAt: new Date() })
-      return { ok: true as const, text: String((isNotice ? d.body : d.text) || '') }
+      const files = Array.isArray(d.attachments) ? d.attachments : []
+      const filePreview = files.length ? (files.every((a) => String(a.contentType).startsWith('image/')) ? `사진 ${files.length}장` : `첨부 파일 ${files.length}개`) : ''
+      return { ok: true as const, text: String((isNotice ? d.body : d.text) || filePreview) }
     })
     if (!claimed.ok) {
       return res.status(claimed.status).json({ sent: 0, reason: claimed.reason })

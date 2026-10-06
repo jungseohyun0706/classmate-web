@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react'
 import Link from 'next/link'
+import ChatAttachments from '../../../components/ChatAttachments'
 import { useRouter } from 'next/router'
 import { onAuthStateChanged } from 'firebase/auth'
 import { Timestamp, doc, getDoc } from 'firebase/firestore'
@@ -291,6 +292,7 @@ export default function StudentNoticeDetail(): JSX.Element {
                 {notice.body}
               </p>
 
+              {!!notice.attachments?.length && userData?.classId && <div className="mt-4"><ChatAttachments classId={userData.classId} messageId={notice.id} kind="notice" attachments={notice.attachments} /></div>}
               {notice.attachmentUrl && (
                 <a
                   href={notice.attachmentUrl}

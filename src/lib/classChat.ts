@@ -4,8 +4,6 @@ import {
   Timestamp,
   addDoc,
   collection,
-  deleteDoc,
-  doc,
   limit,
   onSnapshot,
   orderBy,
@@ -14,6 +12,8 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import type { ChatAttachment } from './chatAttachments'
+import { attachmentRequest } from './chatAttachmentClient'
 
 export interface ChatMessage {
   id: string
@@ -21,6 +21,7 @@ export interface ChatMessage {
   authorName: string
   role: 'teacher' | 'student'
   text: string
+  attachments?: ChatAttachment[]
   createdAt: Timestamp | null
 }
 
@@ -49,6 +50,7 @@ export function watchChat(
           authorName: String(v.authorName ?? ''),
           role: v.role === 'teacher' ? 'teacher' : 'student',
           text: String(v.text ?? ''),
+          attachments: Array.isArray(v.attachments) ? v.attachments : [],
           createdAt: v.createdAt instanceof Timestamp ? v.createdAt : null,
         }
       })
@@ -77,5 +79,5 @@ export async function sendChat(
 }
 
 export async function deleteChat(classId: string, mid: string): Promise<void> {
-  await deleteDoc(doc(db, 'classes', classId, 'chat', mid))
+  await attachmentRequest({ action: 'delete', classId, messageId: mid })
 }
