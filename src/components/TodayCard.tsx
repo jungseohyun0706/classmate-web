@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
-import { doc, getDoc } from 'firebase/firestore'
+import Link from 'next/link'
+import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { pickMainMeal } from '../lib/meals'
 import { currentPeriodAt, periodRanges, schoolLevelOf } from '../lib/periodTimes'
 import { offDayOn, type CalendarEventLike } from '../lib/schoolDay'
+import { teacherHomeTimetable } from '../lib/teacherHomeTimetable'
 
 export interface TodayCardProps {
   schoolCode: string
@@ -10,6 +12,8 @@ export interface TodayCardProps {
   grade: string | number
   classNm: string | number
   classId: string
+  /** 교사 홈은 담임반이 아니라 이 계정에 저장된 개인 시간표를 표시합니다. */
+  teacherUid?: string
   /** 오늘 급식 조회가 끝나면 급식 유무를 알려 줍니다(급식 없는 날 별점 숨김용). */
   onMealLoaded?: (hasMeal: boolean) => void
 }
@@ -89,10 +93,17 @@ export default function TodayCard({
   grade,
   classNm,
   classId,
+  teacherUid,
   onMealLoaded,
 }: TodayCardProps): JSX.Element {
   const [loading, setLoading] = useState<boolean>(true)
   const [periods, setPeriods] = useState<PeriodItem[]>([])
+  const [teacherState, setTeacherState] = useState<{
+    uid: string
+    status: 'ready' | 'error'
+    schedule?: unknown
+  } | null>(null)
+  const [teacherRetry, setTeacherRetry] = useState(0)
   const [meal, setMeal] = useState<MealInfo | null>(null)
   const [nextEvent, setNextEvent] = useState<EventInfo | null>(null)
   // 오늘이 쉬는 날(주말·휴업일·공휴일·방학)이면 시간표 대신 안내를 보여 줍니다.
@@ -105,6 +116,33 @@ export default function TodayCard({
   })
   // 오늘(KST) — 화면을 띄워 둔 채 날짜가 바뀌면 이 값이 바뀌어 오늘 데이터를 다시 불러옵니다.
   const [todayYmd, setTodayYmd] = useState<string>(() => ymdOf(kstNow()))
+
+  useEffect(() => {
+    if (!teacherUid) return
+    let cancelled = false
+    let unsubscribe: (() => void) | undefined
+    setTeacherState(null)
+    const fail = (): void => {
+      if (!cancelled) setTeacherState({ uid: teacherUid, status: 'error' })
+    }
+    void import('../lib/firebase').then(({ db }) => {
+      if (cancelled) return
+      unsubscribe = onSnapshot(doc(db, 'users', teacherUid), (snap) => {
+        if (cancelled) return
+        if (!snap.exists()) { fail(); return }
+        setTeacherState({ uid: teacherUid, status: 'ready', schedule: snap.data().mySchedule })
+      }, fail)
+    }).catch(fail)
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+    }
+  }, [teacherUid, teacherRetry])
+
+  const ownTimetable = useMemo(
+    () => teacherHomeTimetable(teacherState?.uid === teacherUid ? teacherState?.schedule : null, todayYmd),
+    [teacherState, teacherUid, todayYmd]
+  )
 
   // 렌더마다 새 함수가 와도 다시 불러오지 않도록 최신 콜백만 ref로 들고 있습니다.
   const onMealLoadedRef = useRef(onMealLoaded)
@@ -133,6 +171,7 @@ export default function TodayCard({
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setOffDay(null)
     onMealLoadedRef.current?.(false)
 
     const load = async (): Promise<void> => {
@@ -156,7 +195,7 @@ export default function TodayCard({
       const c = encodeURIComponent(String(classNm))
 
       const [ttData, mealData, calData] = await Promise.all([
-        fetchJson(`/api/timetable?schoolCode=${s}&grade=${g}&classNm=${c}&from=${today}&to=${today}`),
+        teacherUid ? Promise.resolve(null) : fetchJson(`/api/timetable?schoolCode=${s}&grade=${g}&classNm=${c}&from=${today}&to=${today}`),
         fetchJson(`/api/meals?schoolCode=${s}&from=${today}&to=${today}`),
         fetchJson(`/api/calendar?schoolCode=${s}&from=${today}&to=${weekLater}`),
       ])
@@ -181,9 +220,14 @@ export default function TodayCard({
       // --- 쉬는 날: NEIS 시간표가 없고 주말이거나 학사일정상 휴업일·공휴일·방학이면 ---
       // 일정 조회가 실패하면(calData 없음) 평일은 기존처럼 요일 시간표로 대체합니다.
       const eventsArr = (calData?.events as CalendarEventLike[] | undefined) ?? []
-      const off: OffDayInfo | null = list.length === 0 ? offDayOn(today, eventsArr, grade) : null
+      // 교사는 여러 학년을 가르치므로 담임 학년만 쉬는 날에 모든 수업을 숨기지 않습니다.
+      const schoolGrades = schoolLevelOf(schoolName) === 'elementary' ? [1, 2, 3, 4, 5, 6] : [1, 2, 3]
+      const offEvents = teacherUid
+        ? eventsArr.filter((e) => !Array.isArray(e.offGrades) || schoolGrades.every((g) => e.offGrades!.includes(g)))
+        : eventsArr
+      const off: OffDayInfo | null = list.length === 0 ? offDayOn(today, offEvents, teacherUid ? undefined : grade) : null
 
-      if (list.length === 0 && classId && !off) {
+      if (!teacherUid && list.length === 0 && classId && !off) {
         const dayKey = DAY_KEYS[dayIdx]
         if (dayKey) {
           try {
@@ -205,7 +249,7 @@ export default function TodayCard({
 
       // --- 오늘 시간표 변경(overrides) 오버레이: 있으면 해당 교시 과목을 덮어씀 ---
       // 쉬는 날에는 변경 문서가 있어도(공휴일로 잡힌 교환 등) 적용하지 않고 쉬는 날 안내를 보여 줍니다.
-      if (classId && !off) {
+      if (!teacherUid && classId && !off) {
         try {
           const { db } = await import('../lib/firebase')
           const ovSnap = await getDoc(doc(db, 'classes', classId, 'overrides', today))
@@ -274,7 +318,7 @@ export default function TodayCard({
     return () => {
       cancelled = true
     }
-  }, [schoolCode, grade, classNm, classId, todayYmd])
+  }, [schoolCode, schoolName, grade, classNm, classId, todayYmd, teacherUid])
 
   // 학급 교시 시각 (classes/{classId}/info/periodTimes — 시간표 엑셀 업로드 때 복사됨)
   useEffect(() => {
@@ -309,6 +353,9 @@ export default function TodayCard({
   )
 
   const hasOverride = useMemo<boolean>(() => periods.some((p) => p.changed === true), [periods])
+  const visiblePeriods: PeriodItem[] = teacherUid ? (offDay ? [] : ownTimetable.periods) : periods
+  const timetableLoading = teacherUid ? teacherState?.uid !== teacherUid : loading
+  const timetableError = teacherUid && teacherState?.uid === teacherUid && teacherState.status === 'error'
 
   // 헤더 날짜도 불러온 데이터와 같은 날(todayYmd) 기준으로 표시합니다.
   const header = parseYmd(todayYmd)
@@ -326,7 +373,7 @@ export default function TodayCard({
       </div>
 
       {/* 시간표 변경 안내 배너 */}
-      {!loading && hasOverride && (
+      {!teacherUid && !loading && hasOverride && (
         <div className="flex items-center gap-1.5 border-b border-amber-100 bg-amber-50 px-5 py-2 text-xs font-medium text-amber-800">
           <svg
             viewBox="0 0 24 24"
@@ -371,38 +418,59 @@ export default function TodayCard({
       <div className="grid grid-cols-1 gap-5 p-5 sm:grid-cols-2">
         {/* 오늘 시간표 타임라인 */}
         <div>
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-700">
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-4 w-4 text-blue-600"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 7v5l3 3" />
-            </svg>
-            오늘 시간표
-          </h3>
-          {loading ? (
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-700">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4 text-blue-600"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7v5l3 3" />
+              </svg>
+              {teacherUid ? '오늘의 내 수업' : '오늘 시간표'}
+            </h3>
+            {teacherUid && (
+              <Link href="/teacher/my-schedule" className="flex min-h-[44px] shrink-0 items-center text-xs font-semibold text-blue-600">
+                주간 시간표 →
+              </Link>
+            )}
+          </div>
+          {timetableLoading ? (
             <SkeletonLines rows={4} />
-          ) : periods.length === 0 && offDay ? (
+          ) : timetableError ? (
+            <div role="alert" className="mt-3 rounded-lg bg-gray-50 px-4 py-5 text-center text-sm text-gray-600">
+              내 시간표를 불러오지 못했어요.
+              <button type="button" onClick={() => setTeacherRetry((n) => n + 1)} className="mx-auto mt-1 block min-h-[44px] px-4 font-semibold text-blue-600">
+                다시 불러오기
+              </button>
+            </div>
+          ) : visiblePeriods.length === 0 && offDay ? (
             <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500 break-keep">
               오늘은 쉬는 날이에요
               {offDay.name && (
                 <span className="mt-1 block text-xs font-semibold text-gray-700">{offDay.name}</span>
               )}
             </p>
-          ) : periods.length === 0 ? (
+          ) : visiblePeriods.length === 0 ? (
             <p className="mt-3 rounded-lg bg-gray-50 px-4 py-6 text-center text-sm text-gray-500">
-              오늘 시간표 정보가 없어요
+              {teacherUid
+                ? ownTimetable.hasSchedule ? '오늘은 등록된 수업이 없어요' : '아직 내 시간표가 등록되지 않았어요'
+                : '오늘 시간표 정보가 없어요'}
+              {teacherUid && !ownTimetable.hasSchedule && (
+                <Link href="/teacher/my-schedule" className="mt-2 flex min-h-[44px] items-center justify-center font-semibold text-blue-600">
+                  내 시간표 불러오기
+                </Link>
+              )}
             </p>
           ) : (
             <ol className="mt-3 space-y-1.5">
-              {periods.map((p) => {
+              {visiblePeriods.map((p) => {
                 const isNow = p.period === currentPeriod
                 return (
                   <li
@@ -419,7 +487,7 @@ export default function TodayCard({
                       {p.period}
                     </span>
                     <span
-                      className={`min-w-0 flex-1 truncate text-sm ${
+                      className={`min-w-0 flex-1 break-words text-sm ${
                         isNow
                           ? 'font-semibold text-blue-900'
                           : p.changed

@@ -277,14 +277,15 @@ export default function Dashboard() {
           )}
         </div>
 
-        {hasClass && userData?.schoolCode && (
+        {hasSchool && user && (
           <div className="mb-6">
             <TodayCard
               schoolCode={String(userData.schoolCode)}
-              schoolName={String(userData.schoolName)}
-              grade={userData.grade as string | number}
-              classNm={userData.classNm as string | number}
-              classId={String(userData.classId)}
+              schoolName={String(userData.schoolName || '')}
+              grade={(userData.grade ?? '') as string | number}
+              classNm={(userData.classNm ?? '') as string | number}
+              classId={String(userData.classId || '')}
+              teacherUid={user.uid}
             />
           </div>
         )}
