@@ -9,6 +9,7 @@ import BagChecklist from '../../components/BagChecklist'
 import MealRating from '../../components/MealRating'
 import EnablePush from '../../components/EnablePush'
 import { useInstallPrompt } from '../../components/ui/install'
+import { ACCOUNT_DELETE_PATH } from '../../lib/accountDeletion'
 import {
   formatNoticeDate,
   getMyReceipts,
@@ -586,6 +587,19 @@ export default function StudentToday(): JSX.Element {
             </div>
           </>
         )}
+
+        {/* 학생 화면에는 설정 페이지가 없어 맨 아래에 둡니다 (승인 대기·거절 상태에서도 보임) */}
+        <footer className="flex justify-center gap-1 pt-2 text-xs text-gray-400">
+          <Link href="/privacy" className="p-2 transition-colors hover:text-gray-600">
+            개인정보처리방침
+          </Link>
+          <span aria-hidden="true" className="py-2">
+            ·
+          </span>
+          <Link href={ACCOUNT_DELETE_PATH} className="p-2 transition-colors hover:text-gray-600">
+            회원 탈퇴
+          </Link>
+        </footer>
       </main>
 
       <StudentTabBar active="today" />
