@@ -4,16 +4,19 @@ import { FieldValue, getFirestore } from 'firebase-admin/firestore'
 import { getAdminApp, isAdminConfigured, verifyIdToken } from '../../lib/fcm-admin'
 import {
   DAY_KEYS,
-  PERIOD_COUNT,
+  isBlankSchedule,
+  normalizeWeeklySchedule,
   normalizeName,
   periodTimesToStarts,
   sanitizeUploadPayload,
+  scheduleDayCells as dayCells,
   storedClassGridToInfoTimetable,
   storedTeacherGridToMySchedule,
   classLabelToParts,
   type DayKey,
   type StoredClassGrid,
   type StoredTeacherGrid,
+  type WeeklySchedule,
 } from '../../lib/timetableConvert'
 
 // POST /api/timetable-upload
@@ -52,14 +55,8 @@ interface UploadReport {
 const BATCH_LIMIT = 400
 
 type Grid<T> = Record<DayKey, (T | null)[]>
-type Schedule = Record<DayKey, string[]>
 
 const own = (map: object, key: string): boolean => Object.prototype.hasOwnProperty.call(map, key)
-
-const dayCells = (grid: unknown, key: DayKey): unknown[] => {
-  const day = grid && typeof grid === 'object' ? (grid as Record<string, unknown>)[key] : undefined
-  return Array.isArray(day) ? day : []
-}
 
 /**
  * 파일에 직접 들어 있지 않고 역산으로만 만들어진 그리드를 기존 그리드에 합칩니다.
@@ -80,22 +77,10 @@ const mergeDerivedGrid = <T>(prev: unknown, next: Grid<T>, isReplaced: (old: T) 
   return out
 }
 
-/** Firestore의 mySchedule 값을 {mon..fri: string[7]}로 정규화 (비교·해시용) */
-const toSchedule = (raw: unknown): Schedule => {
-  const out = {} as Schedule
-  for (const key of DAY_KEYS) {
-    const day = dayCells(raw, key)
-    out[key] = Array.from({ length: PERIOD_COUNT }, (_, i) => (typeof day[i] === 'string' ? (day[i] as string) : ''))
-  }
-  return out
-}
-
-const scheduleHash = (s: Schedule): string =>
+const scheduleHash = (s: WeeklySchedule): string =>
   createHash('sha256')
     .update(JSON.stringify(DAY_KEYS.map((k) => s[k])))
     .digest('hex')
-
-const isBlankSchedule = (s: Schedule): boolean => DAY_KEYS.every((k) => s[k].every((v) => v.trim() === ''))
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
@@ -350,7 +335,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     >()
     teacherSnap.forEach((docSnap) => {
       const d = docSnap.data()
-      const current = toSchedule(d.mySchedule)
+      const current = normalizeWeeklySchedule(d.mySchedule)
       // masterName(교사가 직접 연결한 엑셀 이름) 우선, displayName·name도 함께 매칭
       const keys = new Set(
         [d.masterName, d.displayName, d.name]

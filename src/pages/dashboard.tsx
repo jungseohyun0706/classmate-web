@@ -223,8 +223,8 @@ export default function Dashboard() {
     },
     {
       id: 'view-others',
-      title: '다른 반 시간표 조회',
-      desc: '학교 전체 시간표를 조회합니다.',
+      title: '학교 시간표 조회',
+      desc: '다른 반과 선생님의 시간표를 봐요.',
       icon: <svg className="h-8 w-8 text-teal-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>,
       bgColor: 'bg-teal-100',
       path: '/teacher/view-timetables',

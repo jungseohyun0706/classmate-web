@@ -23,6 +23,28 @@ export interface StoredSchoolTimetable {
 
 export type StoredClassGrid = Record<DayKey, (Lesson | null)[]>
 export type StoredTeacherGrid = Record<DayKey, (TeacherSlot | null)[]>
+export type WeeklySchedule = Record<DayKey, string[]>
+
+export function scheduleDayCells(grid: unknown, key: DayKey): unknown[] {
+  const day = grid && typeof grid === 'object' ? (grid as Record<string, unknown>)[key] : undefined
+  return Array.isArray(day) ? day : []
+}
+
+/** 저장된 개인 시간표를 월~금 7교시 문자열 배열로 정규화합니다. */
+export function normalizeWeeklySchedule(raw: unknown): WeeklySchedule {
+  const schedule = {} as WeeklySchedule
+  for (const key of DAY_KEYS) {
+    const day = scheduleDayCells(raw, key)
+    schedule[key] = Array.from({ length: PERIOD_COUNT }, (_, index) => {
+      const cell = day[index]
+      return typeof cell === 'string' ? cell : ''
+    })
+  }
+  return schedule
+}
+
+export const isBlankSchedule = (schedule: WeeklySchedule): boolean =>
+  DAY_KEYS.every((key) => schedule[key].every((cell) => cell.trim() === ''))
 
 /** "A_화작A" → "화작A" 같은 분반 그룹 접두어 제거 (표시용) */
 export const cleanSubject = (subject: string): string =>
@@ -60,8 +82,8 @@ export const teacherSlotToText = (slot: TeacherSlot | null): string => {
 /** 저장된 교사 그리드 → users/{uid}.mySchedule ({mon..fri: string[7]}) */
 export const storedTeacherGridToMySchedule = (
   grid: Partial<StoredTeacherGrid> | undefined
-): Record<DayKey, string[]> => {
-  const out = {} as Record<DayKey, string[]>
+): WeeklySchedule => {
+  const out = {} as WeeklySchedule
   DAY_KEYS.forEach((key) => {
     out[key] = padToPeriods(grid?.[key]).map(teacherSlotToText)
   })
