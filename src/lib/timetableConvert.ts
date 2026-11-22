@@ -10,6 +10,15 @@ export type DayKey = (typeof DAY_KEYS)[number]
 
 export const PERIOD_COUNT = 7 // 앱 전체가 7교시 고정 (class-timetable / my-schedule 과 동일)
 
+/** YYYYMMDD를 평일 시간표의 요일 키로 변환합니다. */
+export function ymdToDayKey(ymd: string): DayKey | null {
+  if (!/^\d{8}$/.test(ymd)) return null
+  const iso = `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`
+  const date = new Date(`${iso}T00:00:00Z`)
+  if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== iso) return null
+  return DAY_KEYS[date.getUTCDay() - 1] ?? null
+}
+
 /** Firestore에 저장되는 학교 시간표 마스터 문서: school_timetables/{schoolCode} */
 export interface StoredSchoolTimetable {
   classes: Record<string, StoredClassGrid>

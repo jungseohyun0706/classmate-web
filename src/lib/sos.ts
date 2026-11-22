@@ -6,6 +6,7 @@
 
 import { auth, db } from './firebase'
 import { prioritizeSosTeachers, scheduleSubjectGroups } from './sosSubjects'
+import { ymdToDayKey } from './timetableConvert'
 import {
   addDoc,
   collection,
@@ -17,9 +18,7 @@ import {
   where,
 } from 'firebase/firestore'
 
-export type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri'
-
-const DAY_KEYS: (DayKey | null)[] = [null, 'mon', 'tue', 'wed', 'thu', 'fri', null] // getUTCDay(): 0=일
+export { ymdToDayKey, type DayKey } from './timetableConvert'
 const DAY_LABELS_KO = ['일', '월', '화', '수', '목', '금', '토']
 
 export type SosStatus = 'open' | 'assigned' | 'cancelled'
@@ -58,16 +57,6 @@ export function todayKstYmd(): string {
   const m = String(kst.getUTCMonth() + 1).padStart(2, '0')
   const d = String(kst.getUTCDate()).padStart(2, '0')
   return `${y}${m}${d}`
-}
-
-/** YYYYMMDD → 요일 키(mon~fri). 주말이거나 형식이 틀리면 null. */
-export function ymdToDayKey(ymd: string): DayKey | null {
-  if (!/^\d{8}$/.test(ymd)) return null
-  const y = Number(ymd.slice(0, 4))
-  const m = Number(ymd.slice(4, 6))
-  const d = Number(ymd.slice(6, 8))
-  const day = new Date(Date.UTC(y, m - 1, d)).getUTCDay()
-  return DAY_KEYS[day]
 }
 
 /** YYYYMMDD → "8월 25일 (월)" 형태의 표시용 문자열. */

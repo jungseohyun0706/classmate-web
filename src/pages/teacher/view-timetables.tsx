@@ -4,11 +4,35 @@ import { auth, db } from '../../lib/firebase'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc, collection, query, where, getDocs, orderBy } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
-import { DAY_KEYS, PERIOD_COUNT, normalizeName, normalizeWeeklySchedule, type DayKey, type WeeklySchedule } from '../../lib/timetableConvert'
+import { DAY_KEYS, PERIOD_COUNT, normalizeName, normalizeWeeklySchedule, ymdToDayKey, type DayKey, type WeeklySchedule } from '../../lib/timetableConvert'
 import type { TeacherTimetable } from '../api/teacher-timetables'
 
 const PERIODS = Array.from({ length: PERIOD_COUNT }, (_, index) => index + 1)
 const DAY_LABELS = ['월', '화', '수', '목', '금']
+const VIEW_LABELS = { class: '학급별', teacher: '교사별', free: '수업 없는 교사 찾기' } as const
+type TimetableView = keyof typeof VIEW_LABELS
+
+type FreeSearch =
+  | { status: 'idle' | 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; teachers: TeacherTimetable[] }
+
+function defaultSearchDate() {
+  const date = new Date(Date.now() + 9 * 60 * 60 * 1000)
+  const day = date.getUTCDay()
+  if (day === 0 || day === 6) date.setUTCDate(date.getUTCDate() + (day === 0 ? 1 : 2))
+  return date.toISOString().slice(0, 10)
+}
+
+async function fetchTeacherTimetables(signal: AbortSignal, query?: URLSearchParams) {
+  const token = await auth.currentUser?.getIdToken()
+  if (!token) throw new Error('다시 로그인해 주세요.')
+  const path = query ? `/api/teacher-timetables?${query}` : '/api/teacher-timetables'
+  const response = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal })
+  if (!response.ok) throw new Error(`교사 시간표 조회 실패 (${response.status})`)
+  const data: { teachers: TeacherTimetable[] } = await response.json()
+  return data.teachers
+}
 
 interface SchoolClass {
   id: string
@@ -22,7 +46,7 @@ export default function ViewTimetables() {
   const { toast } = useUI()
   const [loading, setLoading] = useState(true)
   const [profile, setProfile] = useState<{ schoolCode: string; schoolName: string } | null>(null)
-  const [mode, setMode] = useState<'class' | 'teacher'>('class')
+  const [mode, setMode] = useState<TimetableView>('class')
   const [classes, setClasses] = useState<SchoolClass[] | null>(null)
   const [classesError, setClassesError] = useState(false)
   const [selectedClass, setSelectedClass] = useState<SchoolClass | null>(null)
@@ -33,6 +57,10 @@ export default function ViewTimetables() {
   const [teacherError, setTeacherError] = useState(false)
   const [teacherQuery, setTeacherQuery] = useState('')
   const [selectedTeacher, setSelectedTeacher] = useState<TeacherTimetable | null>(null)
+  const [freeDate, setFreeDate] = useState(defaultSearchDate)
+  const [freePeriod, setFreePeriod] = useState(1)
+  const [freeSearch, setFreeSearch] = useState<FreeSearch>({ status: 'idle' })
+  const freeRequest = useRef<AbortController | null>(null)
   // 반을 빠르게 바꿀 때 늦게 도착한 이전 반 응답이 화면을 덮어쓰지 않도록 마지막으로 고른 반을 기억
   const classRequest = useRef(0)
 
@@ -46,6 +74,8 @@ export default function ViewTimetables() {
       setTeacherError(false)
       setSelectedTeacher(null)
       setSelectedClass(null)
+      freeRequest.current?.abort()
+      setFreeSearch({ status: 'idle' })
       classRequest.current += 1
       if (!u) {
         router.replace('/auth/login')
@@ -83,6 +113,7 @@ export default function ViewTimetables() {
     return () => {
       cancelled = true
       unsub()
+      freeRequest.current?.abort()
     }
   }, [router, toast])
 
@@ -117,15 +148,8 @@ export default function ViewTimetables() {
     const controller = new AbortController()
     async function loadTeachers() {
       try {
-        const token = await auth.currentUser?.getIdToken()
-        if (!token) throw new Error('로그인이 필요해요.')
-        const response = await fetch('/api/teacher-timetables', {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new Error(`교사 시간표 조회 실패 (${response.status})`)
-        const data: { teachers: TeacherTimetable[] } = await response.json()
-        if (!controller.signal.aborted) setTeachers(data.teachers)
+        const data = await fetchTeacherTimetables(controller.signal)
+        if (!controller.signal.aborted) setTeachers(data)
       } catch (error) {
         if (controller.signal.aborted) return
         console.error(error)
@@ -192,6 +216,34 @@ export default function ViewTimetables() {
     setSelectedTeacher(null)
   }
 
+  const resetFreeSearch = () => {
+    freeRequest.current?.abort()
+    setFreeSearch({ status: 'idle' })
+    setSelectedTeacher(null)
+  }
+
+  const searchFreeTeachers = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    resetFreeSearch()
+    const date = freeDate.replace(/-/g, '')
+    if (!ymdToDayKey(date)) {
+      setFreeSearch({ status: 'error', message: '월요일부터 금요일 사이 날짜를 선택해 주세요.' })
+      return
+    }
+    const controller = new AbortController()
+    freeRequest.current = controller
+    setFreeSearch({ status: 'loading' })
+    try {
+      const query = new URLSearchParams({ date, period: String(freePeriod) })
+      const results = await fetchTeacherTimetables(controller.signal, query)
+      if (!controller.signal.aborted) setFreeSearch({ status: 'ready', teachers: results })
+    } catch (error) {
+      if (controller.signal.aborted) return
+      console.error(error)
+      setFreeSearch({ status: 'error', message: '검색에 실패했어요. 다시 시도해 주세요.' })
+    }
+  }
+
   if (loading) return <div className="p-10 text-center">로딩 중...</div>
   if (!profile) return null
 
@@ -202,7 +254,11 @@ export default function ViewTimetables() {
   const filtered = gradeFilter === 'all' ? classList : classList.filter((c) => Number(c.grade) === gradeFilter)
   const teacherSearch = normalizeName(teacherQuery).toLowerCase()
   const filteredTeachers = (teachers ?? []).filter((teacher) => normalizeName(teacher.name).toLowerCase().includes(teacherSearch))
-  const byTeacher = mode === 'teacher'
+  const byAvailability = mode === 'free'
+  const byTeacher = mode !== 'class'
+  const teacherResults = byAvailability
+    ? freeSearch.status === 'ready' ? freeSearch.teachers : []
+    : filteredTeachers
   const selected = byTeacher ? selectedTeacher : selectedClass
   const timetable = byTeacher ? selectedTeacher?.schedule : classTimetable
   const heading = byTeacher
@@ -226,8 +282,8 @@ export default function ViewTimetables() {
           </button>
         </div>
 
-        <div className="mb-5 inline-flex gap-1 rounded-xl bg-gray-100 p-1" role="group" aria-label="시간표 조회 유형">
-          {(['class', 'teacher'] as const).map((view) => (
+        <div className="mb-5 inline-flex flex-wrap gap-1 rounded-xl bg-gray-100 p-1" role="group" aria-label="시간표 조회 유형">
+          {(['class', 'teacher', 'free'] as const).map((view) => (
             <button
               key={view}
               type="button"
@@ -235,11 +291,12 @@ export default function ViewTimetables() {
               onClick={() => {
                 if (mode === view) return
                 clearSelection()
+                if (mode === 'free') resetFreeSearch()
                 setMode(view)
               }}
-              className={`min-h-10 rounded-lg px-4 text-sm font-semibold ${mode === view ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-white/70'}`}
+              className={`min-h-11 rounded-lg px-2.5 text-sm font-semibold sm:px-4 ${mode === view ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:bg-white/70'}`}
             >
-              {view === 'class' ? '학급별' : '교사별'}
+              {VIEW_LABELS[view]}
             </button>
           ))}
         </div>
@@ -249,9 +306,47 @@ export default function ViewTimetables() {
           {/* 모바일에서는 목록과 시간표를 한 화면에 하나씩 표시합니다. */}
           <div className={`bg-white shadow rounded-xl overflow-hidden border border-gray-200 h-fit ${selected ? 'hidden md:block' : ''}`}>
             <div className="p-4 bg-gray-50 border-b border-gray-200 font-bold text-gray-700">
-              {byTeacher ? '교사 목록' : '학급 목록'}
+              {byAvailability ? '수업 없는 교사' : byTeacher ? '교사 목록' : '학급 목록'}
             </div>
-            {byTeacher ? (
+            {byAvailability ? (
+              <form onSubmit={searchFreeTeachers} className="space-y-3 border-b border-gray-100 p-3">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                  <label className="min-w-0 space-y-1 text-sm font-medium text-gray-700">
+                    <span>날짜</span>
+                    <input
+                      type="date"
+                      required
+                      value={freeDate}
+                      onChange={(event) => {
+                        setFreeDate(event.target.value)
+                        resetFreeSearch()
+                      }}
+                      className="block min-h-11 w-full min-w-0 rounded-lg border border-gray-300 bg-white px-2 text-base text-gray-900"
+                    />
+                  </label>
+                  <label className="space-y-1 text-sm font-medium text-gray-700">
+                    <span>교시</span>
+                    <select
+                      value={freePeriod}
+                      onChange={(event) => {
+                        setFreePeriod(Number(event.target.value))
+                        resetFreeSearch()
+                      }}
+                      className="block min-h-11 w-full rounded-lg border border-gray-300 bg-white px-2 text-base text-gray-900"
+                    >
+                      {PERIODS.map((period) => <option key={period} value={period}>{period}교시</option>)}
+                    </select>
+                  </label>
+                </div>
+                <button
+                  type="submit"
+                  disabled={freeSearch.status === 'loading'}
+                  className="min-h-11 w-full rounded-lg bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {freeSearch.status === 'loading' ? '찾는 중…' : '찾기'}
+                </button>
+              </form>
+            ) : byTeacher ? (
               <div className="border-b border-gray-100 p-3">
                 <input
                   type="search"
@@ -287,20 +382,28 @@ export default function ViewTimetables() {
             )}
             <div className="divide-y divide-gray-100 max-h-[70vh] md:max-h-[600px] overflow-y-auto">
               {byTeacher ? (
-                teacherError ? (
+                byAvailability && freeSearch.status === 'idle' ? (
+                  <p className="p-6 text-center text-sm text-gray-500">날짜와 교시를 선택해 검색하세요.</p>
+                ) : byAvailability && freeSearch.status === 'loading' ? (
+                  <p role="status" className="p-6 text-center text-sm text-gray-500">수업 없는 선생님을 찾는 중이에요.</p>
+                ) : byAvailability && freeSearch.status === 'error' ? (
+                  <p role="alert" className="p-6 text-center text-sm text-red-700">{freeSearch.message}</p>
+                ) : !byAvailability && teacherError ? (
                   <div className="p-5 text-center text-sm text-gray-600">
                     <p>교사 시간표를 불러오지 못했어요.</p>
                     <button onClick={() => setTeacherError(false)} className="mt-2 min-h-10 font-semibold text-blue-700">
                       다시 시도
                     </button>
                   </div>
-                ) : !teachers ? (
+                ) : !byAvailability && !teachers ? (
                   <p role="status" className="p-6 text-center text-sm text-gray-500">교사 목록을 불러오는 중이에요.</p>
-                ) : filteredTeachers.length === 0 ? (
-                  <p className="p-6 text-center text-sm text-gray-500">
-                    {teacherSearch ? '검색한 이름과 일치하는 선생님이 없어요.' : '조회할 수 있는 선생님이 없어요.'}
+                ) : teacherResults.length === 0 ? (
+                  <p role="status" className="p-6 text-center text-sm text-gray-500">
+                    {byAvailability
+                      ? '해당 교시에 수업이 비어 있는 선생님을 찾지 못했어요.'
+                      : teacherSearch ? '검색한 이름과 일치하는 선생님이 없어요.' : '조회할 수 있는 선생님이 없어요.'}
                   </p>
-                ) : filteredTeachers.map((teacher) => (
+                ) : teacherResults.map((teacher) => (
                   <button
                     key={teacher.id}
                     type="button"
