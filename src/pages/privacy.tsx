@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { ACCOUNT_DELETE_PATH, PRIVACY_CONTACT_EMAIL } from '../lib/accountDeletion';
 
 const PrivacyPolicy = () => {
-  const lastUpdated = '2026년 10월 30일';
+  const lastUpdated = '2026년 11월 23일';
   const appName = '클래스메이트(Classmate)';
   const developerEmail = PRIVACY_CONTACT_EMAIL;
 
@@ -29,7 +29,7 @@ const PrivacyPolicy = () => {
               <li><strong>선생님:</strong> 이름, 이메일 주소, 학교·학년·반, 직접 입력한 수업 시간표</li>
               <li><strong>학생:</strong> 이름, 이메일 주소, 학교·학년·반, 번호(선택)</li>
               <li><strong>구글 계정으로 로그인하는 경우:</strong> 구글이 제공하는 이메일 주소, 이름, 프로필 사진</li>
-              <li><strong>서비스를 쓰면서 생기는 정보:</strong> 학급 톡방 메시지와 첨부한 사진·파일, 알림장과 댓글, 알림장 읽음·동의 기록, 급식 별점, 수업 교환·보결 요청 기록, 가방 체크 기록</li>
+              <li><strong>서비스를 쓰면서 생기는 정보:</strong> 학급 톡방 메시지와 첨부한 사진·파일, 알림장과 댓글, 알림장 읽음·동의 기록, 급식 별점, 수업 교환·보결 요청 기록, 가방 체크 기록, 톡방 신고·차단 기록</li>
               <li><strong>자동으로 생기는 정보:</strong> 계정 고유 식별자, 푸시 알림 토큰(알림을 켠 경우), 로그인 유지와 오프라인 사용을 위해 기기(브라우저 저장소)에 저장되는 정보</li>
             </ul>
             <p className="mt-2 text-sm text-gray-600">
@@ -44,7 +44,7 @@ const PrivacyPolicy = () => {
               <li>학급 소속 확인과 선생님의 가입 승인</li>
               <li>시간표·급식·학사일정·알림장·학급 톡방 등 서비스 제공</li>
               <li>알림장·톡방·수업 교환 등 서비스 알림(푸시) 발송</li>
-              <li>부정 이용 방지와 서비스 안정성 확보</li>
+              <li>톡방 신고 처리, 사용자 차단과 부정 이용 방지</li>
             </ul>
           </div>
 
@@ -87,7 +87,7 @@ const PrivacyPolicy = () => {
             <p>서비스 운영을 위해 아래 업체에 개인정보 처리를 맡기며, 이 업체들의 서버는 국외에 있을 수 있습니다.</p>
             <ul className="list-disc ml-5 mt-2 space-y-1">
               <li><strong>Google LLC</strong> (Firebase Authentication, Cloud Firestore, Cloud Storage, Firebase Cloud Messaging): 계정 인증, 데이터·첨부 파일 저장, 푸시 알림 발송</li>
-              <li><strong>Vercel Inc.</strong>: 웹 서비스 호스팅</li>
+              <li><strong>Netlify, Inc.</strong>: 웹 서비스 호스팅</li>
             </ul>
           </div>
 
@@ -95,7 +95,7 @@ const PrivacyPolicy = () => {
             <h2 className="text-xl font-semibold text-gray-900 mb-3">7. 안전성 확보 조치</h2>
             <ul className="list-disc ml-5 space-y-1">
               <li>모든 통신은 HTTPS로 암호화합니다.</li>
-              <li>비밀번호는 인증 서비스에 암호화되어 저장되며 운영자도 볼 수 없습니다.</li>
+              <li>비밀번호는 인증 서비스가 관리하며 클래스메이트 운영자는 원문을 볼 수 없습니다.</li>
               <li>본인과 같은 학급 구성원만 볼 수 있도록 접근 권한을 제한합니다.</li>
               <li>첨부 파일은 비공개로 저장하고, 볼 때마다 짧은 시간만 쓸 수 있는 링크를 발급합니다.</li>
               <li>광고나 행태 분석을 위한 쿠키·추적 도구는 쓰지 않습니다.</li>
