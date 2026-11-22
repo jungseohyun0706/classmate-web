@@ -126,6 +126,10 @@ export default function Dashboard() {
 
   const hasClass = userData?.classId && userData?.schoolName
   const hasSchool = !!userData?.schoolCode
+  const teacherName =
+    [userData?.displayName, userData?.name, userData?.masterName, user?.displayName]
+      .find((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      ?.trim() || '선생님'
 
   // 홈 화면 설치 카드 상태
   const installMode: 'installed' | 'prompt' | 'ios' | 'hint' = isStandalone
@@ -261,7 +265,7 @@ export default function Dashboard() {
       <main className="max-w-7xl mx-auto py-6 sm:py-10 px-4 sm:px-6 lg:px-8">
         <div className="mb-6 sm:mb-8">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 break-keep">
-            {hasClass ? `${userData.schoolName} ${userData.grade}학년 ${userData.classNm}반 👋` : `반갑습니다, 선생님! 👋`}
+            {teacherName}
           </h1>
           <p className="mt-2 text-base sm:text-lg text-gray-600 break-keep">
             {hasClass ? '오늘도 학생들과 즐거운 하루 보내세요.' : '먼저 담당하실 학급을 등록해주세요.'}

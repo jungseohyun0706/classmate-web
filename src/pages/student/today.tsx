@@ -303,12 +303,7 @@ export default function StudentToday(): JSX.Element {
   // 거절된 학생은 classId가 남아 있어도 반 소속으로 보여주지 않습니다.
   const rejected = userData.status === 'rejected'
   const hasClass = Boolean(userData.classId && userData.schoolCode) && !rejected
-  const studentName = userData.name || userData.displayName || '학생'
-  // 수업 그룹으로 들어온 학생은 학년·반이 비어 있음(그룹엔 여러 반 학생이 섞임)
-  const classTitle =
-    userData.grade && userData.classNm
-      ? `${userData.schoolName ?? ''} ${userData.grade}학년 ${userData.classNm}반`
-      : String(userData.schoolName ?? '')
+  const studentName = userData.name?.trim() || userData.displayName?.trim() || '학생'
 
   return (
     <div className="min-h-screen bg-gray-50 text-black">
@@ -336,10 +331,10 @@ export default function StudentToday(): JSX.Element {
       >
         <div>
           <h1 className="text-xl font-bold text-gray-900 break-keep">
-            {hasClass ? classTitle : `안녕, ${studentName}!`}
+            {studentName}
           </h1>
           <p className="mt-1 text-sm text-gray-500 break-keep">
-            {hasClass ? `${studentName}, 오늘도 좋은 하루 보내요!` : '우리 반에 들어가면 소식이 여기에 보여요.'}
+            {hasClass ? '오늘도 좋은 하루 보내요!' : '우리 반에 들어가면 소식이 여기에 보여요.'}
           </p>
         </div>
 
