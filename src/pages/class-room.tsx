@@ -157,6 +157,8 @@ export default function ClassRoom(): JSX.Element {
   const [roomTeacherId, setRoomTeacherId] = useState<string | null>(null)
 
   const feedRef = useRef<HTMLDivElement>(null)
+  const bannerNoticeRef = useRef<HTMLSpanElement>(null)
+  const pendingReads = useRef(new Set<string>())
   const stickBottom = useRef(true)
 
   // 백그라운드에서 돌아오면 구독을 새로 열어 밀린 메시지를 즉시 동기화
@@ -339,8 +341,12 @@ export default function ClassRoom(): JSX.Element {
     return () => setActiveRoom(null)
   }, [classId])
 
-  // 공지 id 목록 — 자동 읽음 effect의 의존성으로 씁니다(개수만으로는 변화를 놓칩니다).
+  // 공지 개수가 같아도 새 공지가 들어오면 관찰 대상을 갱신합니다.
   const noticeIdsKey = useMemo(() => notices.map((n) => n.id).join(','), [notices])
+  const noticeCountsKey = useMemo(
+    () => notices.map((n) => `${n.id}:${n.readCount}:${n.checkCount}`).join(','),
+    [notices]
+  )
 
   // 교사용: 공지별 실제 읽음 수(receipts 문서 수).
   // announcement.readCount는 비정규화 카운터라 예전 기록·동시 기록 때문에 실제와 어긋날 수 있어,
@@ -384,48 +390,75 @@ export default function ClassRoom(): JSX.Element {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTeacher, classId, noticeIdsKey])
+  }, [isTeacher, classId, noticeCountsKey, wakeTick])
 
-  // 학생: 읽음 확인 로드 + 자동 읽음 처리
+  // 화면 밖 공지의 기존 기록도 가져오지만, 읽음은 본문이 보일 때만 기록합니다.
   useEffect(() => {
-    if (!classId || !uid || isTeacher || notices.length === 0) return
+    if (!classId || !uid || isTeacher || !noticeIdsKey) return
     let cancelled = false
-    ;(async () => {
-      try {
-        const mine = await getMyReceipts(classId, notices.map((n) => n.id), uid)
-        if (cancelled) return
-        setReceipts(mine)
-        for (const n of notices) {
-          // receipt가 없거나, 있어도 readAt이 비어 있으면(확인만 누른 예전 기록) 읽음 처리합니다.
-          // 존재 여부만 보면 예전 기록은 markRead의 보정 로직까지 가지 못합니다.
-          if (!mine[n.id]?.readAt) {
-            markRead(classId, n.id, uid, myName)
-              .then(() => {
-                if (!cancelled) {
-                  setReceipts((prev) => ({
-                    ...prev,
-                    // 기존 동의(consent) 값은 보존하고 readAt만 채웁니다.
-                    [n.id]: { ...prev[n.id], readAt: Timestamp.now(), studentName: myName },
-                  }))
-                }
-              })
-              // 읽음 기록 실패(권한 등)는 화면을 막지 않지만, 조용히 사라지면
-              // '아직 안 읽음'과 구분되지 않아 원인 추적이 불가능해집니다.
-              .catch((e) => console.warn('[class-room] 읽음 기록 실패', n.id, e))
+    void getMyReceipts(classId, noticeIdsKey.split(','), uid).then((mine) => {
+      if (!cancelled) {
+        setReceipts((prev) => {
+          const next = { ...prev }
+          for (const [id, receipt] of Object.entries(mine)) {
+            const local = prev[id]
+            next[id] = {
+              ...receipt,
+              readAt: receipt.readAt ?? local?.readAt ?? null,
+              ...(local?.consentAt && (!receipt.consentAt || local.consentAt.toMillis() > receipt.consentAt.toMillis())
+                ? { consent: local.consent, consentAt: local.consentAt }
+                : {}),
+            }
           }
-        }
-      } catch (e) {
-        console.error(e)
+          return next
+        })
       }
-    })()
+    })
     return () => {
       cancelled = true
     }
-    // 의존성은 공지 '개수'가 아니라 id 목록이어야 합니다.
-    // watchAnnouncements가 limit(20)이라 개수가 20에 머무르면
-    // 새 공지가 와도 개수가 그대로여서 읽음 처리가 실행되지 않았습니다.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [classId, uid, isTeacher, noticeIdsKey])
+  }, [classId, uid, isTeacher, noticeIdsKey, wakeTick])
+
+  const receiptScope = classId && uid ? `${classId}:${uid}` : null
+  const activeReceiptScope = useRef<string | null>(null)
+  useEffect(() => {
+    activeReceiptScope.current = receiptScope
+    return () => { activeReceiptScope.current = null }
+  }, [receiptScope])
+
+  useEffect(() => {
+    if (!classId || !uid || !receiptScope || isTeacher || loading || blocked || !noticeIdsKey) return
+    if (typeof IntersectionObserver === 'undefined') return
+    let stopped = false
+    const observer = new IntersectionObserver((entries) => {
+      if (stopped || document.visibilityState !== 'visible') return
+      for (const entry of entries) {
+        if (!entry.isIntersecting || entry.intersectionRatio === 0) continue
+        const id = entry.target.getAttribute('data-notice-id')
+        if (!id || receipts[id]?.readAt) continue
+        const key = `${receiptScope}:${id}`
+        if (pendingReads.current.has(key)) continue
+        pendingReads.current.add(key)
+        const studentName = myName.slice(0, 50)
+        void markRead(classId, id, uid, studentName)
+          .then(() => {
+            if (activeReceiptScope.current !== receiptScope) return
+            setReceipts((prev) => ({
+              ...prev,
+              [id]: { ...prev[id], readAt: prev[id]?.readAt ?? Timestamp.now(), studentName },
+            }))
+          })
+          .catch((e) => console.warn('[class-room] 읽음 기록 실패', id, e))
+          .finally(() => pendingReads.current.delete(key))
+      }
+    }, { threshold: [0, 0.01] })
+    feedRef.current?.querySelectorAll('[data-notice-id]').forEach((node) => observer.observe(node))
+    if (bannerOpen && bannerNoticeRef.current) observer.observe(bannerNoticeRef.current)
+    return () => {
+      stopped = true
+      observer.disconnect()
+    }
+  }, [classId, uid, receiptScope, isTeacher, loading, blocked, myName, noticeIdsKey, bannerOpen, wakeTick, receipts])
 
   const feed = useMemo<FeedItem[]>(() => {
     const items: FeedItem[] = [
@@ -568,6 +601,43 @@ export default function ClassRoom(): JSX.Element {
     } finally {
       setConsentBusy(null)
     }
+  }
+
+  const renderNoticeReceipt = (notice: Announcement) => {
+    const receipt = receipts[notice.id]
+    return (
+      <div className="mt-2">
+        {receipt?.readAt && (
+          <span className="inline-block rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
+            👀 읽음
+          </span>
+        )}
+        {notice.requiresConsent && (
+          <div className="mt-1.5 grid grid-cols-2 gap-2">
+            {(['agreed', 'declined'] as const).map((value) => {
+              const picked = receipt?.consent === value
+              return (
+                <button
+                  key={value}
+                  disabled={consentBusy === notice.id}
+                  onClick={() => void handleConsent(notice, value)}
+                  className={`rounded-lg py-2.5 text-[13px] font-bold transition disabled:opacity-50 ${
+                    picked
+                      ? value === 'agreed'
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-rose-500 text-white'
+                      : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {picked ? '✔ ' : ''}
+                  {value === 'agreed' ? '동의해요' : '동의하지 않아요'}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
   }
 
   // 교사: 공지 확인 명단 시트 — 학생 목록 1회 로드 + 확인(receipts) 실시간 구독
@@ -754,45 +824,16 @@ export default function ClassRoom(): JSX.Element {
               className="flex w-full items-center gap-2 rounded-lg bg-white/95 px-3 py-2 text-left shadow-sm"
             >
               <span className="shrink-0 text-sm">📢</span>
-              <span className={`min-w-0 flex-1 text-[13px] text-gray-800 ${bannerOpen ? 'break-keep' : 'truncate'}`}>
-                {bannerOpen ? latestNotice.body : latestNotice.title}
+              <span
+                ref={bannerNoticeRef}
+                data-notice-id={bannerOpen ? latestNotice.id : undefined}
+                className={`min-w-0 flex-1 text-[13px] text-gray-800 ${bannerOpen ? 'break-keep' : 'truncate'}`}
+              >
+                {bannerOpen ? latestNotice.body || latestNotice.title : latestNotice.title}
               </span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${bannerOpen ? 'rotate-180' : ''}`}><path d="m6 9 6 6 6-6"/></svg>
             </button>
-            {bannerOpen && !isTeacher && (
-              latestNotice.requiresConsent ? (
-                <div className="mt-1.5 grid grid-cols-2 gap-2">
-                    {(['agreed', 'declined'] as const).map((v) => {
-                      const picked = receipts[latestNotice.id]?.consent === v
-                      return (
-                        <button
-                          key={v}
-                          disabled={consentBusy === latestNotice.id}
-                          onClick={() => void handleConsent(latestNotice, v)}
-                          className={`rounded-lg py-2.5 text-[13px] font-bold transition disabled:opacity-50 ${
-                            picked
-                              ? v === 'agreed'
-                                ? 'bg-emerald-600 text-white'
-                                : 'bg-rose-500 text-white'
-                              : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          {picked ? '✔ ' : ''}
-                          {v === 'agreed' ? '동의해요' : '동의하지 않아요'}
-                        </button>
-                      )
-                    })}
-                  </div>
-              ) : (
-                // 동의가 필요 없는 공지는 펼쳐 읽은 것으로 충분합니다.
-                // 예전에는 여기에도 확인 버튼이 떠서, 눌러야만 선생님께 집계됐습니다.
-                receipts[latestNotice.id] && (
-                  <span className="mt-1.5 inline-block rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
-                    👀 읽음
-                  </span>
-                )
-              )
-            )}
+            {bannerOpen && !isTeacher && renderNoticeReceipt(latestNotice)}
           </div>
         )}
       </header>
@@ -849,20 +890,22 @@ export default function ClassRoom(): JSX.Element {
                         <span className="ml-auto text-[10px] text-gray-400">{formatTime(item.notice.createdAt)}</span>
                       </div>
                       <div className="px-3.5 py-2.5">
-                        <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-gray-800 break-keep">
-                          {item.notice.body}
-                        </p>
-                        {!!item.notice.attachments?.length && <div className="mt-2"><ChatAttachments classId={classId} messageId={item.notice.id} kind="notice" attachments={item.notice.attachments} onImageLoad={onAttachmentLoad} /></div>}
-                        {item.notice.attachmentUrl && (
-                          <a
-                            href={item.notice.attachmentUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="mt-2 flex items-center gap-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700"
-                          >
-                            📎 <span className="min-w-0 flex-1 truncate">{item.notice.attachmentName || '첨부파일'}</span>
-                          </a>
-                        )}
+                        <div data-notice-id={item.notice.id}>
+                          <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-gray-800 break-keep">
+                            {item.notice.body}
+                          </p>
+                          {!!item.notice.attachments?.length && <div className="mt-2"><ChatAttachments classId={classId} messageId={item.notice.id} kind="notice" attachments={item.notice.attachments} onImageLoad={onAttachmentLoad} /></div>}
+                          {item.notice.attachmentUrl && (
+                            <a
+                              href={item.notice.attachmentUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="mt-2 flex items-center gap-1.5 rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700"
+                            >
+                              📎 <span className="min-w-0 flex-1 truncate">{item.notice.attachmentName || '첨부파일'}</span>
+                            </a>
+                          )}
+                        </div>
                         {isTeacher ? (
                           <button
                             onClick={() => setRosterFor(item.notice)}
@@ -878,41 +921,7 @@ export default function ClassRoom(): JSX.Element {
                             </span>
                             <span className="text-[11px] font-semibold text-emerald-600">명단 보기 ›</span>
                           </button>
-                        ) : (
-                          <div className="mt-2">
-                            {!item.notice.requiresConsent ? (
-                              // 동의가 필요 없는 공지는 읽은 것으로 충분합니다.
-                              receipts[item.notice.id] ? (
-                                <span className="inline-block rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
-                                  👀 읽음
-                                </span>
-                              ) : null
-                            ) : (
-                              <div className="grid grid-cols-2 gap-2">
-                    {(['agreed', 'declined'] as const).map((v) => {
-                      const picked = receipts[item.notice.id]?.consent === v
-                      return (
-                        <button
-                          key={v}
-                          disabled={consentBusy === item.notice.id}
-                          onClick={() => void handleConsent(item.notice, v)}
-                          className={`rounded-lg py-2.5 text-[13px] font-bold transition disabled:opacity-50 ${
-                            picked
-                              ? v === 'agreed'
-                                ? 'bg-emerald-600 text-white'
-                                : 'bg-rose-500 text-white'
-                              : 'bg-white text-gray-700 ring-1 ring-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          {picked ? '✔ ' : ''}
-                          {v === 'agreed' ? '동의해요' : '동의하지 않아요'}
-                        </button>
-                      )
-                    })}
-                  </div>
-                            )}
-                          </div>
-                        )}
+                        ) : renderNoticeReceipt(item.notice)}
                       </div>
                     </div>
                   </div>

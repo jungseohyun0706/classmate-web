@@ -1,10 +1,11 @@
 // 보결 SOS 도우미 (클라이언트 전용)
-// - createSos: SOS 발행 + 그 시간이 비어 있는 선생님들에게 알림/푸시 발송
+// - createSos: SOS 발행 + 빈 시간 선생님 중 같은 교과 우선 알림
 // - acceptSos: 선착순 수락 (트랜잭션으로 open → assigned)
 // - cancelSos: 요청자가 모집 중인 SOS를 취소
 // 모든 함수는 반드시 클라이언트(핸들러/이펙트)에서만 호출해야 합니다.
 
 import { auth, db } from './firebase'
+import { prioritizeSosTeachers, scheduleSubjectGroups } from './sosSubjects'
 import {
   addDoc,
   collection,
@@ -131,6 +132,7 @@ export interface FreeTeacher {
   name: string
   grade?: string | number
   classNm?: string | number
+  subjects: ReadonlySet<string>
 }
 
 /**
@@ -165,7 +167,13 @@ export async function findFreeTeachers(
     // 시간표 미등록 선생님은 제외 (unknown ≠ free)
     if (!s || !Array.isArray(s[dayKey])) return
     if (!s[dayKey][periodIdx]) {
-      free.push({ id: d.id, name: t.displayName || t.email || '선생님', grade: t.grade, classNm: t.classNm })
+      free.push({
+        id: d.id,
+        name: t.displayName || t.email || '선생님',
+        grade: t.grade,
+        classNm: t.classNm,
+        subjects: scheduleSubjectGroups(s),
+      })
     }
   })
   return free
@@ -194,6 +202,7 @@ async function takenSlotUids(schoolCode: string, date: string, period: number): 
 export interface CreateSosInput {
   date?: string // YYYYMMDD, 기본값: 오늘(KST)
   period: number // 1~7
+  subject: string
   reason?: string
   requesterId: string
   requesterName: string
@@ -204,11 +213,13 @@ export interface CreateSosInput {
 export interface CreateSosResult {
   id: string
   notified: number // 알림을 보낸 빈 시간 선생님 수
+  sameSubject: boolean
+  recipientCount: number
 }
 
 /**
- * SOS를 발행하고, 그 요일/교시가 비어 있는 선생님들에게
- * 인앱 알림 + 푸시를 보냅니다. 주말 날짜면 알림 대상은 0명입니다.
+ * 해당 교시가 빈 같은 교과 선생님에게 알립니다.
+ * 같은 교과에 가능한 선생님이 없으면 다른 교과의 빈 시간 선생님에게 알립니다.
  * 지난 날짜면 SosStateError('past-date')를 던집니다.
  */
 export async function createSos(input: CreateSosInput): Promise<CreateSosResult> {
@@ -217,6 +228,8 @@ export async function createSos(input: CreateSosInput): Promise<CreateSosResult>
     throw new SosStateError('past-date', '지난 날짜로는 SOS를 보낼 수 없어요.')
   }
 
+  const available = await findFreeTeachers(input.schoolCode, date, input.period - 1, input.requesterId)
+  const { recipients, sameSubject } = prioritizeSosTeachers(available, input.subject)
   const ref = await addDoc(collection(db, 'school_sos', input.schoolCode, 'requests'), {
     date,
     period: input.period,
@@ -229,29 +242,25 @@ export async function createSos(input: CreateSosInput): Promise<CreateSosResult>
     createdAt: serverTimestamp(),
   })
 
-  // 빈 시간 선생님 스캔 후 알림 발송
-  let notified = 0
-  const dayKey = ymdToDayKey(date)
-  if (dayKey) {
-    const free = await findFreeTeachers(input.schoolCode, date, input.period - 1, input.requesterId)
-    const title = '보결 SOS'
-    const body = `${input.requesterName} 선생님이 ${formatYmd(date)} ${input.period}교시 보결을 요청했어요`
-    const url = '/teacher/sos'
+  const title = '보결 SOS'
+  const body = `${input.requesterName} 선생님이 ${formatYmd(date)} ${input.period}교시 ${input.subject} 보결을 요청했어요`
+  const url = '/teacher/sos'
+  const notifications = await Promise.allSettled(
+    recipients.map(async (teacher) => {
+      try {
+        await writeNotification(teacher.id, title, body, url)
+      } finally {
+        void sendPush(teacher.id, title, body, url)
+      }
+    })
+  )
 
-    await Promise.all(
-      free.map(async (t) => {
-        try {
-          await writeNotification(t.id, title, body, url)
-          notified += 1
-        } catch {
-          // 개별 알림 실패는 무시하고 계속
-        }
-        void sendPush(t.id, title, body, url)
-      })
-    )
+  return {
+    id: ref.id,
+    notified: notifications.filter((result) => result.status === 'fulfilled').length,
+    sameSubject,
+    recipientCount: recipients.length,
   }
-
-  return { id: ref.id, notified }
 }
 
 export interface AcceptSosInput {

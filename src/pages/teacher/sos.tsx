@@ -9,9 +9,11 @@ import {
   acceptSos,
   cancelSos,
   todayKstYmd,
+  ymdToDayKey,
   formatYmd,
   SosStateError,
 } from '../../lib/sos'
+import { lessonSubject } from '../../lib/sosSubjects'
 
 const PERIODS = [1, 2, 3, 4, 5, 6, 7]
 
@@ -38,6 +40,7 @@ export default function SosPage() {
   // SOS 발행 폼
   const [dateInput, setDateInput] = useState(() => ymdToInput(todayKstYmd()))
   const [period, setPeriod] = useState(1)
+  const [subjectOverride, setSubjectOverride] = useState<string | null>(null)
   const [reason, setReason] = useState('')
   const [sending, setSending] = useState(false)
   const [showForm, setShowForm] = useState(false)
@@ -109,6 +112,10 @@ export default function SosPage() {
     }
   }, [userData?.schoolCode])
 
+  const dayKey = ymdToDayKey(inputToYmd(dateInput))
+  const scheduledSubject = dayKey ? lessonSubject(userData?.mySchedule?.[dayKey]?.[period - 1]) : ''
+  const subjectInput = subjectOverride ?? scheduledSubject
+
   // SOS 발행
   const handleSend = async () => {
     const ymd = inputToYmd(dateInput)
@@ -120,9 +127,14 @@ export default function SosPage() {
       toast('지난 날짜로는 SOS를 보낼 수 없어요. 날짜를 다시 선택해 주세요.', 'error')
       return
     }
+    const subject = lessonSubject(subjectInput)
+    if (!subject) {
+      toast('보결이 필요한 과목을 입력해 주세요.', 'error')
+      return
+    }
     const ok = await confirm({
       title: '보결 SOS를 보낼까요?',
-      description: `${formatYmd(ymd)} ${period}교시 보결 요청을 우리 학교 선생님들께 알려요.`,
+      description: `${formatYmd(ymd)} ${period}교시 ${subject} 보결 요청을 같은 교과의 빈 시간 선생님께 먼저 알려요.`,
       confirmText: 'SOS 보내기',
       danger: true,
     })
@@ -130,9 +142,10 @@ export default function SosPage() {
 
     setSending(true)
     try {
-      const { notified } = await createSos({
+      const { notified, sameSubject, recipientCount } = await createSos({
         date: ymd,
         period,
+        subject,
         reason,
         requesterId: uid!,
         requesterName: userData.displayName || '선생님',
@@ -140,10 +153,14 @@ export default function SosPage() {
         schoolCode: userData.schoolCode,
       })
       if (notified > 0) {
-        toast(`SOS를 보냈어요! 빈 시간 선생님 ${notified}명에게 알림을 전했어요.`, 'success')
+        const recipients = sameSubject ? '같은 교과' : '다른 교과'
+        toast(`${recipients}의 빈 시간 선생님 ${notified}명에게 SOS 알림을 보냈어요.`, 'success')
+      } else if (recipientCount > 0) {
+        toast('SOS를 등록했어요. 선생님들의 인앱 알림은 저장하지 못했어요.', 'info')
       } else {
         toast('SOS를 등록했어요. 지금은 그 시간이 빈 선생님을 찾지 못해 알림은 못 보냈어요.', 'info')
       }
+      setSubjectOverride(null)
       setReason('')
     } catch (e) {
       if (e instanceof SosStateError) {
@@ -263,7 +280,10 @@ export default function SosPage() {
                   type="date"
                   value={dateInput}
                   min={ymdToInput(today)}
-                  onChange={(e) => setDateInput(e.target.value)}
+                  onChange={(e) => {
+                    setDateInput(e.target.value)
+                    setSubjectOverride(null)
+                  }}
                   className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 focus:ring-2 focus:ring-red-400 focus:border-red-400"
                 />
               </div>
@@ -274,7 +294,10 @@ export default function SosPage() {
                 <select
                   id="sos-period"
                   value={period}
-                  onChange={(e) => setPeriod(Number(e.target.value))}
+                  onChange={(e) => {
+                    setPeriod(Number(e.target.value))
+                    setSubjectOverride(null)
+                  }}
                   className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 bg-white focus:ring-2 focus:ring-red-400 focus:border-red-400"
                 >
                   {PERIODS.map((p) => (
@@ -284,6 +307,21 @@ export default function SosPage() {
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="sos-subject" className="block text-xs font-bold text-gray-500 mb-1">
+                보결 과목
+              </label>
+              <input
+                id="sos-subject"
+                type="text"
+                value={subjectInput}
+                onChange={(e) => setSubjectOverride(e.target.value)}
+                maxLength={50}
+                placeholder="예: 지구과학"
+                className="w-full border border-gray-300 rounded-xl px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-red-400 focus:border-red-400"
+              />
             </div>
 
             <div>
@@ -310,7 +348,7 @@ export default function SosPage() {
             </button>
 
             <p className="text-xs text-gray-500 leading-relaxed break-keep">
-              그 시간에 수업이 없는 우리 학교 선생님들께 알림이 가요. 내 시간표를 등록해야 SOS 알림을 정확히 받아요.
+              같은 교과에 해당 교시가 빈 선생님이 있으면 그 선생님들께만 알려요. 없으면 다른 교과의 빈 시간 선생님들께 알려요.
             </p>
 
             {!hasMySchedule && (
