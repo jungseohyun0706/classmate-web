@@ -40,6 +40,10 @@ export default function Terms() {
               변경된 수업과 학교의 공식 안내는 소속 학교의 공지로 확인해 주세요. 기기의 알림 설정과 네트워크 상태에 따라
               알림 도착 시간이 달라질 수 있습니다.
             </p>
+            <p className="mt-2 text-sm text-gray-600">
+              공공데이터 출처는 교육부·시도교육청{' '}
+              <a href="https://open.neis.go.kr/" className="text-blue-700 underline">나이스 교육정보 개방 포털</a>입니다.
+            </p>
           </section>
           <section>
             <h2 className="mb-2 text-lg font-bold text-gray-900">5. 개인정보와 문의</h2>
