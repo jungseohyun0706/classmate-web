@@ -98,7 +98,8 @@ const LandingPage = () => {
           <span className="font-bold text-gray-900 text-lg">ururu.kr</span>
           <span>© 2026 ururu.kr. All rights reserved.</span>
         </div>
-        <div className="mt-6 md:mt-0 flex space-x-8">
+        <div className="mt-6 md:mt-0 flex flex-wrap gap-x-6 gap-y-2">
+          <Link href="/terms" className="hover:text-blue-600 font-medium transition-colors">이용약관</Link>
           <Link href="/privacy" className="hover:text-blue-600 font-medium transition-colors">개인정보처리방침</Link>
           <a href="mailto:jungseohyun7@gmail.com" className="hover:text-blue-600 font-medium transition-colors">문의하기</a>
         </div>
