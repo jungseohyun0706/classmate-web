@@ -4,6 +4,7 @@ import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore'
 import { getStorage } from 'firebase-admin/storage'
 import { getAdminApp, verifyIdToken } from '../../lib/fcm-admin'
 import { attachmentContentType, canAccessChatFiles, matchesImageSignature, validateChatFiles, type ChatAttachment, type AttachmentInput } from '../../lib/chatAttachments'
+import { CHAT_FILTER_MESSAGE, hasAbusiveLanguage } from '../../lib/chatSafety'
 
 export const config = { api: { bodyParser: { sizeLimit: '64kb' } } }
 const ID = /^[A-Za-z0-9_-]{1,80}$/
@@ -94,6 +95,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (!['chat', 'notice'].includes(kind) || (kind === 'notice' && user.role !== 'teacher')) throw new RequestError(403, '공지는 선생님만 보낼 수 있어요.')
     const text = typeof req.body.text === 'string' ? req.body.text.trim() : ''
     if (text.length > 500) throw new RequestError(400, '메시지는 500자까지 보낼 수 있어요.')
+    if (hasAbusiveLanguage(text)) throw new RequestError(400, CHAT_FILTER_MESSAGE)
     // 업로드 URL은 임시 경로만 쓸 수 있습니다. 검증한 버전을 별도 경로로 복사해 게시 후 변조를 막습니다.
     const attachments = await Promise.all((draft.attachments as ChatAttachment[]).map(async (a) => {
       const [meta] = await bucket.file(a.path).getMetadata()

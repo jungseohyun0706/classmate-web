@@ -14,6 +14,7 @@ import {
 import { db } from './firebase'
 import type { ChatAttachment } from './chatAttachments'
 import { attachmentRequest } from './chatAttachmentClient'
+import { CHAT_FILTER_MESSAGE, hasAbusiveLanguage } from './chatSafety'
 
 export interface ChatMessage {
   id: string
@@ -68,6 +69,7 @@ export async function sendChat(
 ): Promise<string> {
   const clean = text.trim().slice(0, CHAT_MAX_LEN)
   if (!clean) throw new Error('내용을 입력해 주세요.')
+  if (hasAbusiveLanguage(clean)) throw new Error(CHAT_FILTER_MESSAGE)
   const ref = await addDoc(collection(db, 'classes', classId, 'chat'), {
     authorId: author.uid,
     authorName: author.name,

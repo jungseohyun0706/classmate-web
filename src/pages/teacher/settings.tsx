@@ -5,6 +5,7 @@ import { onAuthStateChanged, sendPasswordResetEmail, updateProfile } from 'fireb
 import { doc, getDoc, updateDoc } from 'firebase/firestore'
 import { useUI } from '../../components/ui/feedback'
 import EnablePush from '../../components/EnablePush'
+import { ACCOUNT_DELETE_PATH, RELEASED_TEACHER_NAME } from '../../lib/accountDeletion'
 
 export default function SettingsPage() {
   const router = useRouter()
@@ -187,13 +188,28 @@ export default function SettingsPage() {
           </div>
 
           {/* 보안 섹션 */}
-          <div className="p-6 bg-gray-50 rounded-b-lg">
+          <div className="p-6 bg-gray-50">
             <h2 className="text-lg font-medium text-gray-900 mb-4">보안</h2>
             <button
               onClick={handleResetPassword}
               className="w-full flex justify-center py-2.5 px-4 border border-red-200 rounded-lg text-sm font-bold text-red-600 bg-white hover:bg-red-50 transition"
             >
               비밀번호 재설정 메일 보내기
+            </button>
+          </div>
+
+          {/* 회원 탈퇴 — 확인과 삭제는 /account/delete 한 곳에서 (웹 삭제 요청 주소와 같은 화면) */}
+          <div className="p-6 rounded-b-lg">
+            <h2 className="text-lg font-medium text-gray-900 mb-2">회원 탈퇴</h2>
+            <p className="text-sm text-gray-500 break-keep">
+              계정과 내가 쓴 알림장·톡방 메시지·첨부 파일이 삭제되고 되돌릴 수 없어요. 맡은 반은 지우지 않고
+              담임을 &lsquo;{RELEASED_TEACHER_NAME}&rsquo;으로 바꿔요.
+            </p>
+            <button
+              onClick={() => router.push(ACCOUNT_DELETE_PATH)}
+              className="mt-4 w-full flex justify-center py-2.5 px-4 border border-gray-200 rounded-lg text-sm font-bold text-gray-600 bg-white hover:bg-gray-50 transition"
+            >
+              회원 탈퇴
             </button>
           </div>
 

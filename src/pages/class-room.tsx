@@ -29,7 +29,8 @@ import { CHAT_MAX_LEN, deleteChat, sendChat, watchChat, type ChatMessage } from 
 import { setActiveRoom } from '../lib/messaging'
 import ChatAttachments, { AttachmentDrafts } from '../components/ChatAttachments'
 import { CHAT_FILE_ACCEPT, validateChatFiles } from '../lib/chatAttachments'
-import { sendAttachments } from '../lib/chatAttachmentClient'
+import { attachmentRequest, sendAttachments } from '../lib/chatAttachmentClient'
+import { CHAT_FILTER_MESSAGE, hasAbusiveLanguage, type BlockedChatAuthor, type ChatReport } from '../lib/chatSafety'
 
 // 우리 반 이야기방 — 카카오톡 오픈채팅 스타일의 반 단톡방.
 // 공지도 여기서 보냅니다(선생님 입력창의 📢 토글). 알림장 별도 화면은 관리(명단)용만 유지.
@@ -48,6 +49,21 @@ interface MyData {
 type FeedItem =
   | { kind: 'notice'; at: number; notice: Announcement }
   | { kind: 'chat'; at: number; msg: ChatMessage }
+
+type SafetyTarget = { id: string; kind: 'chat' | 'notice'; authorName: string }
+
+async function safetyRequest<T>(body?: object, classId?: string): Promise<T> {
+  const token = await auth.currentUser?.getIdToken()
+  if (!token) throw new Error('다시 로그인해 주세요.')
+  const response = await fetch(`/api/chat-safety${classId ? `?classId=${encodeURIComponent(classId)}` : ''}`, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.error || '잠시 후 다시 시도해 주세요.')
+  return result as T
+}
 
 const atOf = (ts: Timestamp | null): number => (ts ? ts.toMillis() : Number.MAX_SAFE_INTEGER)
 
@@ -155,6 +171,10 @@ export default function ClassRoom(): JSX.Element {
   const [rosterRetry, setRosterRetry] = useState(0)
   // 이 방의 담임 uid — 규칙상 남의 메시지 삭제는 담임만 가능하므로 버튼 노출 기준으로 씁니다.
   const [roomTeacherId, setRoomTeacherId] = useState<string | null>(null)
+  const [blockedAuthors, setBlockedAuthors] = useState<BlockedChatAuthor[]>([])
+  const [safetyPanel, setSafetyPanel] = useState<'settings' | 'reports' | SafetyTarget | null>(null)
+  const [reports, setReports] = useState<ChatReport[]>([])
+  const [safetyBusy, setSafetyBusy] = useState(false)
 
   const feedRef = useRef<HTMLDivElement>(null)
   const bannerNoticeRef = useRef<HTMLSpanElement>(null)
@@ -175,6 +195,16 @@ export default function ClassRoom(): JSX.Element {
   const myName = me?.name || me?.displayName || (isTeacher ? '선생님' : '학생')
   const classId = roomClassId
 
+  useEffect(() => {
+    setBlockedAuthors([])
+    if (!uid) return
+    let stopped = false
+    void safetyRequest<{ blocked: BlockedChatAuthor[] }>().then(({ blocked }) => {
+      if (!stopped) setBlockedAuthors(blocked)
+    }).catch((error) => console.warn('차단 목록 조회 실패', error))
+    return () => { stopped = true }
+  }, [uid])
+
   // 반 전환 (교사)
   const switchRoom = (id: string) => {
     if (id === roomClassId || sending) return
@@ -188,6 +218,7 @@ export default function ClassRoom(): JSX.Element {
     setRosterFor(null)
     setRosterStudents(null)
     setRosterError(false)
+    setSafetyPanel(null)
     setReadCounts({})
     setConsentCounts({})
     setRoomTeacherId(null)
@@ -458,18 +489,24 @@ export default function ClassRoom(): JSX.Element {
       stopped = true
       observer.disconnect()
     }
-  }, [classId, uid, receiptScope, isTeacher, loading, blocked, myName, noticeIdsKey, bannerOpen, wakeTick, receipts])
+  }, [classId, uid, receiptScope, isTeacher, loading, blocked, myName, noticeIdsKey, bannerOpen, wakeTick, receipts, blockedAuthors])
+
+  const visibleNotices = useMemo(
+    () => notices.filter((notice) => !blockedAuthors.some((author) => author.id === notice.authorId)),
+    [notices, blockedAuthors]
+  )
 
   const feed = useMemo<FeedItem[]>(() => {
     const items: FeedItem[] = [
-      ...notices.map((n): FeedItem => ({ kind: 'notice', at: atOf(n.createdAt), notice: n })),
-      ...chat.map((m): FeedItem => ({ kind: 'chat', at: atOf(m.createdAt), msg: m })),
+      ...visibleNotices.map((n): FeedItem => ({ kind: 'notice', at: atOf(n.createdAt), notice: n })),
+      ...chat.filter((message) => !blockedAuthors.some((author) => author.id === message.authorId))
+        .map((m): FeedItem => ({ kind: 'chat', at: atOf(m.createdAt), msg: m })),
     ]
     items.sort((a, b) => a.at - b.at)
     return items
-  }, [notices, chat])
+  }, [visibleNotices, chat, blockedAuthors])
 
-  const latestNotice = notices.length > 0 ? notices[notices.length - 1] : null
+  const latestNotice = visibleNotices[visibleNotices.length - 1] ?? null
 
   useEffect(() => {
     const el = feedRef.current
@@ -506,6 +543,10 @@ export default function ClassRoom(): JSX.Element {
     if (!uid || !classId || sending) return
     const t = text.trim()
     if (!t && files.length === 0) return
+    if (hasAbusiveLanguage(t)) {
+      toast(CHAT_FILTER_MESSAGE, 'error')
+      return
+    }
     setSending(true)
     try {
       if (files.length > 0) {
@@ -564,6 +605,31 @@ export default function ClassRoom(): JSX.Element {
     } catch (e) {
       console.error(e)
       toast('삭제하지 못했어요.', 'error')
+    }
+  }
+
+  const updateSafety = async (body: object, success: (data: { author?: BlockedChatAuthor }) => void) => {
+    if (safetyBusy) return
+    setSafetyBusy(true)
+    try {
+      success(await safetyRequest({ ...body, classId }))
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '다시 시도해 주세요.', 'error')
+    } finally {
+      setSafetyBusy(false)
+    }
+  }
+
+  const openReports = async () => {
+    setSafetyBusy(true)
+    try {
+      const response = await safetyRequest<{ reports: ChatReport[] }>(undefined, classId)
+      setReports(response.reports)
+      setSafetyPanel('reports')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : '신고 목록을 불러오지 못했어요.', 'error')
+    } finally {
+      setSafetyBusy(false)
     }
   }
 
@@ -806,6 +872,14 @@ export default function ClassRoom(): JSX.Element {
               )}
             </div>
           </div>
+          <div className="flex shrink-0 items-center">
+            <button
+              type="button"
+              onClick={() => setSafetyPanel('settings')}
+              className="rounded-lg px-2 py-2 text-xs font-bold text-gray-700 hover:bg-black/5"
+            >
+              안전
+            </button>
           {isTeacher && classId === me?.classId && (
             <button
               onClick={() => router.push('/teacher/notices')}
@@ -814,6 +888,7 @@ export default function ClassRoom(): JSX.Element {
               ☰ 명단
             </button>
           )}
+          </div>
         </div>
 
         {/* 📢 고정 공지 배너 (카톡 공지) */}
@@ -888,6 +963,10 @@ export default function ClassRoom(): JSX.Element {
                         <span className="text-[13px]">📢</span>
                         <span className="text-xs font-bold text-gray-700">공지 · {item.notice.authorName} 선생님</span>
                         <span className="ml-auto text-[10px] text-gray-400">{formatTime(item.notice.createdAt)}</span>
+                        {item.notice.authorId !== uid && (
+                          <button type="button" aria-label="공지 신고 또는 작성자 차단" className="px-2 py-1 text-sm text-gray-600"
+                            onClick={() => setSafetyPanel({ id: item.notice.id, kind: 'notice', authorName: item.notice.authorName })}>⋯</button>
+                        )}
                       </div>
                       <div className="px-3.5 py-2.5">
                         <div data-notice-id={item.notice.id}>
@@ -992,6 +1071,8 @@ export default function ClassRoom(): JSX.Element {
                             {showTime && (
                               <span className="mb-0.5 shrink-0 text-[10px] text-gray-600/80">{formatTime(m.createdAt)}</span>
                             )}
+                            <button type="button" aria-label="메시지 신고 또는 작성자 차단" className="shrink-0 px-2 py-1 text-sm text-gray-600"
+                              onClick={() => setSafetyPanel({ id: m.id, kind: 'chat', authorName: m.authorName })}>⋯</button>
                           </div>
                         </div>
                       </div>
@@ -1071,6 +1152,87 @@ export default function ClassRoom(): JSX.Element {
           </div>
         </div>
       </div>
+
+      {safetyPanel && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40">
+          <section role="dialog" aria-modal="true" aria-label="톡방 안전"
+            className="max-h-[75vh] w-full max-w-xl overflow-y-auto rounded-t-2xl bg-white p-5 pb-9 shadow-xl">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="font-bold text-gray-900">
+                {safetyPanel === 'reports' ? '톡방 신고 목록' : safetyPanel === 'settings' ? '톡방 안전' : `${safetyPanel.authorName}님의 게시물`}
+              </h2>
+              <button type="button" onClick={() => setSafetyPanel(null)} className="rounded-lg p-2 text-sm font-semibold text-gray-600">닫기</button>
+            </div>
+            {safetyPanel === 'settings' && (
+              <>
+                <h3 className="mb-2 text-sm font-semibold">차단한 사용자</h3>
+                {blockedAuthors.length === 0 ? <p className="text-sm text-gray-500">차단한 사용자가 없어요.</p> : (
+                  <ul className="divide-y text-sm">
+                    {blockedAuthors.map((author) => (
+                      <li key={author.id} className="flex items-center justify-between py-2">
+                        {author.name}
+                        <button disabled={safetyBusy} type="button" className="p-2 font-semibold text-blue-700"
+                          onClick={() => void updateSafety({ action: 'unblock', targetId: author.id }, () => setBlockedAuthors((prev) => prev.filter((item) => item.id !== author.id)))}>
+                          차단 해제
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {isTeacher && roomTeacherId === uid && (
+                  <button type="button" disabled={safetyBusy} onClick={() => void openReports()} className="mt-4 block font-semibold text-blue-700">
+                    신고 목록 보기
+                  </button>
+                )}
+                <a href="mailto:jungseohyun7@gmail.com" className="mt-4 block text-sm font-semibold text-blue-700">운영팀에 문의</a>
+              </>
+            )}
+            {safetyPanel === 'reports' && (
+              reports.length === 0 ? <p className="text-sm text-gray-500">미처리 신고가 없어요.</p> :
+                <ul className="divide-y">
+                  {reports.map((report) => (
+                    <li key={report.id} className="space-y-2 py-3 text-sm">
+                      <p className="font-semibold">{report.name}</p>
+                      <p className="whitespace-pre-wrap break-words text-gray-600">{report.excerpt}</p>
+                      <div className="flex gap-3">
+                        <button type="button" disabled={safetyBusy} className="p-2 font-semibold text-red-700" onClick={async () => {
+                          const ok = await confirm({ title: '신고된 게시물을 삭제할까요?', confirmText: '삭제', danger: true })
+                          if (!ok) return
+                          try {
+                            await attachmentRequest({ action: 'delete', classId, messageId: report.messageId, kind: report.kind })
+                            await updateSafety({ action: 'resolve', reportId: report.id }, () => setReports((prev) => prev.filter((item) => item.id !== report.id)))
+                          } catch (error) {
+                            toast(error instanceof Error ? error.message : '삭제하지 못했어요.', 'error')
+                          }
+                        }}>게시물 삭제</button>
+                        <button type="button" disabled={safetyBusy} className="p-2 font-semibold text-gray-700"
+                          onClick={() => void updateSafety({ action: 'resolve', reportId: report.id }, () => setReports((prev) => prev.filter((item) => item.id !== report.id)))}>
+                          확인 완료
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+            )}
+            {typeof safetyPanel === 'object' && (
+              <div className="flex flex-col gap-2">
+                <button type="button" disabled={safetyBusy} className="rounded-lg bg-red-50 px-4 py-3 text-left font-semibold text-red-700"
+                  onClick={() => void updateSafety({ action: 'report', messageId: safetyPanel.id, kind: safetyPanel.kind }, () => {
+                    setSafetyPanel(null)
+                    toast('신고가 접수됐어요.', 'success')
+                  })}>게시물 신고</button>
+                <button type="button" disabled={safetyBusy} className="rounded-lg bg-gray-100 px-4 py-3 text-left font-semibold text-gray-800"
+                  onClick={() => void updateSafety({ action: 'block', messageId: safetyPanel.id, kind: safetyPanel.kind }, ({ author }) => {
+                    if (author) setBlockedAuthors((prev) => [...prev.filter((item) => item.id !== author.id), author])
+                    setSafetyPanel(null)
+                    toast('이 작성자의 톡방 게시물을 숨겼어요.', 'success')
+                  })}>작성자 차단</button>
+                <a href="mailto:jungseohyun7@gmail.com" className="p-2 text-sm text-blue-700">운영팀에 문의</a>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
 
       {/* 교사: 공지 확인 명단 시트 (실시간) */}
       {isTeacher && rosterFor && (

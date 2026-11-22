@@ -2,9 +2,10 @@ import '@/styles/globals.css'
 import type { AppProps } from 'next/app'
 import Head from 'next/head'
 import dynamic from 'next/dynamic'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { UIProvider } from '@/components/ui/feedback'
 import { InstallProvider } from '@/components/ui/install'
+import { isClassmateIOS } from '@/lib/iosClient'
 
 // 전역 푸시 연결(포그라운드 토스트·토큰 재등록·로그아웃 시 토큰 정리·알림 클릭 이동).
 // Firebase SDK를 불러오므로 첫 화면 번들과 분리해 브라우저에서만 불러옵니다.
@@ -12,9 +13,14 @@ const PushBridge = dynamic(
   () => import('@/components/EnablePush').then((m) => m.PushBridge),
   { ssr: false }
 )
+const IOSScheduleBridge = dynamic(() => import('@/components/IOSScheduleBridge'), { ssr: false })
 
 export default function App({ Component, pageProps }: AppProps) {
+  const [nativeClient, setNativeClient] = useState(false)
   useEffect(() => {
+    const ios = isClassmateIOS()
+    setNativeClient(ios)
+    if (ios) return
     if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
       navigator.serviceWorker.register('/sw.js').catch(() => {
         // 서비스 워커 등록 실패는 앱 동작에 영향을 주지 않으므로 무시
@@ -34,7 +40,7 @@ export default function App({ Component, pageProps }: AppProps) {
         <InstallProvider>
           <Component {...pageProps} />
         </InstallProvider>
-        <PushBridge />
+        {nativeClient ? <IOSScheduleBridge /> : <PushBridge />}
       </UIProvider>
     </>
   )
