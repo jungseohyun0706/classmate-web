@@ -10,6 +10,7 @@ import {
   type User,
 } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
+import { ACCOUNT_DELETE_PATH } from '../../lib/accountDeletion'
 
 const GoogleIcon = () => (
   <svg className="h-5 w-5" viewBox="0 0 24 24" aria-hidden="true">
@@ -38,6 +39,15 @@ export default function LoginPage() {
   const [codeLoading, setCodeLoading] = useState(false)
   // 이메일 인증 전 교사는 로그아웃시키므로, 인증 메일 재전송에 쓸 User를 따로 보관해요.
   const [unverifiedUser, setUnverifiedUser] = useState<User | null>(null)
+
+  /**
+   * 로그인 뒤 돌아갈 화면 (?next=/account/delete 등). 같은 사이트 경로만 받습니다
+   * ('//evil.com' 같은 외부 주소로 보내는 피싱 링크 차단).
+   */
+  const nextPath = (): string | null => {
+    const next = router.query.next
+    return typeof next === 'string' && /^\/(?![/\\])/.test(next) ? next : null
+  }
 
   /**
    * 로그인 성공 후 공통 처리: users 문서의 role에 따라 이동
@@ -69,11 +79,16 @@ export default function LoginPage() {
       const cred = await signInWithPopup(auth, provider)
       const role = await routeByRole(cred.user)
       if (role === 'student') {
-        router.replace('/student/today')
+        router.replace(nextPath() ?? '/student/today')
         return
       }
       if (role === 'teacher') {
-        router.replace('/dashboard')
+        router.replace(nextPath() ?? '/dashboard')
+        return
+      }
+      // 교사 등록을 마치지 않은 계정도 탈퇴하러 왔다면 등록 단계 대신 탈퇴 화면으로 보냅니다.
+      if (role === 'missing' && nextPath() === ACCOUNT_DELETE_PATH) {
+        router.replace(ACCOUNT_DELETE_PATH)
         return
       }
       // 읽기 실패를 '처음 온 사용자'로 착각해 코드 단계로 보내지 않아요.
@@ -188,7 +203,7 @@ export default function LoginPage() {
       // 학생: 이메일 인증 없이 바로 오늘 페이지로 이동해요.
       // (승인 대기 중이어도 /student/today 에서 대기 상태를 안내합니다)
       if (role === 'student') {
-        router.replace('/student/today')
+        router.replace(nextPath() ?? '/student/today')
         return
       }
 
@@ -201,6 +216,11 @@ export default function LoginPage() {
       }
 
       // 교사 등록(complete-signup)이 끝나지 않은 계정 → 구글과 같이 코드 단계에서 이어서 등록
+      // (탈퇴하러 왔다면 등록 대신 탈퇴 화면으로)
+      if (role === 'missing' && nextPath() === ACCOUNT_DELETE_PATH) {
+        router.replace(ACCOUNT_DELETE_PATH)
+        return
+      }
       if (role === 'missing') {
         setPendingUser(user)
         setMode('code')
@@ -219,7 +239,7 @@ export default function LoginPage() {
         return
       }
 
-      router.replace('/dashboard')
+      router.replace(nextPath() ?? '/dashboard')
     } catch (e: any) {
       console.error(e)
       const msg = (e && e.message) || String(e)
